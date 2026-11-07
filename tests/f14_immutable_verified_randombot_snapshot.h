@@ -50,7 +50,7 @@ public:
             return false;
 
         std::lock_guard<std::mutex> guard(_writer);
-        auto old = std::atomic_load_explicit(&_snapshot, std::memory_order_acquire);
+        auto old = LoadView();
         auto it = old->find(c.Guid);
         if (it != old->end() && it->second.Incarnation >= c.Incarnation)
             return false; // no duplicate, no stale generation overwrite
@@ -58,7 +58,7 @@ public:
         auto next = std::make_shared<Table>(*old);
         (*next)[c.Guid] = {c.Incarnation, c.Account, c.Race};
         std::shared_ptr<const Table> published = std::move(next);
-        std::atomic_store_explicit(&_snapshot, std::move(published), std::memory_order_release);
+        PublishView(std::move(published));
         return true;
     }
 
@@ -67,7 +67,7 @@ public:
         if (!guid || !incarnation)
             return false;
         std::lock_guard<std::mutex> guard(_writer);
-        auto old = std::atomic_load_explicit(&_snapshot, std::memory_order_acquire);
+        auto old = LoadView();
         auto it = old->find(guid);
         if (it == old->end() || it->second.Incarnation != incarnation)
             return false; // stale logout cannot evict a newer incarnation
@@ -75,7 +75,7 @@ public:
         auto next = std::make_shared<Table>(*old);
         next->erase(guid);
         std::shared_ptr<const Table> published = std::move(next);
-        std::atomic_store_explicit(&_snapshot, std::move(published), std::memory_order_release);
+        PublishView(std::move(published));
         return true;
     }
 
@@ -87,7 +87,7 @@ public:
     {
         if (!guid || !incarnation || !account || (race != 10 && race != 11))
             return false;
-        auto view = std::atomic_load_explicit(&_snapshot, std::memory_order_acquire);
+        auto view = LoadView();
         auto it = view->find(guid);
         return it != view->end() &&
                it->second.Incarnation == incarnation &&
@@ -96,12 +96,29 @@ public:
 
     std::size_t Size() const
     {
-        return std::atomic_load_explicit(&_snapshot, std::memory_order_acquire)->size();
+        return LoadView()->size();
     }
 
 private:
     using Table = std::unordered_map<std::uint32_t, Stamp>;
+    // The publication mutex is held only to copy/swap the shared_ptr.
+    // Reader traversal happens after releasing it, on a CONST table.
+    // This avoids deprecated shared_ptr atomic free functions in C++20,
+    // while supporting the same immutable snapshot semantics in C++17.
+    std::shared_ptr<const Table> LoadView() const
+    {
+        std::lock_guard<std::mutex> lock(_publication);
+        return _snapshot;
+    }
+
+    void PublishView(std::shared_ptr<const Table> published)
+    {
+        std::lock_guard<std::mutex> lock(_publication);
+        _snapshot = std::move(published);
+    }
+
     mutable std::mutex _writer;
+    mutable std::mutex _publication;
     std::shared_ptr<const Table> _snapshot = std::make_shared<Table>();
 };
 } // namespace CosmicF14Prototype

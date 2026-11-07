@@ -12,9 +12,12 @@ class SnapshotContract(unittest.TestCase):
     def setUpClass(cls):
         cls.header = H.read_text()
         cls.test = CPP.read_text()
-    def test_atomic_publication_load(self):
-        self.assertEqual(self.header.count("std::atomic_load_explicit(&_snapshot, std::memory_order_acquire)"), 4)
-        self.assertEqual(self.header.count("std::atomic_store_explicit(&_snapshot, std::move(published), std::memory_order_release)"), 2)
+    def test_mutex_publication_still_uses_immutable_snapshot(self):
+        self.assertEqual(self.header.count("LoadView()"), 6)
+        self.assertEqual(self.header.count("PublishView(std::move(published));"), 2)
+        self.assertIn("std::lock_guard<std::mutex> lock(_publication);", self.header)
+        self.assertIn("std::shared_ptr<const Table>", self.header)
+        self.assertNotIn("std::atomic_load_explicit", self.header)
     def test_positive_provenance(self):
         for token in ("!c.Headless", "!c.PlayerbotAI", "c.SelfBot",
                       "!c.InRandomAccountList", "!c.InActiveRandomBotList",
