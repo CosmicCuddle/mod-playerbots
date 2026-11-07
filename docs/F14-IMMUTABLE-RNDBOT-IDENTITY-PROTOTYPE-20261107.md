@@ -17,6 +17,17 @@ The files under `tests/` develop an alternative *publication protocol* for later
 - No client object ACK, cross-thread lifetime guarantee, exact historical hidden-pair restoration or grouped-player rights is supplied.
 - Every stored value here is a **synthetic assertion** from test input, not an authoritative proof that a genuine RNDBOT is in the actual world.
 
+## Verified lifecycle source chronology — important negative boundaries
+
+A 7 November source audit of the **historical exact Playerbots fork** identified these distinct phases. They are not permissions to hide a player:
+
+1. `RandomPlayerbotMgr::AddRandomBots()`'s `tryLoginBot` sets the `"add"` event and calls `currentBots.insert(charInfo.guid)` *without creating a live Player or session*. The eventual `ProcessBot(uint32)` can later call `AddPlayerBot(botGUID, 0)`. Therefore merely being in `currentBots` means **selected/reserved**, not fully online or positively headless.
+2. `GetBots()` separately repopulates `currentBots` from database event entries after startup. Rehydration is also **not** materialisation or login completion.
+3. `PlayerbotHolder` queues the login operation after `OnPlayerLogin(bot)`. The separate `OnBotLogin` path adds a pointer to `playerBots` *before* testing `GET_PLAYERBOT_AI(bot)` for null. A sound positive stamp must wait for the actual fully verified session/AI and world admission, not infer it from this earlier insertion.
+4. `ProcessBot(uint32)` has both `currentBots.erase(bot)` **before** `LogoutPlayerBot` and another path where logout is initiated **before** the erase. `OnPlayerLoginError` also removes membership. `PlayerbotHolder::LogoutPlayerBot` removes the player from its active holder and deletes its session without directly manipulating `currentBots`. A future F14 actor must be retired in every path **before any map-visible unsafe lifecycle window**, with a stable incarnation and exact game-thread ordering.
+
+A new `tests/test_f14_randombot_lifecycle_handoff.py` suite guards the exact source chronology and explicitly **fails if it drifts**, prompting review before adding a real identity producer. These checks are an inspection of existing code, **not** tests of asynchronous runtime ordering or thread affinity. No positive F14 identity should be issued from `currentBots.insert`, `GetBots`, race/account alone or a null-AI `OnBotLogin`. Identity stamping, retirement and in-map session checks remain separate future design/implementation.
+
 ## Tests / rollback
 
 Five source guards verify the code remains test-only, positive provenance, generation, no unsafe game API and safe mutex publication. Native GCC/Clang C++17/C++20 normal/NDEBUG permutations and one ThreadSanitizer eight-worker run test coherence and stale identity suppression without touching owner accounts. Tests are NOT full Worldserver or 3.3.5a gameplay proof and remain pending until actual workflow conclusion checked.

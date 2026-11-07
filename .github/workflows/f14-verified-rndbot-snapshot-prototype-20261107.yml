@@ -19,7 +19,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Protect original parent and ensure test-only four-path diff
+      - name: Protect original parent and ensure test-only six-path diff
         shell: bash
         run: |
           set -euo pipefail
@@ -31,13 +31,16 @@ jobs:
             tests/f14_immutable_verified_randombot_snapshot.h \
             tests/f14_immutable_verified_randombot_snapshot.cpp \
             tests/test_f14_immutable_verified_randombot_snapshot.py \
+            tests/test_f14_randombot_lifecycle_handoff.py \
             .github/workflows/f14-verified-rndbot-snapshot-prototype-20261107.yml \
             docs/F14-IMMUTABLE-RNDBOT-IDENTITY-PROTOTYPE-20261107.md | sort >/tmp/expected
           diff -u /tmp/expected /tmp/actual
           test -z "$(git diff --name-only "$parent" HEAD -- src/ conf/ data/)"
           echo 'PASS: no runtime changes, F14 still OFF'
       - name: Source guards prevent accidental live wiring
-        run: python3 -B -m unittest discover -s tests -p 'test_f14_immutable_verified_randombot_snapshot.py' -v
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_f14_immutable_verified_randombot_snapshot.py' -v
+          python3 -B -m unittest discover -s tests -p 'test_f14_randombot_lifecycle_handoff.py' -v
       - name: Native immutable snapshot semantics and eight workers (eight C++ variants)
         shell: bash
         run: |
