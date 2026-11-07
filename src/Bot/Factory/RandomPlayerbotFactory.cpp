@@ -5,6 +5,7 @@
  */
 
 #include "RandomPlayerbotFactory.h"
+#include "F14NewRandomBotBirthProbe.h"
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
 #include "ArenaTeamMgr.h"
@@ -787,6 +788,15 @@ void RandomPlayerbotFactory::CreateRandomBots()
             sCharacterCache->AddCharacterCacheEntry(playerBot->GetGUID(), accountId, playerBot->GetName(),
                                                     playerBot->getGender(), playerBot->getRace(),
                                                     playerBot->getClass(), playerBot->GetLevel());
+
+            // F14 OFF-by-default diagnostic ONLY. No DB receipt or entitlement:
+            // SaveToDB can still be queued asynchronously, so this merely
+            // records that this process *attempted* to create a fresh bot.
+            // An actual stage grant needs a separately approved durable proof.
+            if (sPlayerbotAIConfig.F14TrackNewRandomBotBirth)
+                CosmicF14::NewRandomBotBirthProbe::Instance().RecordCandidate(
+                    playerBot->GetGUID().GetCounter(), accountId, playerBot->getRace());
+
             playerBot->CleanupsBeforeDelete();
             delete playerBot;
             bot_creation++;
