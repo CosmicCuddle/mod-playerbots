@@ -23,6 +23,18 @@ The final model accessor is explicitly named `EvidenceCompleteForReview`, **NOT 
 
 ## Scope and evidence
 
-Exact child change: **5 new files only** (2 test C++ files, 1 Python source guard, 1 GitHub workflow, this documentation). CI checks exact immutable PB #3 parent and no `src/`, `conf/`, `data/`, SQL, Core, IP, Naxx or Services changes, runs actual PB #3 source checks, compiles real PB3 header plus synthetic test with GCC/Clang C++17/C++20 normal/NDEBUG and ThreadSanitizer. **Do not claim CI success until its actual run is checked.** In a failed run, repair only the test/model on this isolated branch, never weaken any live guard or test preconditions to force a green result.
+Exact child change: **6 new files only** (2 test C++ files, **2** Python source guards, 1 GitHub workflow, this documentation). CI checks exact immutable PB #3 parent and no `src/`, `conf/`, `data/`, SQL, Core, IP, Naxx or Services changes, runs actual PB #3 source checks, compiles real PB3 header plus synthetic test with GCC/Clang C++17/C++20 normal/NDEBUG and ThreadSanitizer. **Do not claim CI success until its actual run is checked.** In a failed run, repair only the test/model on this isolated branch, never weaken any live guard or test preconditions to force a green result.
 
 **Rollback:** discard this child test-only branch; nothing to roll back on host or database. Do not merge this into a release or treat source-level proof as in-game F14, paid or restoration acceptance. Related owner [F14 coordination #9](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/9), [combined #4](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/4), [task-routing PR #40](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/pull/40).
+
+## Subsequent read-only CORE source verification — 7 November
+
+The CI now checks **actual owner Core #2** at immutable `d2066943e19cd959de2a0e9897135573e4124219` (read-only checkout in a disposable GitHub runner). A new `tests/test_f14_pinned_core_save_receipt_source.py` source contract verifies the precise cross-repository call path, rather than merely relying on mock callback outcomes:
+
+- Real Playerbots factory enqueues `Player::SaveToDB(true,false)` **before** the cache/candidate, and delays the global queue poll until *after* creating candidates.
+- Real Core `Player::SaveToDB(bool,bool)` returns `void`, calls `CharacterDatabase.CommitTransaction(trans)` which enqueues `TransactionTask` with **no per-character success result**.
+- Real Core worker calls `_queue->WaitAndPop(operation)` **before** `operation->call()`; `DatabaseWorkerPool::QueueSize()` returns `_queue->Size()`. A zero queue size can therefore coincide with the transaction executing on a worker, or a failed transaction.
+- Separate Core `AsyncCommitTransaction` would create a `TransactionWithResultTask` with a future and `TransactionCallback::AfterComplete(bool)`; `Transaction.cpp` supplies true/false upon outcome. These APIs are **not connected** to the current PB creation save and cannot be inferred through `SaveToDB` or queue polling.
+- **Scope:** only pinned public source text and Python checks, no SQL/DB connection, no new PB producer, no stage8, no paid receipt, no owner-host writes. A green source test will prove the exact pinned API expectations, **not** the safety of an unimplemented future callback integration or atomically proven old-data absence. Future Core changes should intentionally fail this contract for review instead of silently being assumed equivalent.
+
+The hosted follow-up CI run must be checked before declaring the new six-file source contract green. This does not change the previously verified five-file synthetic-model commit and native/TSAN success at `0d15896c...`.
