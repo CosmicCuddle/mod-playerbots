@@ -13,7 +13,7 @@ class SnapshotContract(unittest.TestCase):
         cls.header = H.read_text()
         cls.test = CPP.read_text()
     def test_mutex_publication_still_uses_immutable_snapshot(self):
-        self.assertEqual(self.header.count("LoadView()"), 6)
+        self.assertEqual(self.header.count("LoadView()"), 5)
         self.assertEqual(self.header.count("PublishView(std::move(published));"), 2)
         self.assertIn("std::lock_guard<std::mutex> lock(_publication);", self.header)
         self.assertIn("std::shared_ptr<const Table>", self.header)
