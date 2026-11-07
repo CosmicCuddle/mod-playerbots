@@ -50,6 +50,14 @@ public:
             return false;
 
         std::lock_guard<std::mutex> guard(_writer);
+        // A retired entry is absent from the visible snapshot. Keep the last
+        // accepted incarnation outside that view, or a delayed login event
+        // could re-publish the *same* already retired bot identity.
+        auto high = _lastAcceptedIncarnation.find(c.Guid);
+        if (high != _lastAcceptedIncarnation.end() &&
+            c.Incarnation <= high->second)
+            return false;
+
         auto old = LoadView();
         auto it = old->find(c.Guid);
         if (it != old->end() && it->second.Incarnation >= c.Incarnation)
@@ -57,6 +65,10 @@ public:
 
         auto next = std::make_shared<Table>(*old);
         (*next)[c.Guid] = {c.Incarnation, c.Account, c.Race};
+        // Under the writer mutex, retain this high-water mark even after a
+        // later Retire() removes the actor from readers' immutable view.
+        // If bookkeeping fails, no new snapshot has been published yet.
+        _lastAcceptedIncarnation[c.Guid] = c.Incarnation;
         std::shared_ptr<const Table> published = std::move(next);
         PublishView(std::move(published));
         return true;
@@ -118,6 +130,10 @@ private:
     }
 
     mutable std::mutex _writer;
+    // Test-only, writer-guarded per-GUID replay fence. Not production ready:
+    // unbounded over all distinct GUIDs; later design needs safe GC/persistence
+    // and a non-recycled unique epoch across restarts.
+    std::unordered_map<std::uint32_t, std::uint64_t> _lastAcceptedIncarnation;
     mutable std::mutex _publication;
     std::shared_ptr<const Table> _snapshot = std::make_shared<Table>();
 };

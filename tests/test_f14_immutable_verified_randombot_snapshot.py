@@ -27,6 +27,14 @@ class SnapshotContract(unittest.TestCase):
         self.assertIn("it->second.Incarnation >= c.Incarnation", self.header)
         self.assertIn("it->second.Incarnation != incarnation", self.header)
         self.assertIn("it->second.Incarnation == incarnation", self.header)
+    def test_retirement_replay_fence_is_preserved(self):
+        self.assertIn("std::unordered_map<std::uint32_t, std::uint64_t> _lastAcceptedIncarnation;", self.header)
+        self.assertIn("c.Incarnation <= high->second", self.header)
+        self.assertIn("_lastAcceptedIncarnation[c.Guid] = c.Incarnation;", self.header)
+        self.assertIn("next->erase(guid);", self.header)
+        self.assertIn("same retired incarnation cannot reappear", self.test)
+        self.assertIn("older retired incarnation cannot reappear", self.test)
+
     def test_no_game_api_in_snapshot(self):
         for token in ("Player*", "WorldSession*", "sRandomPlayerbotMgr", "currentBots.contains",
                       "GetMap()", "SaveToDB(", "SetPhaseMask(", "RewardQuest("):

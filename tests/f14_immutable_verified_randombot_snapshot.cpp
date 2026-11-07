@@ -75,6 +75,14 @@ int main()
     Check(s.Retire(11, 43), "exact retirement");
     Check(!s.IsVerified(11, 43, c.Account, 11), "hidden actor cannot persist after committed retire");
     Check(s.Size() == 0, "exact last retirement empties view");
+    Check(!s.Publish(Good(11, 43, 11)), "same retired incarnation cannot reappear on delayed login callback");
+    Check(!s.Publish(Good(11, 42, 10)), "older retired incarnation cannot reappear");
+    Check(!s.Retire(11, 43), "duplicate retirement cannot resurrect an actor");
+    Check(s.Publish(Good(11, 44, 10)), "genuinely newer incarnation can be admitted");
+    Check(s.IsVerified(11, 44, c.Account, 10), "new incarnation exact stamp is visible");
+    Check(s.Retire(11, 44), "new incarnation can retire");
+    Check(!s.Publish(Good(11, 44, 10)), "second retired incarnation stays fenced");
+    Check(s.Size() == 0, "retired replay fence is not an active actor");
     Check(s.Publish(Good(23, 100, 11)), "verified headless race11 producer");
     Check(s.IsVerified(23, 100, 5023, 11), "race11 positive exact match");
 
@@ -106,7 +114,11 @@ int main()
             bool ok = concurrent.Publish(Good(id, epoch, 10));
             Check(ok, "higher incarnation always publishes");
             if (epoch % 3 == 0)
+            {
                 Check(concurrent.Retire(id, epoch), "matching retirement");
+                Check(!concurrent.Publish(Good(id, epoch, 10)),
+                      "old producer event cannot republish just-retired actor");
+            }
             if (epoch > 100 && epoch % 7 == 0)
                 Check(!concurrent.Retire(id, epoch - 64), "old logout cannot retire newer actor");
         }
