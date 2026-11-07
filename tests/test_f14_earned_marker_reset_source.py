@@ -114,7 +114,8 @@ class SourceGate(unittest.TestCase):
     def test_reject_active_only_identity(self):
         with self.assertRaises(ValueError):
             audit_randombot_identity(self.manager.replace(
-                "if (!sPlayerbotAIConfig.IsInRandomAccountList(", "if (false && (", 1))
+                "if (!sPlayerbotAIConfig.IsInRandomAccountList(sCharacterCache->GetCharacterAccountIdByGuid(guid)))",
+                "if (false)", 1))
 
     def test_default_enable_rejected(self):
         with self.assertRaises(ValueError):
