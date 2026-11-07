@@ -83,6 +83,15 @@
 Playerbots.Enabled = 1
 
 # Enable randombot system
+# F14 first-created RandomBot diagnostic (research only, default OFF).
+# When enabled on an isolated test server, observe newly GENERATED Blood Elf
+# and Draenei RandomBots and correlate them with a later verified login in
+# the SAME running process. No SQL/DB receipt, stage8 grant, WHO/world hide
+# or corpse visibility changes. It does not recognise bots born before restart.
+# Never use this as paid eligibility or as permission to migrate saved stages.
+# Requires owner approval before enabling outside a disposable test server.
+Playerbots.F14TrackNewRandomBotBirth = 0
+
 Playerbots.RandomBotAutologin = 1
 
 # Randombot count
