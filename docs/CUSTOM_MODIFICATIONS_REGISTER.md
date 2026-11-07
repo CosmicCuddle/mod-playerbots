@@ -64,3 +64,15 @@ config/SQL/DBC/client, risk, tests, source/build/live status, owner decision and
   not activation. Reject draft to roll back with zero live effect. A future
   approved installation must back up binaries, configs, characters database
   and recoverable rollback baseline. Never apply a reset test on owner data.
+
+
+## F14 new RandomBot first-created birth-to-login diagnostic — 7 November 2026
+
+- **Intent:** acquire independent real Playerbots creation and verified-login source evidence for a later selected BE/Draenei RNDBOT first-stage pilot. **Never** grant stage8 or hide a player, creature, corpse or WHO entry. Existing behaviour remains identical with `Playerbots.F14TrackNewRandomBotBirth = 0`.
+- **Owning component / branch:** Playerbots only; from owner PB #1 exact `ffdeb199d4ba5a058cf2176139e7cb5c7e19755c`; independent new DRAFT, no upstream 43-commit sync. Core/IP/Naxx/Services unchanged.
+- **Affected:** `src/Bot/F14NewRandomBotBirthProbe.h` (new), `src/Bot/Factory/RandomPlayerbotFactory.cpp`, `src/Bot/PlayerbotMgr.cpp`, `src/PlayerbotAIConfig.h/.cpp`, `conf/playerbots.conf.dist`, tests, CI, this register and design memo.
+- **Config/SQL/DBC/client:** new diagnostic toggle `Playerbots.F14TrackNewRandomBotBirth = 0` default OFF. No SQL or DBC/client patches. No DB writes beyond original existing bot creation's stock `SaveToDB`; any future migration requires separate owner approval.
+- **Source behavior:** same-process new bot creation candidate after existing stock async SaveToDB queue + cache add, race10/11 only; one-time admission after world-thread OnBotLogin and non-null AI/headless/in-world/verified IsRandomBot checks; retire before observed logout/deletion paths. All numeric state mutex protected; reused GUID/replayed admission denied. No stage writer consumer.
+- **Risks:** async character creation may fail; no restart persistence, no exact proof of committed new DB row, incomplete alternate logout/error/shutdown hooks, AI or map ownership not globally verified; `IsRandomBot` mutable manager method is only used in existing source-verified world-thread login callback (NOT Core map worker). 16,384 candidates cap and in-RAM old record tombstones. If OFF no actor map data added.
+- **Tests/status:** local native standalone actual-header GCC/Clang C++17/20 **passed** before PR; dedicated GitHub source/native/TSAN CI and full Worldserver native + real bot login in 3.3.5a **pending**. DRAFT, never merged or deployed, player-visible behavior not tested.
+- **Decision/rollback:** no owner authorisation to enable F14, write real stage8 or modify SQL; approval only for research/development. Discard DRAFT to roll back, no live changes. Preserve other PB reset customisations and original human progression.
