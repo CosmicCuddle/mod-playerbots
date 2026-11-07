@@ -10,6 +10,7 @@
 #include "DBCEnums.h"
 #include "SharedDefines.h"
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <set>
@@ -128,6 +129,9 @@ public:
     bool AutoAvoidAoe;
     float MaxAoeAvoidRadius;
     std::set<uint32> AoeAvoidSpellWhitelist;
+    // Read-only mask to map workers; rebuilt atomically on configuration reload.
+    // Empty by default, does not alter stock Playerbot quest resets.
+    std::atomic<uint32> ResetQuestsPreserveMask{0};
     bool TellWhenAvoidAoe;
     std::set<uint32> DisallowedGameObjects;
     std::set<uint32> AttunementQuests;

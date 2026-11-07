@@ -1686,6 +1686,12 @@ void PlayerbotFactory::ClearSpells()
 
 void PlayerbotFactory::ResetQuests()
 {
+    // Freeze one reload-safe option snapshot for this specific reset.
+    uint32 const preserveMask = sPlayerbotAIConfig.ResetQuestsPreserveMask.load(std::memory_order_acquire);
+    // A positive RandomBot identity is required; Altbots are never protected
+    // through this opt-in. This is NOT a sufficient identity for F14 hiding.
+    bool const preserveForVerifiedRandomBot =
+        preserveMask != 0 && sRandomPlayerbotMgr.IsRandomBot(bot);
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
         bot->SetQuestSlot(slot, 0);
@@ -1697,6 +1703,13 @@ void PlayerbotFactory::ResetQuests()
 
         uint32 entry = quest->GetQuestId();
         if (bot->GetQuestStatus(entry) == QUEST_STATUS_NONE)
+            continue;
+
+        // Never re-award or create a marker; retain only one already
+        // REWARDED selected marker on an actually identified RandomBot.
+        if (preserveForVerifiedRandomBot && entry >= 66001 && entry <= 66018 &&
+            bot->GetQuestStatus(entry) == QUEST_STATUS_REWARDED &&
+            (preserveMask & (uint32(1) << (entry - 66001))) != 0)
             continue;
 
         bot->RemoveRewardedQuest(entry);
