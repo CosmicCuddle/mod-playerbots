@@ -13,6 +13,10 @@ MGR = ROOT / "src/Bot/RandomPlayerbotMgr.cpp"
 HEADER = ROOT / "src/Bot/RandomPlayerbotMgr.h"
 HOLDER = ROOT / "src/Bot/PlayerbotMgr.cpp"
 FACTORY = ROOT / "src/Bot/Factory/PlayerbotFactory.cpp"
+# CI-only pinned read-only owner repositories. No customer/host data.
+CORE_CPP = ROOT / "owner-core/src/server/game/Server/WorldSession.cpp"
+CORE_H = ROOT / "owner-core/src/server/game/Server/WorldSession.h"
+IP_PLAYER = ROOT / "owner-ip/src/IndividualProgressionPlayer.cpp"
 
 def between(source, start, end):
     if source.count(start) != 1 or source.count(end) != 1:
@@ -29,6 +33,9 @@ class LifecycleSourceAudit(unittest.TestCase):
         cls.manager_header = HEADER.read_text(encoding="utf-8")
         cls.holder = HOLDER.read_text(encoding="utf-8")
         cls.factory = FACTORY.read_text(encoding="utf-8")
+        cls.core_cpp = CORE_CPP.read_text(encoding="utf-8")
+        cls.core_h = CORE_H.read_text(encoding="utf-8")
+        cls.ip_player = IP_PLAYER.read_text(encoding="utf-8")
 
     def test_01_selected_login_reservation_is_not_live_session(self):
         """The selected bot gets currentBots membership BEFORE actual login."""
@@ -118,6 +125,39 @@ class LifecycleSourceAudit(unittest.TestCase):
         # The generic holder path does not, by itself, write currentBots.
         self.assertNotIn("currentBots.erase(", logout)
         self.assertNotIn("PublishF14", logout)
+
+
+    def test_08_owner_core_headless_session_is_socket_derived(self):
+        """Source contract: headless has no socket; NOT proof of RandomBot type."""
+        self.assertEqual(self.core_cpp.count("_headless(!sock)"), 1)
+        self.assertIn("m_expansion(expansion)", self.core_cpp)
+        self.assertIn("[[nodiscard]] bool IsHeadless() const { return _headless; }", self.core_h)
+        self.assertIn("bool const _headless;", self.core_h)
+
+    def test_09_pb_headless_bootstrap_sets_wrath_session_value(self):
+        """Don't confuse raw WotLK session expansion with earned IP tier."""
+        bootstrap = between(self.holder, "void PlayerbotHolder::AddPlayerBot(",
+                            "void PlayerbotHolder::") if (
+                                "void PlayerbotHolder::AddPlayerBot(" in self.holder
+                            ) else self.holder
+        self.assertIn("new WorldSession(accountId, \"\", 0x0, nullptr, SEC_PLAYER, EXPANSION_WRATH_OF_THE_LICH_KING", bootstrap)
+        self.assertIn("botSession->AddQueryHolderCallback", bootstrap)
+
+    def test_10_ip_bot_login_level_reset_does_not_grant_selected_race_stage8(self):
+        """Current IP #46 baseline level<=60 rewrites stage0 unless saved-stage pilot."""
+        body = between(self.ip_player,
+                       "if (!sIndividualProgression->isNormalAccount(player)) // bot or exluded account",
+                       "else // normal account")
+        self.assertIn("if (!preserveVerifiedRandomBotStage)", body)
+        self.assertIn("if (player->GetLevel() <= 60)", body)
+        self.assertIn("ForceUpdateProgressionState(player, static_cast<ProgressionState>(0));", body)
+        self.assertIn("ForceUpdateProgressionState(player, static_cast<ProgressionState>(8));", body)
+        self.assertIn("ForceUpdateProgressionState(player, static_cast<ProgressionState>(13));", body)
+        self.assertIn("sRandomPlayerbotMgr.IsRandomBot(player->GetGUID().GetCounter())", body)
+        self.assertIn("f14PreserveVerifiedRandomBotStageOnLogin", body)
+        self.assertLess(body.index("if (player->GetLevel() <= 60)"),
+                        body.index("ForceUpdateProgressionState(player, static_cast<ProgressionState>(8));"))
+
 
 if __name__ == "__main__":
     unittest.main()

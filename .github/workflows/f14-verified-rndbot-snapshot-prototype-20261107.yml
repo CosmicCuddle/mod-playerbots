@@ -37,6 +37,27 @@ jobs:
           diff -u /tmp/expected /tmp/actual
           test -z "$(git diff --name-only "$parent" HEAD -- src/ conf/ data/)"
           echo 'PASS: no runtime changes, F14 still OFF'
+      - name: Checkout exact owner Core and IP SOURCE for read-only expansion/session crosscheck
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/azerothcore-wotlk
+          ref: 1e37f3343cf08618101b625601cd299f0a1770ca
+          path: owner-core
+          persist-credentials: false
+      - name: Checkout exact owner IP #46 source (no module execution)
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/mod-individual-progression
+          ref: 26d5b7a1de30ad92a595aaf251fc14754cf54f32
+          path: owner-ip
+          persist-credentials: false
+      - name: Verify pinned owner source SHA before cross-repository test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C owner-core rev-parse HEAD)" = 1e37f3343cf08618101b625601cd299f0a1770ca
+          test "$(git -C owner-ip rev-parse HEAD)" = 26d5b7a1de30ad92a595aaf251fc14754cf54f32
+          echo 'PASS exact Core/IP source, no database, account, host or runtime use'
       - name: Source guards prevent accidental live wiring
         run: |
           python3 -B -m unittest discover -s tests -p 'test_f14_immutable_verified_randombot_snapshot.py' -v
