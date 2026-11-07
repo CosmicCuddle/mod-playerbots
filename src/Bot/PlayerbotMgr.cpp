@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotMgr.h"
+#include "F14NewRandomBotBirthProbe.h"
 #include "PlayerbotsDatabase.h"
 #include "BroadcastHelper.h"
 #include "ChannelMgr.h"
@@ -393,6 +394,13 @@ void PlayerbotMgr::CancelLogout()
 
 void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
+    // Revoke any optional F14 probe observation BEFORE querying AI or freeing
+    // the Player/WorldSession, even if recording is disabled (default).
+    // Fail closed across future diagnostic config changes: retirement must
+    // revoke an existing observation even if candidate creation is OFF now.
+    // When no candidate was recorded (default OFF), Retire is a no-op.
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
+
     if (Player* bot = GetPlayerBot(guid))
     {
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
@@ -457,6 +465,11 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 
 void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 {
+    // Fail closed across future diagnostic config changes: retirement must
+    // revoke an existing observation even if candidate creation is OFF now.
+    // When no candidate was recorded (default OFF), Retire is a no-op.
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
+
     if (Player* bot = GetPlayerBot(guid))
     {
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
@@ -487,6 +500,12 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 
 void PlayerbotHolder::RemoveFromPlayerbotsMap(ObjectGuid guid)
 {
+    // Also catches holder-removal paths that bypass explicit logout methods.
+    // Fail closed across future diagnostic config changes: retirement must
+    // revoke an existing observation even if candidate creation is OFF now.
+    // When no candidate was recorded (default OFF), Retire is a no-op.
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
+
     playerBots.erase(guid);
 }
 
@@ -522,6 +541,24 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         // Log a warning here to indicate that the botAI is null
         LOG_DEBUG("mod-playerbots", "PlayerbotAI is null for bot with GUID: {}", bot->GetGUID().GetRawValue());
         return;
+    }
+
+    // F14 diagnostic observation only, with no player-facing effects.
+    // The deferred OnBotLoginOperation has now reached the world-thread
+    // holder and a real AI exists. A matching *same-process* creation
+    // candidate is mandatory; race/headless/IsRandomBot alone never admit.
+    // Existing bots, Altbots, humans and relogs without creation fail closed.
+    if (sPlayerbotAIConfig.F14TrackNewRandomBotBirth &&
+        bot->GetSession() && bot->GetSession()->IsHeadless() &&
+        bot->IsInWorld() &&
+        (bot->getRace() == RACE_BLOODELF || bot->getRace() == RACE_DRAENEI) &&
+        sRandomPlayerbotMgr.IsRandomBot(bot) &&
+        CosmicF14::NewRandomBotBirthProbe::Instance().ObserveAdmission(
+            bot->GetGUID().GetCounter(), bot->GetSession()->GetAccountId(),
+            bot->getRace(), true, true, true, true))
+    {
+        // Do NOT call Individual Progression or Core visibility here.
+        LOG_DEBUG("playerbots", "F14 creation-to-login probe observed an eligible new RandomBot; no stage grant or hide");
     }
 
     Player* master = botAI->GetMaster();
