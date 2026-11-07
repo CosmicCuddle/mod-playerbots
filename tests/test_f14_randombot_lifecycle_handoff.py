@@ -98,7 +98,7 @@ class LifecycleSourceAudit(unittest.TestCase):
 
     def test_06_full_reset_only_preserves_previously_rewarded_marker(self):
         randomize = between(self.factory, "void PlayerbotFactory::Randomize(bool incremental)",
-                            "void PlayerbotFactory::")
+                            "void PlayerbotFactory::Refresh()")
         self.assertIn("if (!incremental)", randomize)
         self.assertIn("ResetQuests();", randomize)
         reset = between(self.factory, "void PlayerbotFactory::ResetQuests()",
