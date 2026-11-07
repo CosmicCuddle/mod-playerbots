@@ -1,0 +1,31 @@
+name: Owner newer Playerbots SQL data-change guard (READ ONLY)
+
+on:
+  push:
+    branches:
+      - review/cs01-newer-playerbots-sql-dml-preflight-20261107
+  pull_request:
+    paths:
+      - "tests/test_newer_pb_sql_dml_preflight.py"
+      - "data/sql/playerbots/updates/**"
+      - ".github/workflows/newer-playerbots-sql-dml-preflight-20261107.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  static-sql-text-only:
+    name: Check four SQL source write-sets (NO SQL EXECUTION)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout committed review source
+        uses: actions/checkout@v4
+
+      - name: Read-only Python standard library unit tests
+        run: python3 -m unittest discover -s tests -p 'test_newer_pb_sql_dml_preflight.py' -v
+
+      - name: State safety boundary
+        run: |
+          echo 'Only SQL text is parsed; no database, credentials or SQL engine involved.'
+          echo 'Passing does not authorise migrations, merge, deployment or gameplay.'
