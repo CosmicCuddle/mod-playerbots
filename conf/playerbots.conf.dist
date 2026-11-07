@@ -1335,6 +1335,13 @@ Playerbots.botActiveAloneSmartScaleWhenMaxLevel = 80
 # Quests that will be completed and rewarded for all randombots
 Playerbots.RandomBotQuestIds = "3802,5505,6502,7761,7848,10277,10285,11492,13188,13189,24499,24511,24710,24712"
 
+# Optional preservation of already-earned Individual Progression hidden quests
+# 66001-66018 during verified RandomBot ResetQuests only. Empty = stock reset.
+# Does NOT grant new progression, preserve incomplete quests or affect Altbots.
+# Requires owner policy approval and offline in-game tests before enabling.
+# Default: empty (disabled)
+Playerbots.ResetQuestsPreserveQuestIds =
+
 # Randombots will group with nearby randombots to do shared quests
 # Note: Currently not functioning properly
 Playerbots.RandomBotGroupNearby = 0
