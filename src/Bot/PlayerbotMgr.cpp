@@ -395,9 +395,11 @@ void PlayerbotMgr::CancelLogout()
 void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
     // Revoke any optional F14 probe observation BEFORE querying AI or freeing
-    // the Player/WorldSession. No effect if the probe is disabled (default).
-    if (sPlayerbotAIConfig.F14TrackNewRandomBotBirth)
-        CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
+    // the Player/WorldSession, even if recording is disabled (default).
+    // Fail closed across future diagnostic config changes: retirement must
+    // revoke an existing observation even if candidate creation is OFF now.
+    // When no candidate was recorded (default OFF), Retire is a no-op.
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
 
     if (Player* bot = GetPlayerBot(guid))
     {
@@ -463,8 +465,10 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 
 void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 {
-    if (sPlayerbotAIConfig.F14TrackNewRandomBotBirth)
-        CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
+    // Fail closed across future diagnostic config changes: retirement must
+    // revoke an existing observation even if candidate creation is OFF now.
+    // When no candidate was recorded (default OFF), Retire is a no-op.
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
 
     if (Player* bot = GetPlayerBot(guid))
     {
@@ -497,8 +501,10 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 void PlayerbotHolder::RemoveFromPlayerbotsMap(ObjectGuid guid)
 {
     // Also catches holder-removal paths that bypass explicit logout methods.
-    if (sPlayerbotAIConfig.F14TrackNewRandomBotBirth)
-        CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
+    // Fail closed across future diagnostic config changes: retirement must
+    // revoke an existing observation even if candidate creation is OFF now.
+    // When no candidate was recorded (default OFF), Retire is a no-op.
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
 
     playerBots.erase(guid);
 }
