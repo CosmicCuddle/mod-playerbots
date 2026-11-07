@@ -137,7 +137,7 @@ class LifecycleSourceAudit(unittest.TestCase):
     def test_09_pb_headless_bootstrap_sets_wrath_session_value(self):
         """Don't confuse raw WotLK session expansion with earned IP tier."""
         bootstrap = between(self.holder, "void PlayerbotHolder::AddPlayerBot(",
-                            "void PlayerbotHolder::") if (
+                            "void PlayerbotHolder::AbandonPendingLogin(ObjectGuid guid)") if (
                                 "void PlayerbotHolder::AddPlayerBot(" in self.holder
                             ) else self.holder
         self.assertIn("new WorldSession(accountId, \"\", 0x0, nullptr, SEC_PLAYER, EXPANSION_WRATH_OF_THE_LICH_KING", bootstrap)
