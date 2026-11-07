@@ -120,8 +120,12 @@ class NewerPlayerbotsSQLScope(unittest.TestCase):
                 self.assertEqual(
                     len(re.findall(r"\bDELETE\s+FROM\b", source, re.I)), 2
                 )
+                # The role file emits 15 separate text inserts + one
+                # chance-table insert; craft/calc each emit just two.
+                expected_insert_statements = 16 if name == ROLES else 2
                 self.assertEqual(
-                    len(re.findall(r"\bINSERT\s+INTO\b", source, re.I)), 2
+                    len(re.findall(r"\bINSERT\s+INTO\b", source, re.I)),
+                    expected_insert_statements,
                 )
                 for label in expected.values():
                     self.assertGreaterEqual(source.count("'" + label + "'"), 2)
