@@ -1,0 +1,85 @@
+name: F14 Synthetic per-character DB commit proof / PB3 trust boundary (TEST ONLY)
+
+on:
+  push:
+    branches:
+      - research/cs01-f14-newbot-commit-verified-contract-testonly-20261107
+  pull_request:
+    branches:
+      - feature/cs01-f14-newbot-creation-login-observation-default-off-20261107
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-commit-proof:
+    name: Actual PB3 observer + fake commit events; NO SQL, NO SERVER
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout actual owner PB draft head only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact PB3 parent, five test-only paths, no source or SQL changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=f209a3a09d4479e1d183ba62f591709822db32fe
+          git merge-base --is-ancestor "$parent" HEAD
+          git diff --check "$parent" HEAD
+          git diff --name-only "$parent" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            'tests/f14_synthetic_db_commit_receipt_model.h' \
+            'tests/f14_synthetic_db_commit_receipt_model.cpp' \
+            'tests/test_f14_synthetic_db_commit_receipt_source.py' \
+            '.github/workflows/f14-newbot-synthetic-commit-proof-testonly-20261107.yml' \
+            'docs/F14-SYNTHETIC-PER-GUID-COMMIT-RECEIPT-PREFLIGHT-20261107.md' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          test -z "$(git diff --name-only "$parent" HEAD -- src conf data sql modules)"
+          grep -Fqx 'Playerbots.F14TrackNewRandomBotBirth = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.ResetQuestsPreserveQuestIds =' conf/playerbots.conf.dist
+          echo 'PASS no runtime/SQL/feature activation or parent PB #3 modification'
+
+      - name: Source guards and existing PB3 real observer regression
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_f14_synthetic_db_commit_receipt_source.py' -v
+          python3 -B -m unittest discover -s tests -p 'test_f14_new_randombot_birth_probe_source.py' -v
+
+      - name: Actual PB3 observer + synthetic fake callback/readback native tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$compiler" "-std=$std" -pthread -Wall -Wextra -Werror -pedantic -O1 "${flags[@]}" \
+                  tests/f14_synthetic_db_commit_receipt_model.cpp -Isrc/Bot -Itests \
+                  -o /tmp/f14-commit-model
+                /tmp/f14-commit-model
+              done
+            done
+          done
+          echo 'PASS real PB3 header + synthetic fake-DB proof ordering (eight compiler modes)'
+
+      - name: Eight-thread race safety of test-only synthetic model
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -fsanitize=thread -g -O1 -pthread \
+            tests/f14_synthetic_db_commit_receipt_model.cpp -Isrc/Bot -Itests \
+            -o /tmp/f14-commit-model-tsan
+          TSAN_OPTIONS=halt_on_error=1 /tmp/f14-commit-model-tsan
+
+      - name: Safety / no release authority
+        if: always()
+        run: |
+          echo 'All DB callback and pre/post character SELECT results are FAKE in this test.'
+          echo 'Core Player::SaveToDB(true,false) still has no per-GUID commit callback.'
+          echo 'No actual commit, SQL migration, IP stage8, paid, client or game test.'
+          echo 'F14/paid toggles OFF. PR remains DRAFT; no merge/install/production consent.'
