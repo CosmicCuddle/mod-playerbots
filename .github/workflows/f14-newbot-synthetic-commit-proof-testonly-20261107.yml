@@ -24,11 +24,20 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify exact PB3 parent, five test-only paths, no source or SQL changes
+      - name: Checkout exact owner Core #2 default-FALSE F14 API (READ ONLY)
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/azerothcore-wotlk
+          ref: d2066943e19cd959de2a0e9897135573e4124219
+          path: _pinned_core
+          persist-credentials: false
+
+      - name: Verify exact PB3 parent, six test-only paths, no source or SQL changes
         shell: bash
         run: |
           set -euo pipefail
           parent=f209a3a09d4479e1d183ba62f591709822db32fe
+          test "$(git -C _pinned_core rev-parse HEAD)" = d2066943e19cd959de2a0e9897135573e4124219
           git merge-base --is-ancestor "$parent" HEAD
           git diff --check "$parent" HEAD
           git diff --name-only "$parent" HEAD | sort > /tmp/actual
@@ -36,6 +45,7 @@ jobs:
             'tests/f14_synthetic_db_commit_receipt_model.h' \
             'tests/f14_synthetic_db_commit_receipt_model.cpp' \
             'tests/test_f14_synthetic_db_commit_receipt_source.py' \
+            'tests/test_f14_pinned_core_save_receipt_source.py' \
             '.github/workflows/f14-newbot-synthetic-commit-proof-testonly-20261107.yml' \
             'docs/F14-SYNTHETIC-PER-GUID-COMMIT-RECEIPT-PREFLIGHT-20261107.md' | sort > /tmp/expected
           diff -u /tmp/expected /tmp/actual
@@ -48,6 +58,7 @@ jobs:
         run: |
           python3 -B -m unittest discover -s tests -p 'test_f14_synthetic_db_commit_receipt_source.py' -v
           python3 -B -m unittest discover -s tests -p 'test_f14_new_randombot_birth_probe_source.py' -v
+          F14_OWNER_CORE=_pinned_core python3 -B -m unittest discover -s tests -p 'test_f14_pinned_core_save_receipt_source.py' -v
 
       - name: Actual PB3 observer + synthetic fake callback/readback native tests
         shell: bash
