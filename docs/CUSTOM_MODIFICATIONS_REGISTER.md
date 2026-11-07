@@ -30,16 +30,36 @@ config/SQL/DBC/client, risk, tests, source/build/live status, owner decision and
   current IP progression earned-stage logic, `sRandomPlayerbotMgr.IsRandomBot(bot)`
   existing PB API, and previous IP F14 safety discussion [Coord #9](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/9).
   This one API does NOT prove positive headless actor status for hiding.
-- **Tests/status:** source and standalone non-runtime C++ eight variants CI
-  proposed; status PENDING until verified actual Actions. Native full
-  Worldserver, installed owner source/config/DB, RandomBot recreation,
-  save/relog/stage9–18, Altbot negative cases, real 3.3.5a clients all
-  **NOT RUN**. Feature disabled by default; DRAFT/UNMERGED; not released.
+- **Tests/status:** earlier source and standalone non-runtime C++ eight-variant
+  GitHub Actions **PASSED** [run 42372602862](https://github.com/CosmicCuddle/mod-playerbots/actions/runs/42372602862):
+  8 source/mutation tests and 327,680 pure decisions each compiler mode at
+  previous head 0cf8163. Added source-only RandomBot-identity gate and
+  deliberate SelfBot/account/active-tracker mutations; these require NEW
+  exact-head CI evidence. Native full Worldserver, installed owner source/config/DB,
+  RandomBot recreation, save/relog/stage9–18, Altbot negative cases,
+  real 3.3.5a clients all **NOT RUN**. Feature disabled by default;
+  DRAFT/UNMERGED; not released.
 - **Risk:** malformed owner-config ids, member initialization/copy ABI,
   unexpected reset caller identity, changing bot progression inadvertently
-  when enabled, bot persistence and race with config reload. No enablement
-  without additional genuine Core/IP/Playerbots/Naxx/Services native build,
-  specific tests and owner approval.
+  when enabled, bot persistence and race with config reload. A NEW source
+  investigation confirmed `RandomPlayerbotMgr::IsRandomBot(Player*)`
+  rejects SelfBot then delegates to the GUID overload; the GUID overload
+  requires `IsInRandomAccountList` AND `currentBots.contains`.
+  The membership is stored in a mutable `std::unordered_set<uint32>`,
+  with insertion/removal sites in the manager and no adjacent lock visible
+  in the method. **Consequence: do NOT call this method naively from a
+  map-thread F14 per-viewer path**; source does NOT establish synchronization
+  with bot-manager writes. The method can also return FALSE for a bot not yet
+  added to `currentBots` during bootstrap. Confirm real factory-reset
+  call ownership/timing and preserve already-earned tiers during setup,
+  relog and later resets before enabling this opt-in. The new source
+  identity tests prove **only predicate structure**, not bot-lifecycle
+  completeness, a race-free value, actual headless session identity or
+  3.3.5a world visibility. An immutable, positively stamped actor
+  classification may be necessary for future safe Core viewer checks.
+  Do not infer race/account/name alone is enough. No enablement without
+  full Core/IP/Playerbots/Naxx/Services native build, owner-approved isolated
+  reset/Altbot tests, threaded map safety review and explicit approval.
 - **Decision/rollback:** owner requested a maintainable fork and task routing,
   not activation. Reject draft to roll back with zero live effect. A future
   approved installation must back up binaries, configs, characters database

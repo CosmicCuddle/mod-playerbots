@@ -11,6 +11,7 @@ C = ROOT / "conf/playerbots.conf.dist"
 H = ROOT / "src/PlayerbotAIConfig.h"
 CFG = ROOT / "src/PlayerbotAIConfig.cpp"
 FACTORY = ROOT / "src/Bot/Factory/PlayerbotFactory.cpp"
+RANDOM_MGR = ROOT / "src/Bot/RandomPlayerbotMgr.cpp"
 
 
 def audit(config, hdr, cpp, factory):
@@ -54,6 +55,37 @@ def audit(config, hdr, cpp, factory):
     return True
 
 
+def audit_randombot_identity(mgr):
+    """Require BOTH account ownership and active-bot membership, after SelfBot veto.
+
+    This source proof is NOT a concurrency/worker ownership or startup ordering test.
+    """
+    player_start = "bool RandomPlayerbotMgr::IsRandomBot(Player* bot)"
+    guid_start = "bool RandomPlayerbotMgr::IsRandomBot(ObjectGuid::LowType bot)"
+    end = "bool RandomPlayerbotMgr::IsAddclassBot(Player* bot)"
+    if any(mgr.count(marker) != 1 for marker in (player_start, guid_start, end)):
+        raise ValueError("ambiguous RandomBot identity method")
+    player = mgr.split(player_start, 1)[1].split(guid_start, 1)[0]
+    guid = mgr.split(guid_start, 1)[1].split(end, 1)[0]
+    if player.count("if (IsSelfBot(bot))") != 1:
+        raise ValueError("SelfBot exclusion is required")
+    if player.count("return IsRandomBot(bot->GetGUID().GetCounter());") != 1:
+        raise ValueError("must delegate to account AND active membership identity")
+    if guid.count("if (!sPlayerbotAIConfig.IsInRandomAccountList(") != 1:
+        raise ValueError("RandomBot account ownership required")
+    if guid.count("return currentBots.contains(bot);") != 1:
+        raise ValueError("active RandomBot membership required")
+    if player.index("if (IsSelfBot(bot))") > player.index(
+        "return IsRandomBot(bot->GetGUID().GetCounter());"
+    ):
+        raise ValueError("SelfBot exclusion must precede identity return")
+    if guid.index("if (!sPlayerbotAIConfig.IsInRandomAccountList(") > guid.index(
+        "return currentBots.contains(bot);"
+    ):
+        raise ValueError("account check must precede active membership check")
+    return True
+
+
 class SourceGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -61,9 +93,28 @@ class SourceGate(unittest.TestCase):
         cls.hdr = H.read_text()
         cls.cpp = CFG.read_text()
         cls.factory = FACTORY.read_text()
+        cls.manager = RANDOM_MGR.read_text()
 
     def test_exact_source(self):
         self.assertTrue(audit(self.conf, self.hdr, self.cpp, self.factory))
+
+    def test_source_identity_requires_account_and_active_membership(self):
+        self.assertTrue(audit_randombot_identity(self.manager))
+
+    def test_reject_selfbot_bypass(self):
+        with self.assertRaises(ValueError):
+            audit_randombot_identity(self.manager.replace("if (IsSelfBot(bot))",
+                                                          "if (false)", 1))
+
+    def test_reject_account_only_identity(self):
+        with self.assertRaises(ValueError):
+            audit_randombot_identity(self.manager.replace(
+                "return currentBots.contains(bot);", "return true;", 1))
+
+    def test_reject_active_only_identity(self):
+        with self.assertRaises(ValueError):
+            audit_randombot_identity(self.manager.replace(
+                "if (!sPlayerbotAIConfig.IsInRandomAccountList(", "if (false && (", 1))
 
     def test_default_enable_rejected(self):
         with self.assertRaises(ValueError):
