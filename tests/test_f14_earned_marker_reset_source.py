@@ -86,6 +86,36 @@ def audit_randombot_identity(mgr):
     return True
 
 
+def audit_full_randomize_reset_routes(factory, manager):
+    """Guard both historical full RandomBot resets; no new player policy.
+
+    This checks source call paths only, NOT bot identity during bootstrap,
+    map-worker safety, database persistence, or actual in-game rewards.
+    """
+    factory_start = "void PlayerbotFactory::Randomize(bool incremental)"
+    if factory.count(factory_start) != 1:
+        raise ValueError("ambiguous full/incremental factory route")
+    randomize = factory.split(factory_start, 1)[1].split("\n}\n", 1)[0]
+    guard = "if (!incremental)\n    {"
+    if randomize.count(guard) != 1:
+        raise ValueError("full reset is not guarded by !incremental")
+    full_only = randomize.split(guard, 1)[1].split("\n    }\n", 1)[0]
+    if full_only.count("ResetQuests();") != 1 or randomize.count("ResetQuests();") != 1:
+        raise ValueError("full randomization must run exactly one guarded quest reset")
+
+    first = "void RandomPlayerbotMgr::RandomizeFirst(Player* bot)"
+    minimum = "void RandomPlayerbotMgr::RandomizeMin(Player* bot)"
+    if manager.count(first) != 1 or manager.count(minimum) != 1:
+        raise ValueError("ambiguous first/minimum bot generation path")
+    for name, begin in (("first", first), ("minimum", minimum)):
+        body = manager.split(begin, 1)[1].split("\n}\n", 1)[0]
+        if body.count("factory.Randomize(false);") != 1:
+            raise ValueError(name + " full reset no longer calls factory.Randomize(false)")
+    if manager.count("factory.Randomize(false);") != 2:
+        raise ValueError("additional or missing full reset callers require separate review")
+    return True
+
+
 class SourceGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -94,6 +124,35 @@ class SourceGate(unittest.TestCase):
         cls.cpp = CFG.read_text()
         cls.factory = FACTORY.read_text()
         cls.manager = RANDOM_MGR.read_text()
+
+    def test_full_randomize_reset_routes(self):
+        self.assertTrue(audit_full_randomize_reset_routes(self.factory, self.manager))
+
+    def test_detect_quest_reset_bypass(self):
+        with self.assertRaises(ValueError):
+            audit_full_randomize_reset_routes(
+                self.factory.replace("ResetQuests();", "/* no quest reset */", 1),
+                self.manager)
+
+    def test_detect_incremental_guard_inversion(self):
+        with self.assertRaises(ValueError):
+            audit_full_randomize_reset_routes(
+                self.factory.replace("if (!incremental)", "if (incremental)", 1),
+                self.manager)
+
+    def test_detect_randomize_first_becoming_incremental(self):
+        with self.assertRaises(ValueError):
+            audit_full_randomize_reset_routes(
+                self.factory, self.manager.replace(
+                    "factory.Randomize(false);", "factory.Randomize(true);", 1))
+
+    def test_detect_randomize_min_becoming_incremental(self):
+        with self.assertRaises(ValueError):
+            head = "void RandomPlayerbotMgr::RandomizeMin(Player* bot)"
+            before, tail = self.manager.split(head, 1)
+            audit_full_randomize_reset_routes(
+                self.factory, before + head + tail.replace(
+                    "factory.Randomize(false);", "factory.Randomize(true);", 1))
 
     def test_exact_source(self):
         self.assertTrue(audit(self.conf, self.hdr, self.cpp, self.factory))
