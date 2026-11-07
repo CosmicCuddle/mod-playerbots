@@ -138,6 +138,8 @@ public:
     std::set<uint32> UnobtainableItems;
 
     uint32 OpenGoSpell;
+    // F14 instrumentation ONLY. Default OFF: never grants a tier or hides an actor.
+    bool F14TrackNewRandomBotBirth = false;
     bool RandomBotAutologin;
     bool BotAutologin;
     std::string RandomBotMapsAsString;
