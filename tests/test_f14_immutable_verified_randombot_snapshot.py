@@ -13,7 +13,7 @@ class SnapshotContract(unittest.TestCase):
         cls.header = H.read_text()
         cls.test = CPP.read_text()
     def test_atomic_publication_load(self):
-        self.assertEqual(self.header.count("std::atomic_load_explicit(&_snapshot, std::memory_order_acquire)"), 3)
+        self.assertEqual(self.header.count("std::atomic_load_explicit(&_snapshot, std::memory_order_acquire)"), 4)
         self.assertEqual(self.header.count("std::atomic_store_explicit(&_snapshot, std::move(published), std::memory_order_release)"), 2)
     def test_positive_provenance(self):
         for token in ("!c.Headless", "!c.PlayerbotAI", "c.SelfBot",
