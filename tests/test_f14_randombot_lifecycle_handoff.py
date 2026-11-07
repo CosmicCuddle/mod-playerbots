@@ -145,9 +145,9 @@ class LifecycleSourceAudit(unittest.TestCase):
 
     def test_10_ip_bot_login_level_reset_does_not_grant_selected_race_stage8(self):
         """Current IP #46 baseline level<=60 rewrites stage0 unless saved-stage pilot."""
-        body = between(self.ip_player,
-                       "if (!sIndividualProgression->isNormalAccount(player)) // bot or exluded account",
-                       "else // normal account")
+        anchor = "if (!sIndividualProgression->isNormalAccount(player)) // bot or exluded account"
+        self.assertEqual(self.ip_player.count(anchor), 1)
+        body = self.ip_player.split(anchor, 1)[1].split("else // normal account", 1)[0]
         self.assertIn("if (!preserveVerifiedRandomBotStage)", body)
         self.assertIn("if (player->GetLevel() <= 60)", body)
         self.assertIn("ForceUpdateProgressionState(player, static_cast<ProgressionState>(0));", body)
