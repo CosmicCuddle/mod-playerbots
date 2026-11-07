@@ -1,0 +1,82 @@
+name: F14 PB holder unconditional retirement — DEFAULT OFF (no runtime grant)
+
+on:
+  push:
+    branches:
+      - feature/cs01-f14-always-retire-admission-on-holder-exit-20261107
+  pull_request:
+    branches:
+      - feature/cs01-f14-newbot-creation-login-observation-default-off-20261107
+
+permissions:
+  contents: read
+
+jobs:
+  holder-retire-default-off:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact owner PB child source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Exact immutable PB3 parent and four changed paths, zero SQL/config edits
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=f209a3a09d4479e1d183ba62f591709822db32fe
+          git merge-base --is-ancestor "$parent" HEAD
+          git diff --check "$parent" HEAD
+          git diff --name-only "$parent" HEAD | sort > /tmp/changed
+          printf '%s\n' \
+            'src/Bot/PlayerbotMgr.cpp' \
+            'tests/test_f14_holder_retire_source.py' \
+            '.github/workflows/f14-holder-unconditional-retirement-off-20261107.yml' \
+            'docs/CUSTOM_MODIFICATIONS_REGISTER.md' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/changed
+          test -z "$(git diff --name-only "$parent" HEAD -- conf data sql)"
+          test "$(git diff --numstat "$parent" HEAD -- src | wc -l)" = 1
+          grep -Fqx 'Playerbots.F14TrackNewRandomBotBirth = 0' conf/playerbots.conf.dist
+          echo 'PASS only holder F14 retire changed; candidate creation and login still OFF'
+
+      - name: Existing F14 source safety and new all-exit fail-closed regression
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_f14_holder_retire_source.py' -v
+          python3 -B -m unittest discover -s tests -p 'test_f14_new_randombot_birth_probe_source.py' -v
+          python3 -B -m unittest discover -s tests -p 'test_f14_earned_marker_reset_source.py' -v
+
+      - name: Original REAL PB3 header native C++ regression, all eight compiler modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for cc in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$cc" "-std=$std" -pthread -Wall -Wextra -Werror -pedantic -O1 "${flags[@]}" \
+                  -Isrc/Bot tests/f14_new_randombot_birth_probe.cpp -o /tmp/f14-holder-retire-pb3
+                /tmp/f14-holder-retire-pb3
+              done
+            done
+          done
+
+      - name: Original REAL PB3 header ThreadSanitizer concurrency regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -fsanitize=thread -g -O1 -pthread \
+            tests/f14_new_randombot_birth_probe.cpp -Isrc/Bot -o /tmp/f14-holder-retire-tsan
+          TSAN_OPTIONS=halt_on_error=1 /tmp/f14-holder-retire-tsan
+
+      - name: State exact test boundary and approval policy
+        if: always()
+        run: |
+          echo 'No source build of PlayerbotMgr.cpp or full Worldserver in this workflow.'
+          echo 'No proof of hot-reload of F14 flag or actual live retirement failure.'
+          echo 'Default OFF, no stage8, DB receipt, NPC/WHO hide or live server changes.'
+          echo 'Retire no-op when no candidate; future native five-repo compile + game tests needed.'
+          echo 'Leave PR DRAFT; no merge/deployment/host changes authorised.'
