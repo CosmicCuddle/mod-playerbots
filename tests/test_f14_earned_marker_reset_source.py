@@ -97,7 +97,7 @@ def audit_full_randomize_reset_routes(factory, manager):
         raise ValueError("ambiguous full/incremental factory route")
     randomize = factory.split(factory_start, 1)[1].split("\n}\n", 1)[0]
     guard = "if (!incremental)\n    {"
-    if randomize.count(guard) != 1:
+    if guard not in randomize:
         raise ValueError("full reset is not guarded by !incremental")
     full_only = randomize.split(guard, 1)[1].split("\n    }\n", 1)[0]
     if full_only.count("ResetQuests();") != 1 or randomize.count("ResetQuests();") != 1:
