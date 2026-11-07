@@ -17,6 +17,9 @@ FACTORY = ROOT / "src/Bot/Factory/PlayerbotFactory.cpp"
 CORE_CPP = ROOT / "owner-core/src/server/game/Server/WorldSession.cpp"
 CORE_H = ROOT / "owner-core/src/server/game/Server/WorldSession.h"
 IP_PLAYER = ROOT / "owner-ip/src/IndividualProgressionPlayer.cpp"
+WORLD_SCRIPT = ROOT / "src/Script/Playerbots.cpp"
+WORLD_PROC = ROOT / "src/Script/WorldThr/PlayerbotWorldThreadProcessor.cpp"
+LOGIN_OPS = ROOT / "src/Script/WorldThr/PlayerbotOperations.h"
 
 def between(source, start, end):
     if source.count(start) != 1 or source.count(end) != 1:
@@ -36,6 +39,9 @@ class LifecycleSourceAudit(unittest.TestCase):
         cls.core_cpp = CORE_CPP.read_text(encoding="utf-8")
         cls.core_h = CORE_H.read_text(encoding="utf-8")
         cls.ip_player = IP_PLAYER.read_text(encoding="utf-8")
+        cls.world_script = WORLD_SCRIPT.read_text(encoding="utf-8")
+        cls.world_processor = WORLD_PROC.read_text(encoding="utf-8")
+        cls.login_operations = LOGIN_OPS.read_text(encoding="utf-8")
 
     def test_01_selected_login_reservation_is_not_live_session(self):
         """The selected bot gets currentBots membership BEFORE actual login."""
@@ -158,6 +164,74 @@ class LifecycleSourceAudit(unittest.TestCase):
         self.assertLess(body.index("if (player->GetLevel() <= 60)"),
                         body.index("ForceUpdateProgressionState(player, static_cast<ProgressionState>(8));"))
 
+
+    def test_11_world_script_drains_pending_logins_before_world_ops(self):
+        # A source-verified world-thread entry is required: not merely a
+        # callback that can execute on a Core map worker or during SQL load.
+        world = between(self.world_script, "void OnUpdate(uint32 diff) override",
+                        "// Runs before the sessions are kicked on server shutdown")
+        ordered = ("PlayerbotHolder::UpdatePendingLogins();",
+                   "sRandomPlayerbotMgr.UpdateSessions();",
+                   "PlayerbotWorldThreadProcessor::instance().Update(diff);",
+                   "sRandomPlayerbotMgr.UpdateAI(diff);")
+        for token in ordered:
+            self.assertEqual(world.count(token), 1)
+        self.assertEqual([world.index(x) for x in ordered],
+                         sorted(world.index(x) for x in ordered))
+
+    def test_12_deferred_login_operation_is_only_player_exists_gate(self):
+        # This is deliberately insufficient for positive F14 publication.
+        ops = between(self.login_operations, "class OnBotLoginOperation : public PlayerbotOperation",
+                      "class ArenaTeamAssignOperation : public PlayerbotOperation")
+        self.assertIn("ObjectAccessor::FindConnectedPlayer(m_botGuid)", ops)
+        self.assertIn("holder->OnBotLogin(bot);", ops)
+        self.assertIn("m_masterAccountId", ops)
+        self.assertIn("GetPlayerbotMgr(masterPlayer)", ops)
+        self.assertNotIn("GET_PLAYERBOT_AI(bot)", ops)
+        self.assertNotIn("IsHeadless()", ops)
+        self.assertNotIn("IsInWorld()", ops)
+        self.assertNotIn("IsRandomBot(", ops)
+
+    def test_13_world_processor_runs_operations_outside_queue_mutex(self):
+        body = between(self.world_processor,
+                       "void PlayerbotWorldThreadProcessor::ProcessBatch()",
+                       "void PlayerbotWorldThreadProcessor::CheckQueueHealth()")
+        self.assertIn("std::lock_guard<std::mutex> lock(m_queueMutex)", body)
+        self.assertLess(body.index("std::lock_guard<std::mutex> lock(m_queueMutex)"),
+                        body.index("bool success = operation->Execute();"))
+        self.assertIn("// Execute operations outside of lock", body)
+        # We must not publish a hide while a queue lock remains held.
+        self.assertNotIn("OnBotLogin(", body)
+
+    def test_14_holder_validates_ai_after_insertion_and_before_any_candidate(self):
+        body = self.holder.split("void PlayerbotHolder::OnBotLogin(Player* const bot)", 1)[1].split(
+            "void PlayerbotHolder::", 1)[0]
+        self.assertIn("playerBots[bot->GetGUID()] = bot;", body)
+        self.assertIn("OnBotLoginInternal(bot);", body)
+        self.assertIn("PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);", body)
+        self.assertIn("if (!botAI)", body)
+        self.assertLess(body.index("playerBots[bot->GetGUID()] = bot;"),
+                        body.index("if (!botAI)"))
+        self.assertLess(body.index("OnBotLoginInternal(bot);"), body.index("if (!botAI)"))
+        # No positive readiness stamp exists. A future publisher must also
+        # require an exact headless session, genuine RNDBOT, in-world actor
+        # and a nonrecycled generation; this callback alone proves none.
+        self.assertNotIn("PublishF14", body)
+
+    def test_15_logout_removes_holder_before_session_and_actor_deletion(self):
+        body = between(self.holder, "void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)",
+                       "void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)")
+        ordered = ("RemoveFromPlayerbotsMap(guid);",
+                   "botWorldSessionPtr->LogoutPlayer(true);",
+                   "delete botWorldSessionPtr;")
+        for token in ordered:
+            self.assertEqual(body.count(token), 1)
+        self.assertEqual([body.index(x) for x in ordered],
+                         sorted(body.index(x) for x in ordered))
+        self.assertNotIn("RetireF14", body)
+        self.assertIn("if (!botAI)", body)
+        # Present runtime has no F14 publication/retirement. Actual future
+        # retirement must precede removed/deleted pointers and all data races.
 
 if __name__ == "__main__":
     unittest.main()
