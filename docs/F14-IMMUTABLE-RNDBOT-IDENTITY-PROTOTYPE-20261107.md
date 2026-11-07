@@ -41,6 +41,16 @@ The same verified Playerbots source exposes a more precise lifecycle order:
 
 Five additional source/mutation-regression conditions protect this ordering under a test-only DRAFT. They do not assert that thread affinity or memory visibility has been empirically proven, nor do they authorise an actual F14 hide; a map-owned serialized handoff is still unbuilt.
 
+## Important first-login bit mismatch — PB generation is NOT human creation
+
+A 7 November *exact Core + Playerbots source* comparison found a specific blocker for any future IP stage8 first-start implementation:
+
+- The normal Core human character-create handler explicitly calls `newChar->SetAtLoginFlag(AT_LOGIN_FIRST)`. Later on normal login, `sScriptMgr->OnPlayerLogin(pCurrChar)` executes **before** Core removes that bit and invokes `OnPlayerFirstLogin`.
+- The owner Playerbots `RandomPlayerbotFactory::CreateRandomBot` instead creates a `Player` directly, then calls `player->SetAtLoginFlag(AT_LOGIN_NONE)` and saves it using `SaveToDB(true, false)`. The pinned Core `Player` constructor defaults `m_atLoginFlags` to `AT_LOGIN_NONE=0`, `Player::Create` does **not** add `AT_LOGIN_FIRST`, and `SetAtLoginFlag` performs bitwise OR. **OR with zero sets no first-login bit.**
+- Therefore an otherwise well-gated IP first-start policy that *requires* `HasAtLoginFlag(AT_LOGIN_FIRST)` would **miss newly generated Playerbots**; conversely, setting `AT_LOGIN_FIRST` globally on bots just to reuse human first-login logic might trigger unrelated Core first-login behaviour and is **NOT APPROVED**.
+
+**Required next implementation design:** a dedicated, owner-thread positive RandomBot creation provenance, persisted (or restart-fail-closed) across asynchronous bot creation and first admission, with independent identity, saved quest-marker and era/cap checks. Never silently set the human `AT_LOGIN_FIRST` bit, and never infer newness merely from no stage8 marker, level1, bot account, `currentBots` selection or raw headless Wrath session. Separate test-only model [IP #124](https://github.com/CosmicCuddle/mod-individual-progression/pull/124) continues to require a caller-supplied `GenuineFirstCreationEvidence` proof; this source analysis demonstrates **that proof is not currently supplied by normal Core flags**. Actual DB schema and first-creation provenance ownership must be reviewed before writing stage8.
+
 ## Cross-repository source check: session expansion is not earned progression
 
 On the pinned owner Core fork `WorldSession.cpp`, `_headless(!sock)` classifies a session as headless when its socket pointer is absent. In pinned Playerbots `PlayerbotHolder::AddPlayerBot`, the synthetic bot `WorldSession` is created with `nullptr` socket **and** raw `EXPANSION_WRATH_OF_THE_LICH_KING` session value before loading the Player. In owner IP #46, `IndividualProgressionPlayer.cpp::OnPlayerLogin` still assigns stage **0 for level <=60** to bot/excluded accounts unless the optional already-earned saved-stage preservation branch succeeds. Stage 8 is assigned for levels 61–70, stage 13 above level70; this is NOT the requested positive initial stage8 for eligible race10/11 RandomBots. `TbcRacesStartingProgression` is applied in a distinct normal-account branch, so it is not a substitute for the selected RandomBot rule.

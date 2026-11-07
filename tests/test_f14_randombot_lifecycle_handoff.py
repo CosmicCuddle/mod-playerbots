@@ -13,9 +13,13 @@ MGR = ROOT / "src/Bot/RandomPlayerbotMgr.cpp"
 HEADER = ROOT / "src/Bot/RandomPlayerbotMgr.h"
 HOLDER = ROOT / "src/Bot/PlayerbotMgr.cpp"
 FACTORY = ROOT / "src/Bot/Factory/PlayerbotFactory.cpp"
+RANDOM_FACTORY = ROOT / "src/Bot/Factory/RandomPlayerbotFactory.cpp"
 # CI-only pinned read-only owner repositories. No customer/host data.
 CORE_CPP = ROOT / "owner-core/src/server/game/Server/WorldSession.cpp"
 CORE_H = ROOT / "owner-core/src/server/game/Server/WorldSession.h"
+CORE_PLAYER_H = ROOT / "owner-core/src/server/game/Entities/Player/Player.h"
+CORE_PLAYER_CPP = ROOT / "owner-core/src/server/game/Entities/Player/Player.cpp"
+CORE_CHAR_HANDLER = ROOT / "owner-core/src/server/game/Handlers/CharacterHandler.cpp"
 IP_PLAYER = ROOT / "owner-ip/src/IndividualProgressionPlayer.cpp"
 WORLD_SCRIPT = ROOT / "src/Script/Playerbots.cpp"
 WORLD_PROC = ROOT / "src/Script/WorldThr/PlayerbotWorldThreadProcessor.cpp"
@@ -36,8 +40,12 @@ class LifecycleSourceAudit(unittest.TestCase):
         cls.manager_header = HEADER.read_text(encoding="utf-8")
         cls.holder = HOLDER.read_text(encoding="utf-8")
         cls.factory = FACTORY.read_text(encoding="utf-8")
+        cls.random_factory = RANDOM_FACTORY.read_text(encoding="utf-8")
         cls.core_cpp = CORE_CPP.read_text(encoding="utf-8")
         cls.core_h = CORE_H.read_text(encoding="utf-8")
+        cls.core_player_h = CORE_PLAYER_H.read_text(encoding="utf-8")
+        cls.core_player_cpp = CORE_PLAYER_CPP.read_text(encoding="utf-8")
+        cls.core_char_handler = CORE_CHAR_HANDLER.read_text(encoding="utf-8")
         cls.ip_player = IP_PLAYER.read_text(encoding="utf-8")
         cls.world_script = WORLD_SCRIPT.read_text(encoding="utf-8")
         cls.world_processor = WORLD_PROC.read_text(encoding="utf-8")
@@ -232,6 +240,36 @@ class LifecycleSourceAudit(unittest.TestCase):
         self.assertIn("if (!botAI)", body)
         # Present runtime has no F14 publication/retirement. Actual future
         # retirement must precede removed/deleted pointers and all data races.
+
+    def test_16_new_random_bot_does_not_mark_at_login_first(self):
+        # Requiring the normal human first-login bit as a PB "fresh" proof
+        # would silently exclude freshly generated real RandomBots.
+        bot_create = between(
+            self.random_factory,
+            "Player* RandomPlayerbotFactory::CreateRandomBot(",
+            "std::string const RandomPlayerbotFactory::CreateRandomBotName(")
+        self.assertIn("player->Create(", bot_create)
+        self.assertIn("player->SetAtLoginFlag(AT_LOGIN_NONE);", bot_create)
+        self.assertNotIn("SetAtLoginFlag(AT_LOGIN_FIRST)", bot_create)
+        self.assertIn("AT_LOGIN_NONE              = 0x00,", self.core_player_h)
+        self.assertIn("AT_LOGIN_FIRST             = 0x20,", self.core_player_h)
+        self.assertIn("void SetAtLoginFlag(AtLoginFlags f) { m_atLoginFlags |= f; }",
+                      self.core_player_h)
+        self.assertIn("m_atLoginFlags = AT_LOGIN_NONE;", self.core_player_cpp)
+        # Core Player::Create does not add a FIRST flag implicitly.
+        self.assertNotIn("SetAtLoginFlag(AT_LOGIN_FIRST)", self.core_player_cpp)
+
+    def test_17_normal_human_first_login_flag_is_not_random_bot_proof(self):
+        self.assertIn("newChar->SetAtLoginFlag(AT_LOGIN_FIRST);", self.core_char_handler)
+        self.assertIn("sScriptMgr->OnPlayerLogin(pCurrChar);", self.core_char_handler)
+        self.assertIn("pCurrChar->RemoveAtLoginFlag(AT_LOGIN_FIRST);", self.core_char_handler)
+        self.assertIn("sScriptMgr->OnPlayerFirstLogin(pCurrChar);", self.core_char_handler)
+        self.assertLess(self.core_char_handler.index("sScriptMgr->OnPlayerLogin(pCurrChar);"),
+                        self.core_char_handler.index("pCurrChar->RemoveAtLoginFlag(AT_LOGIN_FIRST);"))
+        # This proves a human-creation lifecycle, not PB birth provenance.
+        self.assertNotIn("AT_LOGIN_FIRST", self.random_factory.split(
+            "Player* RandomPlayerbotFactory::CreateRandomBot(",1)[1].split(
+            "std::string const RandomPlayerbotFactory::CreateRandomBotName(",1)[0])
 
 if __name__ == "__main__":
     unittest.main()
