@@ -3,6 +3,9 @@ on:
   push:
     branches:
       - feature/cs01-f14-rndbot-earned-marker-preserve-off-20261107
+  pull_request:
+    branches:
+      - development/first-test-pinned-20261107
 permissions:
   contents: read
 jobs:
