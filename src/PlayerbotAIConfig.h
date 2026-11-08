@@ -143,6 +143,9 @@ public:
     // Separate, opt-in exact transaction callback + row readback observation.
     // Not a trust grant; disabled independent of the birth probe.
     bool F14AuditNewBirthCommitReadback = false;
+    // Independent manual Vanilla-only F14 RNDbot population hold. OFF by
+    // default. Does not infer real TBC availability or grant an IP stage.
+    std::atomic_bool F14HoldTbcRaceRandomBotsDuringVanilla{false};
     bool RandomBotAutologin;
     bool BotAutologin;
     std::string RandomBotMapsAsString;
