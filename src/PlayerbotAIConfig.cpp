@@ -255,6 +255,9 @@ bool PlayerbotAIConfig::Initialize()
     BotAutologin = sConfigMgr->GetOption<bool>("Playerbots.BotAutologin", false);
     F14TrackNewRandomBotBirth = sConfigMgr->GetOption<bool>("Playerbots.F14TrackNewRandomBotBirth", false);
     F14AuditNewBirthCommitReadback = sConfigMgr->GetOption<bool>("Playerbots.F14AuditNewBirthCommitReadback", false);
+    F14HoldTbcRaceRandomBotsDuringVanilla.store(
+        sConfigMgr->GetOption<bool>("Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla", false),
+        std::memory_order_release);
     RandomBotAutologin = sConfigMgr->GetOption<bool>("Playerbots.RandomBotAutologin", true);
     MinRandomBots = sConfigMgr->GetOption<int32>("Playerbots.MinRandomBots", 500);
     MaxRandomBots = sConfigMgr->GetOption<int32>("Playerbots.MaxRandomBots", 500);
