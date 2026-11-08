@@ -12,7 +12,7 @@ namespace CosmicF14VanillaTbcPopulationHold
 enum class Result : std::uint8_t
 {
     StockAdmissionPath,     // Leave all existing selection logic untouched.
-    HoldBeforeAddEvent      // Refuse selection before "add"/currentBots writes.
+    HoldBeforeAddEvent      // Refuse candidate selection before any admission side effect.
 };
 
 constexpr Result Decide(bool manuallyEnabledForVanilla,
