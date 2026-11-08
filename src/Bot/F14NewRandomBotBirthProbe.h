@@ -32,7 +32,7 @@ public:
         if (_records.size() >= MaxCandidates || _records.find(guid) != _records.end())
             return false;
 
-        _records.emplace(guid, Record{account, race, false, false});
+        _records.emplace(guid, Record{account, race, false, false, false});
         return true;
     }
 
@@ -55,6 +55,38 @@ public:
 
         it->second.Consumed = true;
         return true;
+    }
+
+    // Separate database observation, NOT a first-born/stage entitlement.
+    // The factory may set this only after the exact per-character transaction
+    // callback reported success AND an independent row readback matched
+    // GUID, account, race and name. Old orphan quest/paid rows are NOT ruled
+    // out by this observation. The audit is optional/OFF by default.
+    bool MarkCommittedRowReadback(std::uint32_t guid, std::uint32_t account,
+                                  std::uint8_t race)
+    {
+        std::lock_guard<std::mutex> lock(_lock);
+        auto it = _records.find(guid);
+        if (it == _records.end() || it->second.Account != account ||
+            it->second.Race != race || it->second.Retired ||
+            it->second.CommittedRowReadback)
+            return false;
+        it->second.CommittedRowReadback = true;
+        return true;
+    }
+
+    // Stronger than same-process admission alone, but STILL not permission
+    // for stage8, WHO suppression, human/NPC concealment or paid entitlement.
+    // Survives neither process restart nor retirement; no DB writes.
+    bool HasAuditedRowAndUnretiredAdmission(std::uint32_t guid,
+                                             std::uint32_t account,
+                                             std::uint8_t race) const
+    {
+        std::lock_guard<std::mutex> lock(_lock);
+        auto it = _records.find(guid);
+        return it != _records.end() && it->second.Account == account &&
+            it->second.Race == race && it->second.CommittedRowReadback &&
+            it->second.Consumed && !it->second.Retired;
     }
 
     // Idempotent and fail-closed: old login callbacks cannot revive a retired
@@ -89,6 +121,7 @@ private:
         std::uint8_t Race;
         bool Consumed;
         bool Retired;
+        bool CommittedRowReadback;
     };
 
     static constexpr std::size_t MaxCandidates = 16384;
