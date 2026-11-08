@@ -100,6 +100,17 @@ Playerbots.F14TrackNewRandomBotBirth = 0
 # hides anyone or modifies saved progression. Do not use as production policy.
 Playerbots.F14AuditNewBirthCommitReadback = 0
 
+# F14 manual Vanilla-only RandomBot population hold (DRAFT, default OFF).
+# When explicitly ON in an owner-approved *isolated offline test*, skip new
+# Blood Elf/Draenei candidates from Playerbots' assigned RandomBot account
+# pool BEFORE writing the "add" event or adding the GUID to currentBots.
+# This does not delete/alter characters, quests, level, birth history or SQL.
+# This is a MANUAL hold, NOT automatic IP/TBC-era detection. It does not
+# retire already selected/online bots or block other login paths. Leave OFF
+# for normal operation until the trusted IP era + stage floor + visibility
+# and combat rights integration is reviewed and real clients tested.
+Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0
+
 Playerbots.RandomBotAutologin = 1
 
 # Randombot count
