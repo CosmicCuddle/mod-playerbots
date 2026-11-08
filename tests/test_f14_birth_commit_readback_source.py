@@ -47,8 +47,15 @@ class CommitReadbackSource(unittest.TestCase):
         block = self.factory[a:b]
         for expected in (
             "GetPreparedStatement(CHAR_SEL_CHECK_GUID)",
-            "f14BeforeSaveAbsent = !CharacterDatabase.Query(pre);",
-            "if (f14AuditRequested && f14BeforeSaveAbsent)",
+            "if (!CharacterDatabase.Query(pre))",
+            "if (f14AuditRequested && f14BeforeSaveRelevantRowsAbsent)",
+            "SELECT COUNT(*) FROM character_settings WHERE guid = {}",
+            "SELECT COUNT(*) FROM character_queststatus_rewarded WHERE guid = {}",
+            "SELECT COUNT(*) FROM character_queststatus WHERE guid = {}",
+            "oldSettings && oldRewarded && oldQuests",
+            "oldSettings->Fetch()[0].Get<uint64>() == 0",
+            "oldRewarded->Fetch()[0].Get<uint64>() == 0",
+            "oldQuests->Fetch()[0].Get<uint64>() == 0",
             "CharacterDatabase.BeginTransaction()",
             "playerBot->SaveToDB(birthTrans, true, false);",
             "CharacterDatabase.AsyncCommitTransaction(birthTrans)",
@@ -67,6 +74,21 @@ class CommitReadbackSource(unittest.TestCase):
         self.assertLess(block.index("CHAR_SEL_CHECK_GUID"), block.index("SaveToDB(birthTrans"))
         self.assertLess(block.index("SaveToDB(birthTrans"), block.index("AsyncCommitTransaction("))
         self.assertLess(block.index("AsyncCommitTransaction("), block.index("MarkCommittedRowReadback("))
+
+    def test_missing_failed_or_old_saved_tables_all_veto_audit(self):
+        section = self.factory[
+            self.factory.index("if (f14AuditRequested)"):
+            self.factory.index("if (f14AuditRequested && f14BeforeSaveRelevantRowsAbsent)")
+        ]
+        self.assertIn("if (!CharacterDatabase.Query(pre))", section)
+        for table in ("character_settings", "character_queststatus_rewarded",
+                      "character_queststatus"):
+            self.assertIn("SELECT COUNT(*) FROM " + table + " WHERE guid = {}", section)
+        for result in ("oldSettings", "oldRewarded", "oldQuests"):
+            self.assertIn(result + " &&", section)
+            self.assertIn(result + "->Fetch()[0].Get<uint64>() == 0", section)
+        self.assertNotIn("DELETE FROM", section)
+        self.assertNotIn("UPDATE ", section)
 
     def test_callback_is_pointer_free_and_polled_after_stock_queue(self):
         a = self.factory.index("receipt.AfterComplete(")
