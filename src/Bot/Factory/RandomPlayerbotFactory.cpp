@@ -828,6 +828,23 @@ void RandomPlayerbotFactory::CreateRandomBots()
                 }
             }
 
+            // Opt-in audit must NEVER fall through to the stock SaveToDB
+            // after detecting a reused GUID, orphaned old data or a failed
+            // read-only preflight query. That would still save a new
+            // character under an untrusted GUID while only denying the
+            // audit receipt. Skip this proposed bot entirely; never touch
+            // existing SQL rows, cache, birth probe, or bot_creation counter.
+            // No behavior change with either audit setting OFF.
+            if (f14AuditRequested && !f14BeforeSaveRelevantRowsAbsent)
+            {
+                LOG_WARN("playerbots",
+                    "F14 audited RandomBot creation vetoed for GUID {} (pre-save data unknown or present); no character saved",
+                    f14Guid);
+                playerBot->CleanupsBeforeDelete();
+                delete playerBot;
+                continue;
+            }
+
             if (f14AuditRequested && f14BeforeSaveRelevantRowsAbsent)
             {
                 // No stage grant. Original selected bot character SQL write

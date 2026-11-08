@@ -28,6 +28,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "F14VanillaTbcRandomBotPopulationHold.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -759,6 +760,24 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
         // Lambda to handle bot login logic
         auto tryLoginBot = [&](CharacterInfo const& charInfo) -> bool
         {
+            // F14 OWNER VANILLA-ONLY MANUAL HOLD (opt-in, normally OFF).
+            // All four faction-selection phases share this one lambda.
+            // This scope contains only candidates fetched from assigned
+            // RandomBot type-1 accounts, not human/Altbot login callbacks.
+            // Recheck typed account pool membership; an unverified account
+            // is never claimed to be a genuine RandomBot for this hold.
+            // Refuse BEFORE "add"/"logout" events, currentBots or login.
+            // Already active bots, IP quests and character rows are untouched.
+            bool const fromAssignedRandomBotPool =
+                std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(),
+                          charInfo.accountId) != rndBotTypeAccounts.end();
+            if (CosmicF14VanillaTbcPopulationHold::Decide(
+                    sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+                        std::memory_order_acquire),
+                    fromAssignedRandomBotPool, charInfo.rRace) ==
+                CosmicF14VanillaTbcPopulationHold::Result::HoldBeforeAddEvent)
+                return false;
+
             if (GetEventValue(charInfo.guid, "add") ||
                 GetEventValue(charInfo.guid, "logout") ||
                 GetPlayerBot(charInfo.guid) ||
