@@ -800,15 +800,35 @@ void RandomPlayerbotFactory::CreateRandomBots()
             bool const f14AuditRequested = sPlayerbotAIConfig.F14TrackNewRandomBotBirth &&
                 sPlayerbotAIConfig.F14AuditNewBirthCommitReadback &&
                 (f14Race == RACE_BLOODELF || f14Race == RACE_DRAENEI);
-            bool f14BeforeSaveAbsent = false;
+            bool f14BeforeSaveRelevantRowsAbsent = false;
             if (f14AuditRequested)
             {
+                // Fail closed on any old character row, including a deleted
+                // entry. This check alone cannot find leftover linked tables.
                 CharacterDatabasePreparedStatement* pre = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHECK_GUID);
                 pre->SetData(0, f14Guid);
-                f14BeforeSaveAbsent = !CharacterDatabase.Query(pre);
+                if (!CharacterDatabase.Query(pre))
+                {
+                    // Historical PB account cleanup does not explicitly
+                    // list character_settings. A reused GUID could inherit
+                    // an orphan IP paid receipt or earned/active quest data.
+                    // All COUNT queries MUST return a row; failed queries
+                    // are ambiguous and must never count as clean.
+                    QueryResult oldSettings = CharacterDatabase.Query(
+                        "SELECT COUNT(*) FROM character_settings WHERE guid = {}", f14Guid);
+                    QueryResult oldRewarded = CharacterDatabase.Query(
+                        "SELECT COUNT(*) FROM character_queststatus_rewarded WHERE guid = {}", f14Guid);
+                    QueryResult oldQuests = CharacterDatabase.Query(
+                        "SELECT COUNT(*) FROM character_queststatus WHERE guid = {}", f14Guid);
+                    f14BeforeSaveRelevantRowsAbsent =
+                        oldSettings && oldRewarded && oldQuests &&
+                        oldSettings->Fetch()[0].Get<uint64>() == 0 &&
+                        oldRewarded->Fetch()[0].Get<uint64>() == 0 &&
+                        oldQuests->Fetch()[0].Get<uint64>() == 0;
+                }
             }
 
-            if (f14AuditRequested && f14BeforeSaveAbsent)
+            if (f14AuditRequested && f14BeforeSaveRelevantRowsAbsent)
             {
                 // No stage grant. Original selected bot character SQL write
                 // belongs to this transaction, NOT a second SaveToDB call.
