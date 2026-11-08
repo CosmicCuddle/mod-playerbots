@@ -140,6 +140,9 @@ public:
     uint32 OpenGoSpell;
     // F14 instrumentation ONLY. Default OFF: never grants a tier or hides an actor.
     bool F14TrackNewRandomBotBirth = false;
+    // Separate, opt-in exact transaction callback + row readback observation.
+    // Not a trust grant; disabled independent of the birth probe.
+    bool F14AuditNewBirthCommitReadback = false;
     bool RandomBotAutologin;
     bool BotAutologin;
     std::string RandomBotMapsAsString;
