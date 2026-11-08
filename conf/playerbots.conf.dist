@@ -92,6 +92,14 @@ Playerbots.Enabled = 1
 # Requires owner approval before enabling outside a disposable test server.
 Playerbots.F14TrackNewRandomBotBirth = 0
 
+# F14 optional PRE-STAGE audit, disabled by default, requires birth tracking too.
+# If explicitly enabled on an approved disposable offline test only, a new
+# Blood Elf/Draenei RandomBot's character SAVE uses a result-bearing Core
+# transaction and validates the exact GUID/account/race/name DB row. Still
+# DOES NOT prove absence of old orphan quest/paid rows; NEVER grants stage8,
+# hides anyone or modifies saved progression. Do not use as production policy.
+Playerbots.F14AuditNewBirthCommitReadback = 0
+
 Playerbots.RandomBotAutologin = 1
 
 # Randombot count
