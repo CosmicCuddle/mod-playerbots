@@ -1,0 +1,37 @@
+# F14 — opt-in Vanilla-only preactivation hold for Blood Elf/Draenei RandomBots
+
+**Owner:** CosmicCuddle. **Date:** 8 November 2026. **Maintainer:** CS01 Server-Side-Maintenance. **Status:** unmerged review-only DRAFT, new switch OFF; no live deployment.
+
+## Confirmed owner's gameplay rule
+
+In [F14 coordination #9](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/9#issuecomment-6533210998), genuine Playerbots RandomBots of race 10 (Blood Elf) or 11 (Draenei) must **begin at TBC stage 8 or later**, not Vanilla stages 0–7. While TBC is not actually available, those RandomBots must **not** be scheduled into Vanilla player population or groups and must not be secretly granted stage 8 above an effective Vanilla cap. Real human, Altbot, SelfBot and Unknown targets are not to be globally hidden or modified. No gameplay rule for legacy saved0–7 migration or higher-stage reroll preservation has been added here.
+
+## Exact source slice
+
+**Parent immutable PB10:** `afc38bf798cd1c96a097ebf5229e041ed0dc4253`, existing [Playerbots DRAFT #10](https://github.com/CosmicCuddle/mod-playerbots/pull/10). The historical [`RandomPlayerbotMgr::AddRandomBots()`](https://github.com/CosmicCuddle/mod-playerbots/blob/afc38bf798cd1c96a097ebf5229e041ed0dc4253/src/Bot/RandomPlayerbotMgr.cpp#L688-L840) obtains character candidates by querying accounts already assigned **RandomBot type 1**, carries account/race/class/GUID fields into each `CharacterInfo`, then schedules via one `tryLoginBot` lambda shared by the three faction-selection passes. Phase four only reports shortage. Original scheduling writes an `add` event and inserts the GUID into `currentBots` **before later PlayerScript login**. The later `IsRandomBot(Player*)` query is not valid authority before this insertion.
+
+This child adds a small independent **manual** operator option:
+
+```ini
+Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0
+```
+
+Default OFF means **all original admission logic remains unchanged**. If explicitly switched ON *only in a separately approved disposable offline Vanilla test*, the shared `tryLoginBot` checks both assigned RandomBot account-pool membership and candidate race 10/11, and for a match **returns false BEFORE any new add/logout-event writes or `currentBots.insert`**. It does not delete bots, characters, saved quest markers or account assignments, does not change a player's IP tier/level, and does not send visibility packets. It does **not** log out or retire already active RandomBots. Other-race candidates continue through the exact original selector.
+
+**Critical caution:** this option is manually controlled, **NOT automatic trusted expansion/era detection**. Turning it ON in a TBC-eligible world would unnecessarily hold legitimate race10/11 bots; turning it OFF in Vanilla would leave the original risk. It is NOT the eventual automatic producer of "TBC truly available" and must not be presented as the full F14 solution. It never upgrades new bot stage0 to TBC stage8. It does not cover standalone bot login, restart-restored active selections, chat/GM addition, or alternate creation and selection paths. Under strict maximum-population targets, it can cause the existing generic "more accounts needed" shortage diagnostic even when accounts exist, because candidate admission was intentionally held; operator MUST NOT respond by deleting/recreating accounts or changing SQL. The later trusted IP/Playerbots/Core observer/group and stage/paid policy remains necessary.
+
+## Original changes and compatibility
+
+Only `src/Bot/RandomPlayerbotMgr.cpp` adds the include and pre-`add` veto; only `src/PlayerbotAIConfig.{h,cpp}` adds an independent atomic_bool OFF and normal config-loader read, and `conf/playerbots.conf.dist` documents the new OFF switch. One portable C++17/C++20 policy header, one portable 1,024-case native model, and one source preservation test are new. No first-birth factory, existing quest reset/preserve mask, other config defaults, Core, IP, Naxx, Services, SQL/DB, DBC, client or engine API touched.
+
+Tests: exact original PB10 manager-body reconstruction, true type1 candidate pool, all three scheduling phase calls using the same lambda, guard before any `add`/logout/event/cached GUID mutation, original two birth flags OFF, compile-time matrix for other races/humans not affected by global hide, GCC/Clang C++17/20 native standalone model, and exact changed-path CI allowlist. These are SOURCE/MODEL tests, not world gameplay. The new C++ runtime field requires a separate exact Core/PB/IP/Naxx/Services **native Worldserver compilation** before this DRAFT is considered S4 compatible.
+
+## Next required work and release gate
+
+1. Obtain a **trusted, independently verified actual world/IP TBC availability and refresh/reload snapshot** on the owning thread; neither `ProgressionLimit=0`, level cap60, session's raw Wrath expansion nor caller race can act as the authority.
+2. Cover all population/login/rehydration paths including already selected/online candidates; preserve existing race10/11 bots and history without migration or deletion, and avoid leaking Vanilla faction/class encounters.
+3. Establish a durable first-committed-birth/no-orphan-GUID-data proof and separate paid-exception policy BEFORE any stage8 writer. Keep `IndividualProgression.F14.ForceVerifiedRandomBotTbcFloorOnLogin` OFF until then.
+4. Complete actual per-viewer World/WHO/NPC rights, attackers/corpses/loot/pets/DoT/assists, Core pass token, client re-create and restore evidence. Claude's independent E1 ended-pass replay correction is still pending in [coordination #13](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/13).
+5. Confirm all installed host module versions, effective settings, tracked/untracked/**ignored** custom SQL and backup/restore before **owner-approved offline S5/S6 game tests**.
+
+**Rollback:** discard this isolated DRAFT, retain exact PB10. With switch OFF no existing behavior should change. Never enable or deploy to CosmicCuddle's live server on these source/model results alone. No shell command, SQL, migration, account deletion or owner PC operation performed.
