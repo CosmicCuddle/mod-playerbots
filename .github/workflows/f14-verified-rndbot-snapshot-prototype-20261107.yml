@@ -1,0 +1,91 @@
+name: F14 immutable positive RandomBot identity snapshot PROTOTYPE ONLY
+
+on:
+  push:
+    branches:
+      - research/cs01-f14-immutable-rndbot-identity-prototype-20261107
+  pull_request:
+    branches:
+      - feature/cs01-f14-rndbot-earned-marker-preserve-off-20261107
+permissions:
+  contents: read
+jobs:
+  f14-identity-prototype-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Protect original parent and ensure test-only six-path diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=ffdeb199d4ba5a058cf2176139e7cb5c7e19755c
+          git merge-base --is-ancestor "$parent" HEAD
+          git diff --check "$parent"
+          git diff --name-only "$parent" HEAD | sort >/tmp/actual
+          printf '%s\n' \
+            tests/f14_immutable_verified_randombot_snapshot.h \
+            tests/f14_immutable_verified_randombot_snapshot.cpp \
+            tests/test_f14_immutable_verified_randombot_snapshot.py \
+            tests/test_f14_randombot_lifecycle_handoff.py \
+            .github/workflows/f14-verified-rndbot-snapshot-prototype-20261107.yml \
+            docs/F14-IMMUTABLE-RNDBOT-IDENTITY-PROTOTYPE-20261107.md | sort >/tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          test -z "$(git diff --name-only "$parent" HEAD -- src/ conf/ data/)"
+          echo 'PASS: no runtime changes, F14 still OFF'
+      - name: Checkout exact owner Core and IP SOURCE for read-only expansion/session crosscheck
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/azerothcore-wotlk
+          ref: 1e37f3343cf08618101b625601cd299f0a1770ca
+          path: owner-core
+          persist-credentials: false
+      - name: Checkout exact owner IP #46 source (no module execution)
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/mod-individual-progression
+          ref: 26d5b7a1de30ad92a595aaf251fc14754cf54f32
+          path: owner-ip
+          persist-credentials: false
+      - name: Verify pinned owner source SHA before cross-repository test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C owner-core rev-parse HEAD)" = 1e37f3343cf08618101b625601cd299f0a1770ca
+          test "$(git -C owner-ip rev-parse HEAD)" = 26d5b7a1de30ad92a595aaf251fc14754cf54f32
+          echo 'PASS exact Core/IP source, no database, account, host or runtime use'
+      - name: Source guards prevent accidental live wiring
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_f14_immutable_verified_randombot_snapshot.py' -v
+          python3 -B -m unittest discover -s tests -p 'test_f14_randombot_lifecycle_handoff.py' -v
+      - name: Native immutable snapshot semantics and eight workers (eight C++ variants)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$compiler" "-std=$std" -pthread -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                  tests/f14_immutable_verified_randombot_snapshot.cpp -Itests -o /tmp/f14-actor-snapshot
+                /tmp/f14-actor-snapshot
+              done
+            done
+          done
+      - name: Original C++ prototype eight workers under ThreadSanitizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -g -O1 -fsanitize=thread -pthread -Itests \
+            tests/f14_immutable_verified_randombot_snapshot.cpp -o /tmp/f14-actor-tsan
+          TSAN_OPTIONS=halt_on_error=1 /tmp/f14-actor-tsan
+      - name: Explicit limitations
+        run: |
+          echo 'TEST-ONLY potential publication protocol, NO positive verified real session, no map ownership or loot rights.'
+          echo 'No Playerbots/Core/IP/Naxx/Services runtime source, config, SQL, database, character or client changes.'
+          echo 'A green test never means F14 world or WHO visibility is safe to enable.'
