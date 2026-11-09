@@ -1435,7 +1435,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     {
         // F14 manual Vanilla-only hold: currentBots may already contain
         // a scheduled GUID (including one restored before the hold changed).
-        // Refuse the actual AddPlayerBot load only for positively identified
+        // Refuse the pending bot load only for positively identified
         // assigned type-1 RandomBots of race 10/11. No event, cache, group,
         // quest, account or DB mutation. Already-online bots are untouched.
         if (sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
