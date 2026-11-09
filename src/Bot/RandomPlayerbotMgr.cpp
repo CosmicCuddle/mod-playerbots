@@ -30,6 +30,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "F14VanillaTbcRandomBotPopulationHold.h"
+#include "F14VanillaTbcRandomBotPopulationCount.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -58,6 +59,45 @@ struct GuidClassRaceInfo
     uint32 rClass;
     uint32 rRace;
 };
+
+namespace
+{
+// Do NOT remove held GUIDs or their persistent "add" events to reduce counts:
+// they are the owner's existing characters. Recount only the effective
+// manual-Vanilla scheduling quota, based on both positively proven type-1
+// RandomBot assignment AND actual Core cached race. Unknown stays counted.
+// Keep the entire cache walk OFF in the default historical mode.
+std::size_t CountF14ScheduledRandomBotsForQuota(
+    std::unordered_set<uint32> const& currentBots,
+    std::vector<uint32> const& rndBotTypeAccounts)
+{
+    bool const manualVanillaHold =
+        sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+            std::memory_order_acquire);
+    if (!manualVanillaHold)
+        return currentBots.size();
+
+    std::unordered_set<uint32> const assignedRandomBotAccounts(
+        rndBotTypeAccounts.begin(), rndBotTypeAccounts.end());
+    return CosmicF14VanillaTbcRandomBotPopulationCount::CountForQuota(
+        manualVanillaHold, currentBots, [&](uint32 botGuid) -> bool
+        {
+            ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(botGuid);
+            CharacterCacheEntry const* entry =
+                sCharacterCache->GetCharacterCacheByGuid(guid);
+            if (!entry)
+                return false;
+
+            uint32 const account =
+                sCharacterCache->GetCharacterAccountIdByGuid(guid);
+            bool const positivelyAssignedRandomBot =
+                assignedRandomBotAccounts.contains(account);
+            return CosmicF14VanillaTbcPopulationHold::Decide(
+                true, positivelyAssignedRandomBot, entry->Race) ==
+                CosmicF14VanillaTbcPopulationHold::Result::HoldBeforeAddEvent;
+        });
+}
+} // namespace
 
 void PrintStatsThread() { sRandomPlayerbotMgr.PrintStats(); }
 
@@ -317,7 +357,7 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
     // Copied deliberately: ProcessBot() erases from currentBots while this is
     // being iterated below, so the loops must run over a snapshot.
     std::unordered_set<uint32> availableBots = currentBots;
-    uint32 availableBotCount = availableBots.size();
+    uint32 availableBotCount = CountF14ScheduledRandomBotsForQuota(currentBots, rndBotTypeAccounts);
     uint32 onlineBotCount = playerBots.size();
 
     uint32 onlineBotFocus = 75;
@@ -666,10 +706,15 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
     uint32 maxAllowedBotCount = GetEventValue(0, "bot_count");
     static time_t missingBotsTimer = 0;
 
-    if (currentBots.size() < maxAllowedBotCount)
+    // Count only genuinely eligible scheduled bots when the separate manual
+    // Vanilla hold is ON. The held GUIDs and their saved "add" events remain.
+    // When OFF, the helper returns the exact original currentBots.size().
+    uint32 const eligibleScheduledBotCount =
+        CountF14ScheduledRandomBotsForQuota(currentBots, rndBotTypeAccounts);
+    if (eligibleScheduledBotCount < maxAllowedBotCount)
     {
-        // Calculate how many bots to add
-        maxAllowedBotCount -= currentBots.size();
+        // Calculate how many eligible bots to add, without deleting old bots.
+        maxAllowedBotCount -= eligibleScheduledBotCount;
         maxAllowedBotCount = std::min(sPlayerbotAIConfig.RandomBotsPerInterval, maxAllowedBotCount);
 
         // Single RNG instance for all shuffling
