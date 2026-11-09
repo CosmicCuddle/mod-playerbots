@@ -254,6 +254,18 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder con
 {
     uint32 botAccountId = holder.GetAccountId();
 
+    // The Vanilla-only hold may have been enabled while the async holder was
+    // pending. Verify selected GUID + assigned type1 + matching cached
+    // account + race 10/11 BEFORE constructing a Player from the DB reply.
+    // Never free botSession inside its own callback: UpdatePendingLogins()
+    // performs normal deferred teardown after ProcessQueryCallbacks() returns.
+    if (sRandomPlayerbotMgr.ShouldHoldF14PendingRandomBotLogin(
+            holder.GetGuid(), botAccountId, holder.GetMasterAccountId() == 0))
+    {
+        AbandonPendingLogin(holder.GetGuid());
+        return;
+    }
+
     botSession->HandlePlayerLoginFromDB(holder);  // will delete lqh
 
     Player* bot = botSession->GetPlayer();

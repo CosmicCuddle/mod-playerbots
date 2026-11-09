@@ -31,6 +31,7 @@
 #include "PlayerbotAIConfig.h"
 #include "F14VanillaTbcRandomBotPopulationHold.h"
 #include "F14VanillaTbcRandomBotPopulationCount.h"
+#include "F14VanillaTbcPendingRandomBotLoginHold.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -680,6 +681,32 @@ void RandomPlayerbotMgr::AssignAccountTypes()
     LOG_INFO("playerbots", "Account type assignment complete: {} RNDbot accounts, {} AddClass accounts, {} unassigned",
              rndBotTypeAccounts.size(), addClassTypeAccounts.size(),
              currentAssignments.size() - rndBotTypeAccounts.size() - addClassTypeAccounts.size());
+}
+
+// Recheck when the already-queued headless DB holder returns: the optional
+// manual Vanilla hold may have changed since the earlier scheduling check.
+// This is world-thread only; no DB updates, GUID/event erase or forced logout.
+// Missing cached identity or missing assigned type1 selection never blocks.
+bool RandomPlayerbotMgr::ShouldHoldF14PendingRandomBotLogin(
+    ObjectGuid const& guid, uint32 expectedAccountId, bool zeroMasterRequest) const
+{
+    bool const manualVanillaHold =
+        sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+            std::memory_order_acquire);
+    if (!manualVanillaHold || !zeroMasterRequest || !guid.IsPlayer())
+        return false;
+
+    bool const selectedGuid = currentBots.contains(guid.GetCounter());
+    CharacterCacheEntry const* entry = selectedGuid
+        ? sCharacterCache->GetCharacterCacheByGuid(guid) : nullptr;
+    uint32 const cachedAccountId = entry ? entry->AccountId : 0;
+    bool const assignedType1 = entry && std::find(
+        rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(),
+        expectedAccountId) != rndBotTypeAccounts.end();
+    uint8 const cachedRace = entry ? entry->Race : 0;
+    return CosmicF14VanillaPendingRandomBotLogin::ShouldHold(
+        manualVanillaHold, zeroMasterRequest, selectedGuid, entry != nullptr,
+        expectedAccountId, cachedAccountId, assignedType1, cachedRace);
 }
 
 bool RandomPlayerbotMgr::IsAccountType(uint32 accountId, uint8 accountType)
