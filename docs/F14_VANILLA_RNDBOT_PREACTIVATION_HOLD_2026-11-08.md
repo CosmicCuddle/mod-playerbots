@@ -35,3 +35,19 @@ Tests: exact original PB10 manager-body reconstruction, true type1 candidate poo
 5. Confirm all installed host module versions, effective settings, tracked/untracked/**ignored** custom SQL and backup/restore before **owner-approved offline S5/S6 game tests**.
 
 **Rollback:** discard this isolated DRAFT, retain exact PB10. With switch OFF no existing behavior should change. Never enable or deploy to CosmicCuddle's live server on these source/model results alone. No shell command, SQL, migration, account deletion or owner PC operation performed.
+
+## Follow-up: saved add-event startup replay guard (PB12 development DRAFT, OFF)
+
+The original `RandomPlayerbotMgr::GetBots()` also restores `currentBots` from saved Playerbots database `add` events on server restart. This route does **not** invoke the `AddRandomBots::tryLoginBot` selector. Without a separate guard, an old race10/11 type1 RandomBot may be re-admitted despite the manual Vanilla hold from PB11. The full owner F14 rule remains unfulfilled unless both paths and already-online bots are considered.
+
+The isolated PB12 child of PB11 adds only `#include "CharacterCache.h"` and an **extra, independently default-OFF read-only check inside that existing `GetBots()` event replay**:
+
+- Only while `Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla` is explicitly ON; OFF keeps the original event replay.
+- Use the original Core character-cache `CharacterCacheEntry::Race` and `GetCharacterAccountIdByGuid` to identify the GUID's account and race **without loading a player or running SQL writes**.
+- Compare that account with Playerbots' explicitly assigned `rndBotTypeAccounts` type1 pool. Only if cache entry exists, typed account is verified and race is 10 or 11 does the same pure `Decide()` policy skip in-memory `currentBots.insert`. Do NOT clear the existing database event, delete character/account, change quest markers, alter a saved level, grant stage8, or send a visibility packet.
+- If the cache entry is missing or typed account membership is unknown, leave the historical path unchanged rather than blanket-block human, Altbot, SelfBot or unknown records. That also means it is **not a complete fail-closed policy for missing identity**. A missing or not-yet-populated type1 pool on startup can fail to recognise an otherwise genuine RandomBot; startup ordering and independent loaded-cache consistency require native and actual isolated runtime tests.
+- A bot already held in `currentBots` or actively loaded before the switch changes is **not retired**. The `if (!currentBots.empty()) return` fast path remains untouched. A non-destructive, owner-approved active-bot handling policy is still required; do not auto-logout during combat or force group/quest changes.
+
+**Evidence boundary:** original PB11 manager text reconstructed exactly after removing only the CharacterCache include and the new saved-add replay guard; original AddRandomBots manual hold and all existing Playerbots birth/readback/reset logic preserved. Separate GCC/Clang 1,024-case pure `Decide` model plus source invariants; not proof of gameplay. A five-owner Core6/PB12/IP137/Naxx292/Services compile/link remains required before inclusion, and no live flag may be enabled without explicit CosmicCuddle approval.
+
+**Rollback:** discard this review-only child to restore identical PB11. Neither original stored `add` events nor data are deleted by this proposal.
