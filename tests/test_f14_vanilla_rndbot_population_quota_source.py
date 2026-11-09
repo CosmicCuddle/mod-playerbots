@@ -45,7 +45,7 @@ class F14QuotaOriginalSource(unittest.TestCase):
         cls.new = CPP.read_text(encoding="utf-8")
         cls.old = get_old()
         start = cls.new.index(COUNT_START)
-        end = cls.new.index(COUNT_END, start) + len(COUNT_END)
+        end = cls.new.index(COUNT_END, start) + len(COUNT_END) + 1
         cls.helper = cls.new[start:end]
 
     def test_only_count_helper_and_two_calls_are_new(self):
