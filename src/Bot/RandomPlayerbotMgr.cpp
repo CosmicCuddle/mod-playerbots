@@ -1433,6 +1433,27 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     uint32 randomTime;
     if (!player)
     {
+        // F14 manual Vanilla-only hold: currentBots may already contain
+        // a scheduled GUID (including one restored before the hold changed).
+        // Refuse the pending bot load only for positively identified
+        // assigned type-1 RandomBots of race 10/11. No event, cache, group,
+        // quest, account or DB mutation. Already-online bots are untouched.
+        if (sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+                std::memory_order_acquire))
+        {
+            CharacterCacheEntry const* entry =
+                sCharacterCache->GetCharacterCacheByGuid(botGUID);
+            uint32 const account =
+                sCharacterCache->GetCharacterAccountIdByGuid(botGUID);
+            bool const fromAssignedRandomBotPool =
+                std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(),
+                          account) != rndBotTypeAccounts.end();
+            if (entry && CosmicF14VanillaTbcPopulationHold::Decide(
+                    true, fromAssignedRandomBotPool, entry->Race) ==
+                CosmicF14VanillaTbcPopulationHold::Result::HoldBeforeAddEvent)
+                return false;
+        }
+
         AddPlayerBot(botGUID, 0);
         randomTime = urand(1, 2);
 
