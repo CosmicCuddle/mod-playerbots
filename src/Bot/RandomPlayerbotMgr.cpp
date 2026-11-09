@@ -12,6 +12,7 @@
 #include "Cell.h"
 #include "CellImpl.h"
 #include "ChannelMgr.h"
+#include "CharacterCache.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "DatabaseEnv.h"
@@ -2364,7 +2365,33 @@ void RandomPlayerbotMgr::GetBots()
             Field* fields = result->Fetch();
             uint32 bot = fields[0].Get<uint32>();
             if (GetEventValue(bot, "add"))
+            {
+                // F14 restart replay: when the separate manual Vanilla-only
+                // hold is ON, an old persisted "add" event must not bypass
+                // AddRandomBots::tryLoginBot's earlier pre-add refusal.
+                // Only hold a positively source-classified type-1 RandomBot
+                // whose real character cache race is BE/D. No guessed identity
+                // or race-only blanket refusal of human / Altbot records.
+                // Do not erase the event, character, quest markers or SQL;
+                // turning the option OFF restores original replay behavior.
+                if (sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+                        std::memory_order_acquire))
+                {
+                    ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(bot);
+                    CharacterCacheEntry const* entry =
+                        sCharacterCache->GetCharacterCacheByGuid(guid);
+                    uint32 const account = sCharacterCache->GetCharacterAccountIdByGuid(guid);
+                    bool const fromAssignedRandomBotPool =
+                        std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(),
+                                  account) != rndBotTypeAccounts.end();
+                    if (entry && CosmicF14VanillaTbcPopulationHold::Decide(
+                            true, fromAssignedRandomBotPool, entry->Race) ==
+                        CosmicF14VanillaTbcPopulationHold::Result::HoldBeforeAddEvent)
+                        continue;
+                }
+
                 currentBots.insert(bot);
+            }
 
             if (currentBots.size() >= maxAllowedBotCount)
                 break;
