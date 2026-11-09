@@ -24,7 +24,7 @@ int main()
         std::size_t calls = 0;
         auto predicate = [&](std::uint32_t botGuid) {
             ++calls;
-            return held.contains(botGuid);
+            return held.find(botGuid) != held.end();
         };
 
         // Manual OFF: exactly historical scheduled count, no cache calls.
