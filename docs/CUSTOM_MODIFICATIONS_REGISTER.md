@@ -204,3 +204,29 @@ config/SQL/DBC/client, risk, tests, source/build/live status, owner decision and
 - **Config merge recipe:** retain current upstream `RandomBotCountMode`, `RandomBotCountMinTime`, `RandomBotCountMaxTime` and its Min/Max validation; reinsert the three default-OFF F14 fields and the reset-marker atomic mask without reviving removed population members. Distributed config must likewise take the current upstream population section and add the F14 options independently.
 - **Required new regressions after restack:** hold OFF under count modes 0/1/2 must match upstream scheduling/downsize behavior; hold ON with enough held BE/D GUIDs to cross the target must neither starve eligible Vanilla bots nor cause false removals; target increases/decreases and live count-mode reloads must remain coherent; already-online BE/D bots are not silently deleted; Altbot/SelfBot/human GUIDs never enter the held-count predicate; upstream downsize logout must retire F14 session/actor evidence without reviving a stale identity.
 - **Status:** design/preservation finding only. No upstream merge, runtime code, config, SQL, bot logout, server start or deployment has been performed.
+
+
+### Playerbots upstream SQL applicability triage — PB19 restack (12 Nov 2026)
+
+The current upstream restack introduces four Playerbots updater files beyond protected PB15:
+
+- `2026_10_06_00_ai_playerbot_craft_link_texts.sql`
+- `2026_10_16_00_ai_playerbot_spanish_es-MX_texts.sql`
+- `2026_10_22_00_ai_playerbot_calc_breakdown_text.sql`
+- `2026_10_27_00_ai_playerbot_class_role_texts.sql`
+
+Read-only inspection confirms these affect Playerbots text/localisation tables only:
+- `ai_playerbot_texts`;
+- `ai_playerbot_texts_chance`;
+- primarily DELETE/INSERT replacement of named text records or localisation-column UPDATEs.
+
+They do **not** alter the F14 hold/account-type schema, bot population tables, character progression markers, Core world schema or account data.
+
+Risk is therefore lower than the accompanying Core25 SQL migrations, but application is still conditional:
+- verify the Playerbots updater history/version on the disposable DB copy;
+- back up the Playerbots database/text tables before catch-up;
+- preserve any owner-custom text rows/names that overlap these exact keys/IDs;
+- verify localisation and the `craft`, `calc`, and class-role command responses after update;
+- do not execute SQL as part of CI or merely because PB19 compiles.
+
+No SQL has been run by this audit.
