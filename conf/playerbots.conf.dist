@@ -83,6 +83,34 @@
 Playerbots.Enabled = 1
 
 # Enable randombot system
+# F14 first-created RandomBot diagnostic (research only, default OFF).
+# When enabled on an isolated test server, observe newly GENERATED Blood Elf
+# and Draenei RandomBots and correlate them with a later verified login in
+# the SAME running process. No SQL/DB receipt, stage8 grant, WHO/world hide
+# or corpse visibility changes. It does not recognise bots born before restart.
+# Never use this as paid eligibility or as permission to migrate saved stages.
+# Requires owner approval before enabling outside a disposable test server.
+Playerbots.F14TrackNewRandomBotBirth = 0
+
+# F14 optional PRE-STAGE audit, disabled by default, requires birth tracking too.
+# If explicitly enabled on an approved disposable offline test only, a new
+# Blood Elf/Draenei RandomBot's character SAVE uses a result-bearing Core
+# transaction and validates the exact GUID/account/race/name DB row. Still
+# DOES NOT prove absence of old orphan quest/paid rows; NEVER grants stage8,
+# hides anyone or modifies saved progression. Do not use as production policy.
+Playerbots.F14AuditNewBirthCommitReadback = 0
+
+# F14 manual Vanilla-only RandomBot population hold (DRAFT, default OFF).
+# When explicitly ON in an owner-approved *isolated offline test*, skip new
+# Blood Elf/Draenei candidates from Playerbots' assigned RandomBot account
+# pool BEFORE writing the "add" event or adding the GUID to currentBots.
+# This does not delete/alter characters, quests, level, birth history or SQL.
+# This is a MANUAL hold, NOT automatic IP/TBC-era detection. It does not
+# retire already selected/online bots or block other login paths. Leave OFF
+# for normal operation until the trusted IP era + stage floor + visibility
+# and combat rights integration is reviewed and real clients tested.
+Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0
+
 Playerbots.RandomBotAutologin = 1
 
 # Randombot count
@@ -1339,6 +1367,13 @@ Playerbots.botActiveAloneSmartScaleWhenMaxLevel = 80
 
 # Quests that will be completed and rewarded for all randombots
 Playerbots.RandomBotQuestIds = "3802,5505,6502,7761,7848,10277,10285,11492,13188,13189,24499,24511,24710,24712"
+
+# Optional preservation of already-earned Individual Progression hidden quests
+# 66001-66018 during verified RandomBot ResetQuests only. Empty = stock reset.
+# Does NOT grant new progression, preserve incomplete quests or affect Altbots.
+# Requires owner policy approval and offline in-game tests before enabling.
+# Default: empty (disabled)
+Playerbots.ResetQuestsPreserveQuestIds =
 
 # Randombots will group with nearby randombots to do shared quests
 # Note: Currently not functioning properly

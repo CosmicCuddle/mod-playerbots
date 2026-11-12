@@ -5,6 +5,7 @@
  */
 
 #include "RandomPlayerbotFactory.h"
+#include "F14NewRandomBotBirthProbe.h"
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
 #include "ArenaTeamMgr.h"
@@ -13,6 +14,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "DatabaseEnv.h"
+#include "Transaction.h"
 #include "LocaleColumns.h"
 #include "Log.h"
 #include "PlayerbotAI.h"
@@ -28,6 +30,7 @@
 #include "StringFormat.h"
 #include "Timer.h"
 #include "World.h"
+#include <utility>
 
 void RandomPlayerbotFactory::LoadLocalizedNameColumns()
 {
@@ -700,6 +703,10 @@ void RandomPlayerbotFactory::CreateRandomBots()
     uint32 totalRandomBotChars = 0;
     std::vector<std::pair<Player*, uint32>> playerBots;
     std::vector<WorldSession*> sessionBots;
+    // Held only until startup commit callbacks are polled. No Player or
+    // temporary WorldSession pointer escapes through these callbacks.
+    // Empty on every default-OFF configuration.
+    std::vector<TransactionCallback> f14BirthAuditCallbacks;
     int bot_creation = 0;
     timer = getMSTime();
     bool nameCached = false;
@@ -779,10 +786,104 @@ void RandomPlayerbotFactory::CreateRandomBots()
                 continue;
             }
 
-            playerBot->SaveToDB(true, false);
+            // Keep the exact upstream save path when the audit is OFF.
+            // The opt-in audit follows Core's result-bearing transaction
+            // model and never grants progression or visibility authority.
+            uint32 const f14Guid = playerBot->GetGUID().GetCounter();
+            uint8 const f14Race = playerBot->getRace();
+            bool const f14AuditRequested =
+                sPlayerbotAIConfig.F14TrackNewRandomBotBirth &&
+                sPlayerbotAIConfig.F14AuditNewBirthCommitReadback &&
+                (f14Race == RACE_BLOODELF || f14Race == RACE_DRAENEI);
+            bool f14BeforeSaveRelevantRowsAbsent = false;
+            if (f14AuditRequested)
+            {
+                // Fail closed on any old character row, including a deleted
+                // entry. Also reject any orphan IP receipt/quest state.
+                CharacterDatabasePreparedStatement* pre =
+                    CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHECK_GUID);
+                pre->SetData(0, f14Guid);
+                if (!CharacterDatabase.Query(pre))
+                {
+                    QueryResult oldSettings = CharacterDatabase.Query(
+                        "SELECT COUNT(*) FROM character_settings WHERE guid = {}", f14Guid);
+                    QueryResult oldRewarded = CharacterDatabase.Query(
+                        "SELECT COUNT(*) FROM character_queststatus_rewarded WHERE guid = {}", f14Guid);
+                    QueryResult oldQuests = CharacterDatabase.Query(
+                        "SELECT COUNT(*) FROM character_queststatus WHERE guid = {}", f14Guid);
+                    f14BeforeSaveRelevantRowsAbsent =
+                        oldSettings && oldRewarded && oldQuests &&
+                        oldSettings->Fetch()[0].Get<uint64>() == 0 &&
+                        oldRewarded->Fetch()[0].Get<uint64>() == 0 &&
+                        oldQuests->Fetch()[0].Get<uint64>() == 0;
+                }
+            }
+
+            // Never fall through to a normal save after an audited GUID was
+            // found dirty/ambiguous. Skip only this proposed new bot.
+            if (f14AuditRequested && !f14BeforeSaveRelevantRowsAbsent)
+            {
+                LOG_WARN(
+                    "playerbots",
+                    "F14 audited RandomBot creation vetoed for GUID {} (pre-save data unknown or present); no character saved",
+                    f14Guid);
+                playerBot->CleanupsBeforeDelete();
+                delete playerBot;
+                continue;
+            }
+
+            if (f14AuditRequested && f14BeforeSaveRelevantRowsAbsent)
+            {
+                CharacterDatabaseTransaction birthTrans =
+                    CharacterDatabase.BeginTransaction();
+                playerBot->SaveToDB(birthTrans, true, false);
+                TransactionCallback receipt =
+                    CharacterDatabase.AsyncCommitTransaction(birthTrans);
+                std::string const expectedName = playerBot->GetName();
+                receipt.AfterComplete(
+                    [f14Guid, accountId, f14Race, expectedName](bool committed)
+                    {
+                        if (!committed)
+                            return;
+
+                        CharacterDatabasePreparedStatement* post =
+                            CharacterDatabase.GetPreparedStatement(
+                                CHAR_SEL_DATA_BY_GUID);
+                        post->SetData(0, f14Guid);
+                        PreparedQueryResult row = CharacterDatabase.Query(post);
+                        if (!row)
+                            return;
+
+                        Field* fields = row->Fetch();
+                        if (fields[0].Get<uint32>() != f14Guid ||
+                            fields[1].Get<uint32>() != accountId ||
+                            fields[2].Get<std::string>() != expectedName ||
+                            fields[4].Get<uint8>() != f14Race)
+                            return;
+
+                        CosmicF14::NewRandomBotBirthProbe::Instance()
+                            .MarkCommittedRowReadback(
+                                f14Guid, accountId, f14Race);
+                    });
+                f14BirthAuditCallbacks.emplace_back(std::move(receipt));
+            }
+            else
+            {
+                // Includes every normal/default-OFF creation.
+                playerBot->SaveToDB(true, false);
+            }
+
             sCharacterCache->AddCharacterCacheEntry(playerBot->GetGUID(), accountId, playerBot->GetName(),
                                                     playerBot->getGender(), playerBot->getRace(),
                                                     playerBot->getClass(), playerBot->GetLevel());
+
+            // Research-only same-process candidate record. This is not a DB
+            // receipt, entitlement, stage grant or visibility decision.
+            if (sPlayerbotAIConfig.F14TrackNewRandomBotBirth)
+                CosmicF14::NewRandomBotBirthProbe::Instance().RecordCandidate(
+                    playerBot->GetGUID().GetCounter(), accountId,
+                    playerBot->getRace());
+
             playerBot->CleanupsBeforeDelete();
             delete playerBot;
             bot_creation++;
@@ -799,6 +900,12 @@ void RandomPlayerbotFactory::CreateRandomBots()
         }
         LOG_INFO("playerbots", ">> {} Characters loaded into database in {} ms", bot_creation, GetMSTimeDiffToNow(timer));
     }
+
+    // Queue-size drain is not a per-GUID receipt. Invoke only exact
+    // transaction callbacks whose futures completed; not-ready stays
+    // fail-closed and never becomes entitlement.
+    for (TransactionCallback& receipt : f14BirthAuditCallbacks)
+        receipt.InvokeIfReady();
 
     for (WorldSession* session : sessionBots)
         delete session;

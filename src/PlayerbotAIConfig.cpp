@@ -171,6 +171,18 @@ bool PlayerbotAIConfig::Initialize()
     MaxAoeAvoidRadius = sConfigMgr->GetOption<float>("Playerbots.MaxAoeAvoidRadius", 15.0f);
     LoadSet<std::set<uint32>>(sConfigMgr->GetOption<std::string>("Playerbots.AoeAvoidSpellWhitelist", "50759,57491,13810,29946"),
                               AoeAvoidSpellWhitelist);
+    // Preserve only explicitly selected existing IP earned quest markers.
+    // A value outside 66001..66018 grants nothing and is ignored.
+    std::set<uint32> requestedMarkers;
+    std::string const resetPreserveIds =
+        sConfigMgr->GetOption<std::string>("Playerbots.ResetQuestsPreserveQuestIds", "");
+    if (!resetPreserveIds.empty())
+        LoadSet<std::set<uint32>>(resetPreserveIds, requestedMarkers);
+    uint32 markerMask = 0;
+    for (uint32 id : requestedMarkers)
+        if (id >= 66001 && id <= 66018)
+            markerMask |= uint32(1) << (id - 66001);
+    ResetQuestsPreserveMask.store(markerMask, std::memory_order_release);
     TellWhenAvoidAoe = sConfigMgr->GetOption<bool>("Playerbots.TellWhenAvoidAoe", false);
 
     RandomGearLoweringChance = sConfigMgr->GetOption<float>("Playerbots.RandomGearLoweringChance", 0.0f);
@@ -247,6 +259,11 @@ bool PlayerbotAIConfig::Initialize()
         UnobtainableItems);
 
     BotAutologin = sConfigMgr->GetOption<bool>("Playerbots.BotAutologin", false);
+    F14TrackNewRandomBotBirth = sConfigMgr->GetOption<bool>("Playerbots.F14TrackNewRandomBotBirth", false);
+    F14AuditNewBirthCommitReadback = sConfigMgr->GetOption<bool>("Playerbots.F14AuditNewBirthCommitReadback", false);
+    F14HoldTbcRaceRandomBotsDuringVanilla.store(
+        sConfigMgr->GetOption<bool>("Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla", false),
+        std::memory_order_release);
     RandomBotAutologin = sConfigMgr->GetOption<bool>("Playerbots.RandomBotAutologin", true);
     MinRandomBots = sConfigMgr->GetOption<int32>("Playerbots.MinRandomBots", 500);
     MaxRandomBots = sConfigMgr->GetOption<int32>("Playerbots.MaxRandomBots", 500);

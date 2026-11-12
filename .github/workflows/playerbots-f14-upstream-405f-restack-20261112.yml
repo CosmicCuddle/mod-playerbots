@@ -1,0 +1,55 @@
+name: Playerbots F14 upstream 405f restack
+
+on:
+  push:
+    branches:
+      - sync/cs01-pb-upstream-405f811-f14-preservation-20261112
+  pull_request:
+    paths:
+      - 'conf/playerbots.conf.dist'
+      - 'src/Bot/**'
+      - 'src/PlayerbotAIConfig.*'
+      - 'tests/f14_*'
+      - 'tests/test_f14_upstream_405f_restack_source.py'
+      - '.github/workflows/playerbots-f14-upstream-405f-restack-20261112.yml'
+
+jobs:
+  restack-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: g++
+            std: c++17
+          - compiler: g++
+            std: c++20
+          - compiler: clang++
+            std: c++17
+          - compiler: clang++
+            std: c++20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify current upstream/F14 source contract
+        run: python3 tests/test_f14_upstream_405f_restack_source.py
+      - name: Compile and execute pure preservation models
+        shell: bash
+        run: |
+          set -euo pipefail
+          CXX='${{ matrix.compiler }}'
+          STD='${{ matrix.std }}'
+          tests=(
+            tests/f14_vanilla_rndbot_population_quota.cpp
+            tests/f14_vanilla_tbc_rndbot_population_hold.cpp
+            tests/f14_pending_rndbot_login_hold.cpp
+            tests/f14_new_randombot_birth_probe.cpp
+            tests/f14_earned_marker_reset_model.cpp
+            tests/f14_birth_commit_readback_model.cpp
+          )
+          for src in "${tests[@]}"; do
+            out="/tmp/$(basename "$src" .cpp)"
+            "$CXX" -std="$STD" -Wall -Wextra -Werror -pedantic "$src" -o "$out"
+            "$out"
+            "$CXX" -std="$STD" -DNDEBUG -Wall -Wextra -Werror -pedantic "$src" -o "$out.ndebug"
+            "$out.ndebug"
+          done

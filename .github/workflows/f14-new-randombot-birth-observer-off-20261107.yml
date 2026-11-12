@@ -1,0 +1,75 @@
+name: F14 new RandomBot creation-to-login diagnostic — default OFF
+
+on:
+  push:
+    branches:
+      - feature/cs01-f14-newbot-creation-login-observation-default-off-20261107
+      - integration/cs01-pb1-pb6-preserve-tests-off-20261107
+  pull_request:
+    branches:
+      - feature/cs01-f14-rndbot-earned-marker-preserve-off-20261107
+permissions:
+  contents: read
+jobs:
+  default-off-observer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact combined PB1 + PB6 diff and defaults (NO SQL)
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=135393376233556eca3426b2a4c53588a72a78bc
+          git merge-base --is-ancestor "$base" HEAD
+          git diff --check "$base"
+          git diff --name-only "$base" HEAD | sort >/tmp/actual
+          printf '%s\n' \
+            '.github/workflows/f14-holder-unconditional-retirement-off-20261107.yml' \
+            '.github/workflows/f14-new-randombot-birth-observer-off-20261107.yml' \
+            'conf/playerbots.conf.dist' \
+            'docs/CUSTOM_MODIFICATIONS_REGISTER.md' \
+            'docs/F14-NEW-RNDBOT-BIRTH-OBSERVATION-20261107.md' \
+            'src/Bot/F14NewRandomBotBirthProbe.h' \
+            'src/Bot/Factory/RandomPlayerbotFactory.cpp' \
+            'src/Bot/PlayerbotMgr.cpp' \
+            'src/PlayerbotAIConfig.cpp' \
+            'src/PlayerbotAIConfig.h' \
+            'tests/f14_new_randombot_birth_probe.cpp' \
+            'tests/test_f14_holder_retire_source.py' \
+            'tests/test_f14_new_randombot_birth_probe_source.py' | sort >/tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          test -z "$(git diff --name-only "$base" HEAD -- data/sql/)"
+      - name: Verify actual ON/OFF config and source call paths
+        run: python3 -B -m unittest discover -s tests -p 'test_f14_new_randombot_birth_probe_source.py' -v
+      - name: Compile actual new header in eight native GCC/Clang C++17/20 variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$compiler" "-std=$std" -pthread -Wall -Wextra -Werror -pedantic -O1 "${flags[@]}" \
+                  tests/f14_new_randombot_birth_probe.cpp -Isrc/Bot -o /tmp/f14-birth-probe
+                /tmp/f14-birth-probe
+              done
+            done
+          done
+      - name: Concurrency analysis against the ACTUAL new header
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -fsanitize=thread -g -O1 -pthread \
+            tests/f14_new_randombot_birth_probe.cpp -Isrc/Bot -o /tmp/f14-birth-probe-tsan
+          TSAN_OPTIONS=halt_on_error=1 /tmp/f14-birth-probe-tsan
+      - name: Declare no native Worldserver/gameplay claim
+        run: |
+          echo 'This only tests a birth-to-login diagnostic observer; does not prove bot creation DB commit or restore-after-restart.'
+          echo 'No stage8, quest, paid eligibility, Core visibility, WHO, loot, corpse, human client, SQL, host or production changes.'
+          echo 'This source-only integration branch requires new exact-pin five-component Worldserver proof before test candidate promotion.'

@@ -1,0 +1,94 @@
+name: PB F14 verified queued-bot preload hold OFF (source-only)
+
+on:
+  push:
+    branches:
+      - fix/cs01-pb12-f14-preload-held-rndbot-off-20261109
+  pull_request:
+    branches:
+      - fix/cs01-pb11-f14-restart-add-event-replay-hold-off-20261108
+
+permissions:
+  contents: read
+
+jobs:
+  source-plus-native-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PB13 source and immutable PB12/PB11/PB10 ancestors
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Strict five paths and original F14 flags OFF
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=825b9dc6c5222b193c1af9eb9df2cf50d01808a1
+          git merge-base --is-ancestor "$parent" HEAD
+          git diff --check "$parent" HEAD
+          git diff --name-only "$parent" HEAD | sort >/tmp/actual
+          printf '%s\n' \
+            src/Bot/RandomPlayerbotMgr.cpp \
+            tests/test_f14_vanilla_rndbot_preload_hold_source.py \
+            docs/F14_VANILLA_RNDBOT_PREACTIVATION_HOLD_2026-11-08.md \
+            docs/CUSTOM_MODIFICATIONS_REGISTER.md \
+            .github/workflows/playerbots-f14-preload-hold-off-20261109.yml \
+            | sort >/tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          test -z "$(git diff --name-only "$parent" HEAD -- conf src/PlayerbotAIConfig.h src/PlayerbotAIConfig.cpp src/Bot/Factory sql data)"
+          grep -Fqx 'Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14TrackNewRandomBotBirth = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14AuditNewBirthCommitReadback = 0' conf/playerbots.conf.dist
+          echo 'PASS: only third pre-load guard, no DB/quest/event/config changes'
+      - name: Exact source reconstruction of PB12 and positive pre-load proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s tests -p test_f14_vanilla_rndbot_preload_hold_source.py -v
+      - name: Original PB12 + PB11 source contracts tested at immutable parents
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/pb12-original \
+            825b9dc6c5222b193c1af9eb9df2cf50d01808a1 >/dev/null
+          git worktree add --detach /tmp/pb11-original \
+            a612093fde694fadf79d0bd790fcd82cb4f9b6b8 >/dev/null
+          python3 -B -m unittest discover -s /tmp/pb12-original/tests \
+            -p test_f14_vanilla_rndbot_saved_add_replay_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb11-original/tests \
+            -p test_f14_vanilla_tbc_rndbot_population_hold_source.py -v
+          echo 'PASS: old source contracts green at their own untouched original parents'
+      - name: Same original 1024-case F14 pure policy GCC and Clang C++17/20 normal NDEBUG
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$compiler" -std="$std" -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                  tests/f14_vanilla_tbc_rndbot_population_hold.cpp -o /tmp/pb-preload
+                /tmp/pb-preload
+              done
+            done
+          done
+      - name: Preserve original first-birth and failed-preflight safety tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+              test_f14_new_randombot_birth_probe_source.py \
+              test_f14_birth_preflight_abort_source.py \
+              test_f14_birth_commit_readback_source.py; do
+            python3 -B -m unittest discover -s tests -p "$name" -v
+          done
+      - name: Evidence boundary
+        if: always()
+        run: |
+          echo 'Standalone source and pure model only. NOT a Worldserver native link, server start or client/gameplay test.'
+          echo 'Held currentBots remain counted; this is NOT full RNDbot population or automatic TBC policy.'
+          echo 'No flag enabled, no event/SQL/DB/quest/character modified, no active bot logged out or actor hidden.'
