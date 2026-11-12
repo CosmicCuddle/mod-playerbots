@@ -25,9 +25,11 @@ jobs:
           set -euo pipefail
           pb15=4b355ea3a8fd00a0b116681bf9db4c7a3eb0e051
           upstream=405f81196161017eebae3ee7a612d786a3ed2a9d
-          git merge-base --is-ancestor "$pb15" HEAD
-          git merge-base --is-ancestor "$upstream" HEAD
-          test "$(git rev-list --parents -n1 HEAD | cut -d' ' -f2-)" = "$pb15 $upstream"
+          merge=b740848e5ab6530966f6a963feb9875ca9692734
+          git merge-base --is-ancestor "$merge" HEAD
+          git merge-base --is-ancestor "$pb15" "$merge"
+          git merge-base --is-ancestor "$upstream" "$merge"
+          test "$(git rev-list --parents -n1 "$merge" | cut -d' ' -f2-)" = "$pb15 $upstream"
           grep -Fqx 'Playerbots.F14TrackNewRandomBotBirth = 0' conf/playerbots.conf.dist
           grep -Fqx 'Playerbots.F14AuditNewBirthCommitReadback = 0' conf/playerbots.conf.dist
           grep -Fqx 'Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0' conf/playerbots.conf.dist
@@ -50,15 +52,36 @@ jobs:
               done
             done
           done
-      - name: Replay PB15 historical F14 source guards on immutable PB15
+      - name: Replay historical F14 guards on their immutable reviewed heads
         shell: bash
         run: |
           set -euo pipefail
           git worktree add --detach /tmp/pb15 4b355ea3a8fd00a0b116681bf9db4c7a3eb0e051 >/dev/null
-          for t in             test_f14_new_randombot_birth_probe_source.py             test_f14_birth_preflight_abort_source.py             test_f14_birth_commit_readback_source.py             test_f14_earned_marker_reset_source.py             test_f14_holder_retire_source.py             test_f14_vanilla_tbc_rndbot_population_hold_source.py             test_f14_vanilla_rndbot_saved_add_replay_source.py             test_f14_vanilla_rndbot_preload_hold_source.py             test_f14_vanilla_rndbot_population_quota_source.py             test_f14_pending_rndbot_login_hold_source.py; do
+          git worktree add --detach /tmp/pb14 26d24f3cddf2dbcd66a545fd973e7c7289763e39 >/dev/null
+          git worktree add --detach /tmp/pb13 5066ba448b3842c4c6b56c843d89d85d5cca6a69 >/dev/null
+          git worktree add --detach /tmp/pb12 825b9dc6c5222b193c1af9eb9df2cf50d01808a1 >/dev/null
+          git worktree add --detach /tmp/pb11 a612093fde694fadf79d0bd790fcd82cb4f9b6b8 >/dev/null
+
+          python3 -B -m unittest discover -s /tmp/pb15/tests -p test_f14_pending_rndbot_login_hold_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb14/tests -p test_f14_vanilla_rndbot_population_quota_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb13/tests -p test_f14_vanilla_rndbot_preload_hold_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb12/tests -p test_f14_vanilla_rndbot_saved_add_replay_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb11/tests -p test_f14_vanilla_tbc_rndbot_population_hold_source.py -v
+
+          for t in \
+            test_f14_new_randombot_birth_probe_source.py \
+            test_f14_birth_preflight_abort_source.py \
+            test_f14_birth_commit_readback_source.py \
+            test_f14_earned_marker_reset_source.py \
+            test_f14_holder_retire_source.py; do
               python3 -B -m unittest discover -s /tmp/pb15/tests -p "$t" -v
           done
+
           git worktree remove --force /tmp/pb15
+          git worktree remove --force /tmp/pb14
+          git worktree remove --force /tmp/pb13
+          git worktree remove --force /tmp/pb12
+          git worktree remove --force /tmp/pb11
       - name: Limit of evidence
         if: always()
         run: |
