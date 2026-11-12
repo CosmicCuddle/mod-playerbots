@@ -1,0 +1,66 @@
+name: PB F14 upstream count-mode hold restack gate
+on:
+  push:
+    branches:
+      - sync/cs01-pb15-upstream-405f8119-20261112
+  pull_request:
+    branches:
+      - fix/cs01-pb14-f14-pending-login-guard-off-20261109
+permissions:
+  contents: read
+jobs:
+  source-and-native-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact restack
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prove two-parent restack and default-OFF scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          pb15=4b355ea3a8fd00a0b116681bf9db4c7a3eb0e051
+          upstream=405f81196161017eebae3ee7a612d786a3ed2a9d
+          git merge-base --is-ancestor "$pb15" HEAD
+          git merge-base --is-ancestor "$upstream" HEAD
+          test "$(git rev-list --parents -n1 HEAD | cut -d' ' -f2-)" = "$pb15 $upstream"
+          grep -Fqx 'Playerbots.F14TrackNewRandomBotBirth = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14AuditNewBirthCommitReadback = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0' conf/playerbots.conf.dist
+          ! grep -R -E 'EnablePeriodicOnlineOffline|PeriodicOnlineOfflineRatio|MinRandomBotInWorldTime|MaxRandomBotInWorldTime|PermanentlyInWorldTime'               conf/playerbots.conf.dist src/PlayerbotAIConfig.cpp src/PlayerbotAIConfig.h src/Bot/RandomPlayerbotMgr.cpp
+      - name: Current upstream count-mode plus F14 hold source contract
+        run: python3 -B -m unittest discover -s tests -p test_f14_upstream_count_mode_hold_source.py -v
+      - name: Native pure hold and quota helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$compiler" -std="$std" -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" tests/f14_vanilla_rndbot_population_quota.cpp -o /tmp/pb-f14-quota
+                /tmp/pb-f14-quota
+                "$compiler" -std="$std" -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" tests/f14_vanilla_tbc_rndbot_population_hold.cpp -o /tmp/pb-f14-hold
+                /tmp/pb-f14-hold
+              done
+            done
+          done
+      - name: Replay PB15 historical F14 source guards on immutable PB15
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/pb15 4b355ea3a8fd00a0b116681bf9db4c7a3eb0e051 >/dev/null
+          for t in             test_f14_new_randombot_birth_probe_source.py             test_f14_birth_preflight_abort_source.py             test_f14_birth_commit_readback_source.py             test_f14_earned_marker_reset_source.py             test_f14_holder_retire_source.py             test_f14_vanilla_tbc_rndbot_population_hold_source.py             test_f14_vanilla_rndbot_saved_add_replay_source.py             test_f14_vanilla_rndbot_preload_hold_source.py             test_f14_vanilla_rndbot_population_quota_source.py             test_f14_pending_rndbot_login_hold_source.py; do
+              python3 -B -m unittest discover -s /tmp/pb15/tests -p "$t" -v
+          done
+          git worktree remove --force /tmp/pb15
+      - name: Limit of evidence
+        if: always()
+        run: |
+          echo 'Source and standalone native-model only; no Worldserver or gameplay claim.'
+          echo 'F14 hold remains OFF; no DB, saved-event, account, character or server action.'
