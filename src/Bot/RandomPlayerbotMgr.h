@@ -208,6 +208,10 @@ public:
     void AssignAccountTypes();
     bool IsAccountType(uint32 accountId, uint8 accountType);
     bool IsAddClassAccount(uint32 accountId) const;
+    // A queued headless login still needs its own F14 gate just before DB login.
+    // READ-ONLY: never use race or masterAccountId=0 alone as RandomBot proof.
+    bool ShouldHoldF14PendingRandomBotLogin(ObjectGuid const& guid, uint32 expectedAccountId,
+                                            bool zeroMasterRequest) const;
 
 protected:
     void OnBotLoginInternal(Player* const bot) override;
@@ -272,8 +276,10 @@ private:
     time_t RealPlayerLastTimeSeen = 0;
     time_t DelayLoginBotsTimer;
     time_t printStatsTimer;
-    uint32 AddRandomBots();
-    uint32 RemoveRandomBots();
+    uint32 AddRandomBots(uint32 effectiveScheduledBotCount);
+    uint32 RemoveRandomBots(
+        uint32 effectiveScheduledBotCount,
+        std::unordered_set<uint32> const& f14HeldBotGuids);
     uint32 GetScheduledBotCount();
     bool IsRemovableBot(Player* bot);
     bool ProcessBot(uint32 bot);

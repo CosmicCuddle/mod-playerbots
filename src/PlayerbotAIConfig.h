@@ -10,6 +10,7 @@
 #include "DBCEnums.h"
 #include "SharedDefines.h"
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <set>
@@ -129,12 +130,23 @@ public:
     bool AutoAvoidAoe;
     float MaxAoeAvoidRadius;
     std::set<uint32> AoeAvoidSpellWhitelist;
+    // Read-only mask to map workers; rebuilt atomically on configuration reload.
+    // Empty by default, does not alter stock Playerbot quest resets.
+    std::atomic<uint32> ResetQuestsPreserveMask{0};
     bool TellWhenAvoidAoe;
     std::set<uint32> DisallowedGameObjects;
     std::set<uint32> AttunementQuests;
     std::set<uint32> UnobtainableItems;
 
     uint32 OpenGoSpell;
+    // F14 instrumentation ONLY. Default OFF: never grants a tier or hides an actor.
+    bool F14TrackNewRandomBotBirth = false;
+    // Separate, opt-in exact transaction callback + row readback observation.
+    // Not a trust grant; disabled independent of the birth probe.
+    bool F14AuditNewBirthCommitReadback = false;
+    // Independent manual Vanilla-only F14 RNDbot population hold. OFF by
+    // default. Does not infer real TBC availability or grant an IP stage.
+    std::atomic_bool F14HoldTbcRaceRandomBotsDuringVanilla{false};
     bool RandomBotAutologin;
     bool BotAutologin;
     std::string RandomBotMapsAsString;
