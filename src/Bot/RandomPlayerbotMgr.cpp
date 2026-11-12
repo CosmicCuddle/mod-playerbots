@@ -12,6 +12,7 @@
 #include "Cell.h"
 #include "CellImpl.h"
 #include "ChannelMgr.h"
+#include "CharacterCache.h"
 #include "Common.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
@@ -30,6 +31,9 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "F14VanillaTbcPendingRandomBotLoginHold.h"
+#include "F14VanillaTbcRandomBotPopulationCount.h"
+#include "F14VanillaTbcRandomBotPopulationHold.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -59,6 +63,52 @@ struct GuidClassRaceInfo
     uint32 rClass;
     uint32 rRace;
 };
+
+namespace
+{
+// Positive identity proof used only while the owner-controlled manual Vanilla
+// hold is ON. Missing cache/account evidence returns false, which keeps the
+// GUID counted/eligible rather than guessing that a human/Altbot is held.
+bool IsF14PositivelyHeldScheduledRandomBot(
+    uint32 botGuid,
+    std::unordered_set<uint32> const& assignedRandomBotAccounts)
+{
+    ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(botGuid);
+    CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(guid);
+    if (!entry)
+        return false;
+
+    uint32 const account = sCharacterCache->GetCharacterAccountIdByGuid(guid);
+    bool const positivelyAssignedRandomBot = assignedRandomBotAccounts.contains(account);
+    return CosmicF14VanillaTbcPopulationHold::Decide(
+        true, positivelyAssignedRandomBot, entry->Race) ==
+        CosmicF14VanillaTbcPopulationHold::Result::HoldBeforeAddEvent;
+}
+
+// Do NOT remove held GUIDs or their persistent "add" events to reduce counts:
+// they are the owner's existing characters. Recount only the effective
+// manual-Vanilla scheduling quota. When the switch is OFF, return the exact
+// upstream raw count without a cache walk.
+std::size_t CountF14ScheduledRandomBotsForQuota(
+    std::unordered_set<uint32> const& currentBots,
+    std::vector<uint32> const& rndBotTypeAccounts)
+{
+    bool const manualVanillaHold =
+        sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+            std::memory_order_acquire);
+    if (!manualVanillaHold)
+        return currentBots.size();
+
+    std::unordered_set<uint32> const assignedRandomBotAccounts(
+        rndBotTypeAccounts.begin(), rndBotTypeAccounts.end());
+    return CosmicF14VanillaTbcRandomBotPopulationCount::CountForQuota(
+        true, currentBots, [&](uint32 botGuid) -> bool
+        {
+            return IsF14PositivelyHeldScheduledRandomBot(
+                botGuid, assignedRandomBotAccounts);
+        });
+}
+} // namespace
 
 void PrintStatsThread() { sRandomPlayerbotMgr.PrintStats(); }
 
@@ -360,7 +410,8 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
     // Copied deliberately: ProcessBot() erases from currentBots while this is
     // being iterated below, so the loops must run over a snapshot.
     std::unordered_set<uint32> availableBots = currentBots;
-    uint32 availableBotCount = availableBots.size();
+    uint32 const availableBotCount = static_cast<uint32>(
+        CountF14ScheduledRandomBotsForQuota(currentBots, rndBotTypeAccounts));
     uint32 onlineBotCount = playerBots.size();
 
     uint32 onlineBotFocus = 75;
@@ -684,6 +735,31 @@ void RandomPlayerbotMgr::AssignAccountTypes()
              currentAssignments.size() - rndBotTypeAccounts.size() - addClassTypeAccounts.size());
 }
 
+// Recheck when an already-queued headless DB holder returns: the optional
+// manual Vanilla hold may have changed since scheduling. This is world-thread
+// only; no DB update, GUID/event erase or forced logout occurs here.
+bool RandomPlayerbotMgr::ShouldHoldF14PendingRandomBotLogin(
+    ObjectGuid const& guid, uint32 expectedAccountId, bool zeroMasterRequest) const
+{
+    bool const manualVanillaHold =
+        sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+            std::memory_order_acquire);
+    if (!manualVanillaHold || !zeroMasterRequest || !guid.IsPlayer())
+        return false;
+
+    bool const selectedGuid = currentBots.contains(guid.GetCounter());
+    CharacterCacheEntry const* entry =
+        selectedGuid ? sCharacterCache->GetCharacterCacheByGuid(guid) : nullptr;
+    uint32 const cachedAccountId = entry ? entry->AccountId : 0;
+    bool const assignedType1 =
+        entry && std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(),
+                           expectedAccountId) != rndBotTypeAccounts.end();
+    uint8 const cachedRace = entry ? entry->Race : 0;
+    return CosmicF14VanillaPendingRandomBotLogin::ShouldHold(
+        manualVanillaHold, zeroMasterRequest, selectedGuid, entry != nullptr,
+        expectedAccountId, cachedAccountId, assignedType1, cachedRace);
+}
+
 bool RandomPlayerbotMgr::IsAccountType(uint32 accountId, uint8 accountType)
 {
     PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACCOUNT_TYPE_BY_ACCOUNT_AND_TYPE);
@@ -708,10 +784,13 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
     uint32 maxAllowedBotCount = GetEventValue(0, "bot_count");
     static time_t missingBotsTimer = 0;
 
-    if (currentBots.size() < maxAllowedBotCount)
+    uint32 const eligibleScheduledBotCount = static_cast<uint32>(
+        CountF14ScheduledRandomBotsForQuota(currentBots, rndBotTypeAccounts));
+    if (eligibleScheduledBotCount < maxAllowedBotCount)
     {
-        // Calculate how many bots to add
-        maxAllowedBotCount -= currentBots.size();
+        // Calculate how many eligible bots to add. Held GUIDs/events are
+        // preserved but do not starve eligible Vanilla bots from the quota.
+        maxAllowedBotCount -= eligibleScheduledBotCount;
         maxAllowedBotCount = std::min(sPlayerbotAIConfig.RandomBotsPerInterval, maxAllowedBotCount);
 
         // Single RNG instance for all shuffling
@@ -777,6 +856,20 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
         // Lambda to handle bot login logic
         auto tryLoginBot = [&](CharacterInfo const& charInfo) -> bool
         {
+            // F14 OWNER VANILLA-ONLY MANUAL HOLD (opt-in, normally OFF).
+            // This candidate came from the assigned type-1 account scan; still
+            // recheck membership and refuse BEFORE the upstream add event or
+            // currentBots insertion. Existing characters and SQL are untouched.
+            bool const fromAssignedRandomBotPool =
+                std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(),
+                          charInfo.accountId) != rndBotTypeAccounts.end();
+            if (CosmicF14VanillaTbcPopulationHold::Decide(
+                    sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+                        std::memory_order_acquire),
+                    fromAssignedRandomBotPool, charInfo.rRace) ==
+                CosmicF14VanillaTbcPopulationHold::Result::HoldBeforeAddEvent)
+                return false;
+
             if (GetEventValue(charInfo.guid, "add") ||
                 GetPlayerBot(charInfo.guid) ||
                 currentBots.contains(charInfo.guid) ||
@@ -895,14 +988,28 @@ uint32 RandomPlayerbotMgr::RemoveRandomBots()
 {
     uint32 maxAllowedBotCount = GetEventValue(0, "bot_count");
 
-    if (currentBots.size() <= maxAllowedBotCount)
+    uint32 const eligibleScheduledBotCount = static_cast<uint32>(
+        CountF14ScheduledRandomBotsForQuota(currentBots, rndBotTypeAccounts));
+    if (eligibleScheduledBotCount <= maxAllowedBotCount)
         return 0;
 
-    // Per-tick cap keeps the downsize gradual, matching how AddRandomBots throttles logins.
-    uint32 toRemove = std::min(sPlayerbotAIConfig.RandomBotsPerInterval,
-                               (uint32)(currentBots.size() - maxAllowedBotCount));
+    // Per-tick cap keeps the downsize gradual, matching how AddRandomBots
+    // throttles logins. Held BE/D GUIDs are outside this effective quota.
+    uint32 toRemove = std::min(
+        sPlayerbotAIConfig.RandomBotsPerInterval,
+        eligibleScheduledBotCount - maxAllowedBotCount);
 
-    // Ineligible bots still count toward their faction, as they keep occupying its share.
+    bool const manualVanillaHold =
+        sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+            std::memory_order_acquire);
+    std::unordered_set<uint32> assignedRandomBotAccounts;
+    if (manualVanillaHold)
+        assignedRandomBotAccounts.insert(
+            rndBotTypeAccounts.begin(), rndBotTypeAccounts.end());
+
+    // Upstream's faction balancing must use the same effective population as
+    // the outer scheduler. Otherwise an already-online held BE/D bot could
+    // inflate its faction share and cause an unrelated eligible bot removal.
     std::vector<ObjectGuid> allianceBots;
     std::vector<ObjectGuid> hordeBots;
     uint32 onlineAlliance = 0;
@@ -910,6 +1017,11 @@ uint32 RandomPlayerbotMgr::RemoveRandomBots()
     for (auto const& [guid, bot] : playerBots)
     {
         if (!IsRandomBot(bot))
+            continue;
+
+        if (manualVanillaHold &&
+            IsF14PositivelyHeldScheduledRandomBot(
+                guid.GetCounter(), assignedRandomBotAccounts))
             continue;
 
         bool isAlliance = IsAlliance(bot->getRace());
@@ -1586,6 +1698,25 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     uint32 randomTime;
     if (!player)
     {
+        // A GUID can already be scheduled (including from an earlier config
+        // state). Refuse only a positively identified assigned type-1 BE/D
+        // RandomBot while the manual hold is ON. No event/cache/DB mutation.
+        if (sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+                std::memory_order_acquire))
+        {
+            CharacterCacheEntry const* entry =
+                sCharacterCache->GetCharacterCacheByGuid(botGUID);
+            uint32 const account =
+                sCharacterCache->GetCharacterAccountIdByGuid(botGUID);
+            bool const fromAssignedRandomBotPool =
+                std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(),
+                          account) != rndBotTypeAccounts.end();
+            if (entry && CosmicF14VanillaTbcPopulationHold::Decide(
+                    true, fromAssignedRandomBotPool, entry->Race) ==
+                CosmicF14VanillaTbcPopulationHold::Result::HoldBeforeAddEvent)
+                return false;
+        }
+
         AddPlayerBot(botGUID, 0);
         randomTime = urand(1, 2);
 
@@ -2517,7 +2648,30 @@ void RandomPlayerbotMgr::GetBots()
             Field* fields = result->Fetch();
             uint32 bot = fields[0].Get<uint32>();
             if (GetEventValue(bot, "add"))
-                currentBots.insert(bot);
+            {
+                // Persisted add events must not bypass the same manual Vanilla
+                // hold on restart. Do not erase the event or character; turning
+                // the switch OFF restores normal replay.
+                bool held = false;
+                if (sPlayerbotAIConfig.F14HoldTbcRaceRandomBotsDuringVanilla.load(
+                        std::memory_order_acquire))
+                {
+                    ObjectGuid const guid = ObjectGuid::Create<HighGuid::Player>(bot);
+                    CharacterCacheEntry const* entry =
+                        sCharacterCache->GetCharacterCacheByGuid(guid);
+                    uint32 const account =
+                        sCharacterCache->GetCharacterAccountIdByGuid(guid);
+                    bool const fromAssignedRandomBotPool =
+                        std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(),
+                                  account) != rndBotTypeAccounts.end();
+                    held = entry && CosmicF14VanillaTbcPopulationHold::Decide(
+                        true, fromAssignedRandomBotPool, entry->Race) ==
+                        CosmicF14VanillaTbcPopulationHold::Result::HoldBeforeAddEvent;
+                }
+
+                if (!held)
+                    currentBots.insert(bot);
+            }
 
             if (currentBots.size() >= maxAllowedBotCount)
                 break;

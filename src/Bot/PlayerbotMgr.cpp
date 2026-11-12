@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotMgr.h"
+#include "F14NewRandomBotBirthProbe.h"
 #include "PlayerbotsDatabase.h"
 #include "BroadcastHelper.h"
 #include "ChannelMgr.h"
@@ -253,6 +254,17 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder con
 {
     uint32 botAccountId = holder.GetAccountId();
 
+    // The manual Vanilla hold can change while the async holder is pending.
+    // Recheck selected GUID + assigned type-1 + cached account + race before
+    // constructing a Player from the DB reply. Teardown remains deferred.
+    if (sRandomPlayerbotMgr.ShouldHoldF14PendingRandomBotLogin(
+            holder.GetGuid(), botAccountId,
+            holder.GetMasterAccountId() == 0))
+    {
+        AbandonPendingLogin(holder.GetGuid());
+        return;
+    }
+
     botSession->HandlePlayerLoginFromDB(holder);  // will delete lqh
 
     Player* bot = botSession->GetPlayer();
@@ -393,6 +405,10 @@ void PlayerbotMgr::CancelLogout()
 
 void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
+    // Revoke any optional same-process observation before Player/Session
+    // teardown. Retire is a no-op when tracking was never enabled.
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
+
     if (Player* bot = GetPlayerBot(guid))
     {
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
@@ -457,6 +473,8 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 
 void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 {
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
+
     if (Player* bot = GetPlayerBot(guid))
     {
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
@@ -487,6 +505,8 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 
 void PlayerbotHolder::RemoveFromPlayerbotsMap(ObjectGuid guid)
 {
+    // Also covers holder-removal paths that bypass explicit logout methods.
+    CosmicF14::NewRandomBotBirthProbe::Instance().Retire(guid.GetCounter());
     playerBots.erase(guid);
 }
 
@@ -522,6 +542,24 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         // Log a warning here to indicate that the botAI is null
         LOG_DEBUG("mod-playerbots", "PlayerbotAI is null for bot with GUID: {}", bot->GetGUID().GetRawValue());
         return;
+    }
+
+    // Diagnostic observation only: same-process creation candidate + real
+    // admitted headless RandomBot are mandatory. No IP/Core mutation occurs.
+    if (sPlayerbotAIConfig.F14TrackNewRandomBotBirth &&
+        bot->GetSession() && bot->GetSession()->IsHeadless() &&
+        bot->IsInWorld() &&
+        (bot->getRace() == RACE_BLOODELF ||
+         bot->getRace() == RACE_DRAENEI) &&
+        sRandomPlayerbotMgr.IsRandomBot(bot) &&
+        CosmicF14::NewRandomBotBirthProbe::Instance().ObserveAdmission(
+            bot->GetGUID().GetCounter(),
+            bot->GetSession()->GetAccountId(), bot->getRace(),
+            true, true, true, true))
+    {
+        LOG_DEBUG(
+            "playerbots",
+            "F14 creation-to-login probe observed an eligible new RandomBot; no stage grant or hide");
     }
 
     Player* master = botAI->GetMaster();

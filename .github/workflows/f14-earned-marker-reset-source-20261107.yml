@@ -1,0 +1,58 @@
+name: F14 opt-in previously earned RNDBOT quest marker reset source safety (OFF)
+on:
+  push:
+    branches:
+      - feature/cs01-f14-rndbot-earned-marker-preserve-off-20261107
+  pull_request:
+    branches:
+      - development/first-test-pinned-20261107
+permissions:
+  contents: read
+jobs:
+  source-and-portable-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact reviewed Playerbots fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Protect original historical pin, approved eight paths, and default OFF
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=e88cc4099e69f35126b28942a412ca702d20453b
+          git merge-base --is-ancestor "$parent" HEAD
+          git diff --check "$parent"
+          git diff --name-only "$parent" HEAD | sort > /tmp/actual
+          printf '%s\n' \
+            'src/PlayerbotAIConfig.h' \
+            'src/PlayerbotAIConfig.cpp' \
+            'src/Bot/Factory/PlayerbotFactory.cpp' \
+            'conf/playerbots.conf.dist' \
+            'tests/test_f14_earned_marker_reset_source.py' \
+            'tests/f14_earned_marker_reset_model.cpp' \
+            '.github/workflows/f14-earned-marker-reset-source-20261107.yml' \
+            'docs/CUSTOM_MODIFICATIONS_REGISTER.md' | sort > /tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          grep -Fxq 'Playerbots.ResetQuestsPreserveQuestIds =' conf/playerbots.conf.dist
+          echo 'PASS: only isolated eight paths, opt-in default OFF, no database or Core changes'
+      - name: Verify pinned PlayerbotFactory source and deliberate unsafe mutations
+        run: python3 -B -m unittest discover -s tests -p 'test_f14_earned_marker_reset_source.py' -v
+      - name: Compile and execute pure default-OFF reset model with active checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for std in c++17 c++20; do
+              for flags in normal ndebug; do
+                extra=()
+                if [[ "$flags" == ndebug ]]; then extra=(-DNDEBUG); fi
+                "$compiler" "-std=$std" -Wall -Wextra -Werror -pedantic -O2 "${extra[@]}" tests/f14_earned_marker_reset_model.cpp -o /tmp/f14-reset-model
+                /tmp/f14-reset-model
+              done
+            done
+          done
+          echo 'PASS: pure policy only; not native Playerbots/Worldserver or client proof'

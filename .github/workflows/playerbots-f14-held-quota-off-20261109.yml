@@ -1,0 +1,102 @@
+name: PB F14 manual Vanilla-held RNDbot quota read-only OFF (source and native model)
+
+on:
+  push:
+    branches:
+      - fix/cs01-pb13-f14-held-quota-readonly-off-20261109
+  pull_request:
+    branches:
+      - fix/cs01-pb12-f14-preload-held-rndbot-off-20261109
+
+permissions:
+  contents: read
+
+jobs:
+  held-quota-no-delete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PB14 and frozen PB13/PB12/PB11/PB10
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Strict seven-source-path scope and manual F14 hold remains OFF
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=5066ba448b3842c4c6b56c843d89d85d5cca6a69
+          git merge-base --is-ancestor "$base" HEAD
+          git diff --check "$base" HEAD
+          git diff --name-only "$base" HEAD | sort >/tmp/actual
+          printf '%s\n' \
+            'src/Bot/F14VanillaTbcRandomBotPopulationCount.h' \
+            'src/Bot/RandomPlayerbotMgr.cpp' \
+            'tests/f14_vanilla_rndbot_population_quota.cpp' \
+            'tests/test_f14_vanilla_rndbot_population_quota_source.py' \
+            'docs/F14_VANILLA_RNDBOT_PREACTIVATION_HOLD_2026-11-08.md' \
+            'docs/CUSTOM_MODIFICATIONS_REGISTER.md' \
+            '.github/workflows/playerbots-f14-held-quota-off-20261109.yml' \
+            | sort >/tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          test -z "$(git diff --name-only "$base" HEAD -- conf src/PlayerbotAIConfig.h src/PlayerbotAIConfig.cpp src/Bot/Factory sql data)"
+          grep -Fqx 'Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14TrackNewRandomBotBirth = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14AuditNewBirthCommitReadback = 0' conf/playerbots.conf.dist
+          echo 'PASS: exactly 7 scoped paths, default OFF, no persistence or factory change'
+      - name: Exact PB13 manager byte-for-byte reconstruction and two quota-only use sites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s tests -p test_f14_vanilla_rndbot_population_quota_source.py -v
+      - name: Native actual new quota pure header 1024 bitsets GCC Clang C++17/20 NDEBUG
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$compiler" -std="$std" -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                  tests/f14_vanilla_rndbot_population_quota.cpp -o /tmp/pb-f14-quota
+                /tmp/pb-f14-quota
+                "$compiler" -std="$std" -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                  tests/f14_vanilla_tbc_rndbot_population_hold.cpp -o /tmp/pb-f14-hold
+                /tmp/pb-f14-hold
+              done
+            done
+          done
+      - name: Preserve exact older PB13 PB12 PB11 scopes at their frozen parents
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/pb13-original \
+            5066ba448b3842c4c6b56c843d89d85d5cca6a69 >/dev/null
+          git worktree add --detach /tmp/pb12-original \
+            825b9dc6c5222b193c1af9eb9df2cf50d01808a1 >/dev/null
+          git worktree add --detach /tmp/pb11-original \
+            a612093fde694fadf79d0bd790fcd82cb4f9b6b8 >/dev/null
+          python3 -B -m unittest discover -s /tmp/pb13-original/tests \
+            -p test_f14_vanilla_rndbot_preload_hold_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb12-original/tests \
+            -p test_f14_vanilla_rndbot_saved_add_replay_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb11-original/tests \
+            -p test_f14_vanilla_tbc_rndbot_population_hold_source.py -v
+      - name: Preserve PB10 original birth and failed-preflight source guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in \
+            test_f14_new_randombot_birth_probe_source.py \
+            test_f14_birth_preflight_abort_source.py \
+            test_f14_birth_commit_readback_source.py; do
+            python3 -B -m unittest discover -s tests -p "$t" -v
+          done
+      - name: Limit of evidence
+        if: always()
+        run: |
+          echo 'This is source and standalone model ONLY, not actual Worldserver or gameplay.'
+          echo 'Manual hold OFF; no saved bot event/currentBots/DB/quest/account/IP/paid/visibility mutation.'
+          echo 'Trusted actual TBC world eligibility, first-birth and human/client rights still unresolved.'

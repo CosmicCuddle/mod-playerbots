@@ -1,0 +1,76 @@
+name: CosmicCuddle PB F14 commit and readback audit OFF (source only)
+on:
+  push:
+    branches:
+      - feature/cs01-f14-pb-commit-readback-audit-off-20261108
+  pull_request:
+    branches:
+      - integration/cs01-pb1-pb6-preserve-tests-off-20261107
+permissions:
+  contents: read
+jobs:
+  pb-f14-receipt-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - name: Check out exact owner Playerbots child
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exact PB7 source parent, 10 scoped paths, no SQL/DB alterations
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=4f6974ecec081c2006df54ff54aa4cc40cb63f55
+          git merge-base --is-ancestor "$parent" HEAD
+          git diff --check "$parent" HEAD
+          git diff --name-only "$parent" HEAD | sort >/tmp/actual
+          printf '%s\n' \
+            '.github/workflows/f14-pb-commit-readback-audit-off-20261108.yml' \
+            'conf/playerbots.conf.dist' \
+            'docs/CUSTOM_MODIFICATIONS_REGISTER.md' \
+            'docs/F14-COMMIT-READBACK-AUDIT-OFF-20261108.md' \
+            'src/Bot/F14NewRandomBotBirthProbe.h' \
+            'src/Bot/Factory/RandomPlayerbotFactory.cpp' \
+            'src/PlayerbotAIConfig.h' \
+            'src/PlayerbotAIConfig.cpp' \
+            'tests/f14_birth_commit_readback_model.cpp' \
+            'tests/test_f14_birth_commit_readback_source.py' | sort >/tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          test -z "$(git diff --name-only "$parent" HEAD -- data sql)"
+      - name: Check new exact source and all inherited PB safety regressions
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_f14_birth_commit_readback_source.py' -v
+          python3 -B -m unittest discover -s tests -p 'test_f14_new_randombot_birth_probe_source.py' -v
+          python3 -B -m unittest discover -s tests -p 'test_f14_holder_retire_source.py' -v
+          python3 -B -m unittest discover -s tests -p 'test_f14_earned_marker_reset_source.py' -v
+      - name: Build and execute actual PB probe header with and without NDEBUG
+        shell: bash
+        env:
+          CXX: ${{ matrix.compiler }}
+        run: |
+          set -euo pipefail
+          for std in c++17 c++20; do
+            for mode in normal ndebug; do
+              extra=()
+              if [[ "$mode" == ndebug ]]; then extra+=(-DNDEBUG); fi
+              "$CXX" -std="$std" -pthread -Wall -Wextra -Werror -pedantic -O1 "${extra[@]}" \
+                -Isrc/Bot tests/f14_birth_commit_readback_model.cpp -o /tmp/f14-pb-commit-readback
+              /tmp/f14-pb-commit-readback
+              "$CXX" -std="$std" -pthread -Wall -Wextra -Werror -pedantic -O1 "${extra[@]}" \
+                -Isrc/Bot tests/f14_new_randombot_birth_probe.cpp -o /tmp/f14-pb-original-birth
+              /tmp/f14-pb-original-birth
+            done
+          done
+      - name: Evidence boundary - no DB or 3.3.5a client used
+        if: always()
+        run: |
+          echo 'This suite is SOURCE plus ACTUAL HEADER only. It does not compile or launch PB source or worldserver.'
+          echo 'No first-birth DB or orphaned quest absence proof, no stage8, WHO hide, NPC hide or gameplay.'
+          echo 'No approved owner host, SQL, config enablement, server installation or production change.'
