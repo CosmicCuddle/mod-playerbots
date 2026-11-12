@@ -1,0 +1,59 @@
+name: PB current-upstream F14 population restack gate
+
+on:
+  push:
+    branches:
+      - dev/cs01-pb19-upstream-restack-candidate-20261112
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  restack-population-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Source contract on current upstream scheduler
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B tests/test_f14_upstream_population_restack_source.py -v
+          grep -Fqx 'Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0' conf/playerbots.conf.dist
+          ! grep -R -E 'EnablePeriodicOnlineOffline|PeriodicOnlineOfflineRatio|MinRandomBotInWorldTime|MaxRandomBotInWorldTime|PermanentlyInWorldTime' \
+            src/PlayerbotAIConfig.cpp src/PlayerbotAIConfig.h conf/playerbots.conf.dist
+
+      - name: Pure effective scheduling model GCC Clang C++20 normal NDEBUG
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for mode in normal ndebug; do
+              flags=()
+              if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+              "$compiler" -std=c++20 -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                tests/f14_upstream_population_restack_model.cpp -o /tmp/pb-f14-restack
+              /tmp/pb-f14-restack
+              "$compiler" -std=c++20 -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                tests/f14_vanilla_tbc_rndbot_population_hold.cpp -o /tmp/pb-f14-hold
+              /tmp/pb-f14-hold
+              "$compiler" -std=c++20 -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                tests/f14_pending_rndbot_login_hold.cpp -o /tmp/pb-f14-pending
+              /tmp/pb-f14-pending
+            done
+          done
+
+      - name: Safety boundary
+        if: always()
+        run: |
+          echo 'Source/model gate only. No Worldserver start, bot logout, SQL, DB, config or production mutation.'
+          echo 'Full native combined compile/link and owner-approved gameplay tests remain separate.'

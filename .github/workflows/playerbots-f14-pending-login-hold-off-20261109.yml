@@ -1,0 +1,103 @@
+name: PB F14 pending RandomBot async login revalidation (manual hold OFF)
+
+on:
+  push:
+    branches:
+      - fix/cs01-pb14-f14-pending-login-guard-off-20261109
+  pull_request:
+    branches:
+      - fix/cs01-pb13-f14-held-quota-readonly-off-20261109
+
+permissions:
+  contents: read
+
+jobs:
+  f14-pending-login:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact pending-login child and frozen original PB14
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify parent, exact nine paths, unchanged distributed OFF settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=26d24f3cddf2dbcd66a545fd973e7c7289763e39
+          git merge-base --is-ancestor "$base" HEAD
+          git diff --check "$base" HEAD
+          git diff --name-only "$base" HEAD | sort > /tmp/actual-pb15-paths
+          printf '%s\n' \
+            'src/Bot/F14VanillaTbcPendingRandomBotLoginHold.h' \
+            'src/Bot/RandomPlayerbotMgr.h' \
+            'src/Bot/RandomPlayerbotMgr.cpp' \
+            'src/Bot/PlayerbotMgr.cpp' \
+            'tests/f14_pending_rndbot_login_hold.cpp' \
+            'tests/test_f14_pending_rndbot_login_hold_source.py' \
+            'docs/F14_VANILLA_RNDBOT_PREACTIVATION_HOLD_2026-11-08.md' \
+            'docs/CUSTOM_MODIFICATIONS_REGISTER.md' \
+            '.github/workflows/playerbots-f14-pending-login-hold-off-20261109.yml' \
+            | sort > /tmp/expected-pb15-paths
+          diff -u /tmp/expected-pb15-paths /tmp/actual-pb15-paths
+          test -z "$(git diff --name-only "$base" HEAD -- conf sql data src/PlayerbotAIConfig.h src/PlayerbotAIConfig.cpp src/Bot/RandomPlayerbotFactory.cpp)"
+          grep -Fqx 'Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14TrackNewRandomBotBirth = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14AuditNewBirthCommitReadback = 0' conf/playerbots.conf.dist
+
+      - name: Assert original PB14 source is byte-recoverable and old callback is ungated
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s tests -p test_f14_pending_rndbot_login_hold_source.py -v
+
+      - name: Compile and run ACTUAL pure F14 pending-login policy GCC Clang C++17/20
+        shell: bash
+        run: |
+          set -euo pipefail
+          for cc in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$cc" -std="$std" -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                  tests/f14_pending_rndbot_login_hold.cpp -o /tmp/pb-f14-pending-login
+                /tmp/pb-f14-pending-login
+              done
+            done
+          done
+
+      - name: Protect frozen PB14 quota, PB13 queued load, PB12 replay and PB11 admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/pb14-frozen \
+            26d24f3cddf2dbcd66a545fd973e7c7289763e39 >/dev/null
+          git worktree add --detach /tmp/pb13-frozen \
+            5066ba448b3842c4c6b56c843d89d85d5cca6a69 >/dev/null
+          git worktree add --detach /tmp/pb12-frozen \
+            825b9dc6c5222b193c1af9eb9df2cf50d01808a1 >/dev/null
+          git worktree add --detach /tmp/pb11-frozen \
+            a612093fde694fadf79d0bd790fcd82cb4f9b6b8 >/dev/null
+          python3 -B -m unittest discover -s /tmp/pb14-frozen/tests \
+            -p test_f14_vanilla_rndbot_population_quota_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb13-frozen/tests \
+            -p test_f14_vanilla_rndbot_preload_hold_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb12-frozen/tests \
+            -p test_f14_vanilla_rndbot_saved_add_replay_source.py -v
+          python3 -B -m unittest discover -s /tmp/pb11-frozen/tests \
+            -p test_f14_vanilla_tbc_rndbot_population_hold_source.py -v
+          for t in test_f14_new_randombot_birth_probe_source.py \
+                   test_f14_birth_preflight_abort_source.py \
+                   test_f14_birth_commit_readback_source.py; do
+            python3 -B -m unittest discover -s tests -p "$t" -v
+          done
+
+      - name: Evidence limit
+        if: always()
+        run: |
+          echo 'Manual Vanilla-only hold remains default OFF; old login path unchanged while OFF.'
+          echo 'No DB/SQL/accounts/characters/progression/paid/visibility or owner host changes.'
+          echo 'Source+pure C++ only: new exact owner-five Worldserver compile and offline gameplay still required.'

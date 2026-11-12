@@ -1,0 +1,86 @@
+name: PB F14 manual Vanilla RandomBot pre-add hold (OFF, source and native model)
+
+on:
+  push:
+    branches:
+      - feature/cs01-pb10-f14-vanilla-tbc-rndbot-preactivation-hold-off-20261108
+  pull_request:
+    branches:
+      - feature/cs01-f14-pb-commit-readback-audit-off-20261108
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-preactivation-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact owner Playerbots child and frozen PB10
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Strict ten-path allowlist and unchanged default-OFF source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=afc38bf798cd1c96a097ebf5229e041ed0dc4253
+          git merge-base --is-ancestor "$base" HEAD
+          git diff --check "$base" HEAD
+          git diff --name-only "$base" HEAD | sort >/tmp/actual
+          printf '%s\n' \
+            'src/Bot/F14VanillaTbcRandomBotPopulationHold.h' \
+            'src/Bot/RandomPlayerbotMgr.cpp' \
+            'src/PlayerbotAIConfig.h' \
+            'src/PlayerbotAIConfig.cpp' \
+            'conf/playerbots.conf.dist' \
+            'tests/f14_vanilla_tbc_rndbot_population_hold.cpp' \
+            'tests/test_f14_vanilla_tbc_rndbot_population_hold_source.py' \
+            '.github/workflows/playerbots-f14-vanilla-preactivation-hold-off-20261108.yml' \
+            'docs/F14_VANILLA_RNDBOT_PREACTIVATION_HOLD_2026-11-08.md' \
+            'docs/CUSTOM_MODIFICATIONS_REGISTER.md' | sort >/tmp/expected
+          diff -u /tmp/expected /tmp/actual
+          test -z "$(git diff --name-only "$base" HEAD -- src/Bot/Factory sql data)"
+          grep -Fqx 'Playerbots.F14HoldTbcRaceRandomBotsDuringVanilla = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14TrackNewRandomBotBirth = 0' conf/playerbots.conf.dist
+          grep -Fqx 'Playerbots.F14AuditNewBirthCommitReadback = 0' conf/playerbots.conf.dist
+          echo 'PASS: exactly ten bounded paths, no unrelated bot/SQL/DB files, flag OFF'
+      - name: Structural preservation and no mutation-before-add source guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s tests -p 'test_f14_vanilla_tbc_rndbot_population_hold_source.py' -v
+      - name: Actual pure C++ header 1024 cases with GCC and Clang C++17/20 NDEBUG
+        shell: bash
+        run: |
+          set -euo pipefail
+          for compiler in g++ clang++; do
+            for std in c++17 c++20; do
+              for mode in normal ndebug; do
+                flags=()
+                if [[ "$mode" == ndebug ]]; then flags=(-DNDEBUG); fi
+                "$compiler" -std="$std" -Wall -Wextra -Werror -pedantic -O2 "${flags[@]}" \
+                  tests/f14_vanilla_tbc_rndbot_population_hold.cpp -o /tmp/pb-f14-vanilla-preadd
+                /tmp/pb-f14-vanilla-preadd
+              done
+            done
+          done
+      - name: Preserve original PB10 F14 first-birth and no-orphan-veto guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in \
+            test_f14_new_randombot_birth_probe_source.py \
+            test_f14_birth_preflight_abort_source.py \
+            test_f14_birth_commit_readback_source.py; do
+            test -s "tests/$t"
+            python3 -B -m unittest discover -s tests -p "$t" -v
+          done
+      - name: Evidence boundary
+        if: always()
+        run: |
+          echo 'Manual Vanilla-only pre-add hold remains OFF, not automatic IP TBC detection.'
+          echo 'Does not handle already selected/online bots, restore, grouping, stage8 or paid entitlement.'
+          echo 'No Core/IP/Naxx/Services Worldserver compiled, no bot login, SQL, DB, client or owner host touched.'
