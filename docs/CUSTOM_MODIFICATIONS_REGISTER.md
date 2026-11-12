@@ -159,3 +159,74 @@ config/SQL/DBC/client, risk, tests, source/build/live status, owner decision and
 - **Cancellation:** only when all positive proofs pass, `AbandonPendingLogin(holder.GetGuid())` sets the existing `botLoading` pending failure. Its original `UpdatePendingLogins()` frees the headless `WorldSession` **after** returning from `ProcessQueryCallbacks`, never during its own callback. The saved `add` event, `currentBots`, bot characters, quests, accounts, paid receipts and original older AI remain unchanged. Unknown cache/account or master-controlled Altbot is not held.
 - **Limits/risks:** async cancellation source review, test-only matrix and original guard invariants cannot prove native Worldserver execution or live client; actual old-RED/new-GREEN in-game enable transition, callback lifetime, no missed alternate paths and CPU/thread safety require controlled offline tests. A no-master request is not RandomBot proof by itself. Existing selected/online bots and already queued world-thread `OnBotLoginOperation`, missing/stale identity, actual IP/world TBC availability, first-birth history, earned marker/paid rules and per-human visibility/combat/quest/loot/DoT/respawn are still unresolved. Do not change a running server's manual flag or delete old bot accounts to work around it.
 - **Tests/live/rollback:** isolated new source/executable CI must be verified at exact HEAD; separate exact Core6/PB15/IP137/Naxx292/Services full Worldserver link required, then S5 inventory of all installed extras and backup/restore and owner-approved offline S6. Rollback discard unmerged PB15 branch/PR, retain frozen PB14 and original saved data. F14 feature remains OFF.
+
+
+## Upstream-sync preservation checkpoint — 12 November 2026 (DOCUMENTATION ONLY)
+
+- **Owner/component:** CosmicCuddle / Server-Side-Maintenance; Playerbots fork current protected development tip `4b355ea3a8fd00a0b116681bf9db4c7a3eb0e051`. This entry records a read-only comparison against current `mod-playerbots/mod-playerbots@405f81196161017eebae3ee7a612d786a3ed2a9d`; it does not merge, rebase, cherry-pick, enable or deploy anything.
+- **Shared merge base:** `e88cc4099e69f35126b28942a412ca702d20453b`. From that base, the protected local PB line changes 43 paths while current upstream changes 200; **8 source/config paths overlap** and therefore require explicit three-way preservation:
+  1. `conf/playerbots.conf.dist`
+  2. `src/Bot/Factory/PlayerbotFactory.cpp`
+  3. `src/Bot/Factory/RandomPlayerbotFactory.cpp`
+  4. `src/Bot/PlayerbotMgr.cpp`
+  5. `src/Bot/RandomPlayerbotMgr.cpp`
+  6. `src/Bot/RandomPlayerbotMgr.h`
+  7. `src/PlayerbotAIConfig.cpp`
+  8. `src/PlayerbotAIConfig.h`
+- **Identity compatibility confirmed read-only:** current upstream still exposes `RandomPlayerbotMgr::IsRandomBot(Player*)` / `IsRandomBot(ObjectGuid::LowType)`; the low-GUID form still requires random-account membership plus `currentBots.contains(bot)`, and the Player form still excludes SelfBots before delegating. `currentBots` remains an `std::unordered_set<uint32>`; scheduling and saved-`add` replay still populate it. This is structural compatibility evidence only, not a fresh thread/lifecycle/gameplay acceptance result.
+- **Mandatory custom feature preservation:** upstream `PlayerbotFactory::ResetQuests()` still blanket-removes rewarded/active quests and does **not** contain CosmicCuddle's optional already-REWARDED IP marker retention for quest IDs 66001–66018. The local reset-marker protection must therefore be manually carried forward. Accepting upstream `PlayerbotFactory.cpp` wholesale would reintroduce the stage-marker loss that this fork protects against.
+- **New upstream lifecycle behavior:** upstream adds configurable `RandomBotCountMode` / population trimming and a `RemoveRandomBots()` path that clears the saved `add` event, erases the GUID from `currentBots`, then logs the bot out. The older periodic-online/offline timing configuration has changed substantially. These changes intersect F14 identity, pending-login holds, saved-event replay and population quota behavior and require dedicated regression rather than textual conflict resolution alone.
+- **SQL/update preservation:** current upstream has four Playerbots SQL update files not present on this protected line: `2026_10_06_00_ai_playerbot_craft_link_texts.sql`, `2026_10_16_00_ai_playerbot_spanish_es-MX_texts.sql`, `2026_10_22_00_ai_playerbot_calc_breakdown_text.sql`, and `2026_10_27_00_ai_playerbot_class_role_texts.sql`. No local PB SQL path overlaps them. Retain them in the sync inventory, but do not infer database applicability or apply them to the owner DB without schema/data/backups review and approval.
+- **Required sync regression:** verify RandomBot positive identity before/at login, startup saved-`add` reconstruction, login error retirement, new population-downsize logout, manual Vanilla race10/11 hold under all upstream count modes, full randomization preserving selected rewarded IP markers, Altbot/SelfBot/human negative cases, restart behavior and exact Worldserver compile/link with current Core/IP/Naxx/Services. Gameplay must separately verify stage, visibility, group/combat and logout/relogin behavior.
+- **Risk / status / rollback:** upstream sync is **not yet implemented**. Installed owner source/config/database state remains unverified. No source merge, config change, account/bot mutation, SQL execution, host access or production action occurred. Rollback for this record is documentation-only; future sync must be isolated on a review branch and preserve every register entry before owner approval.
+
+### Upstream-sync three-way conflict refinement — 12 November 2026
+
+- **Conflict topology:** hunk-level comparison from shared base `e88cc4099e69f35126b28942a412ca702d20453b` shows that the eight path overlaps are not eight equal merge conflicts. Direct same-base-line hotspots are concentrated in:
+  - `src/Bot/RandomPlayerbotMgr.cpp` — include area plus `AddRandomBots()`;
+  - `src/PlayerbotAIConfig.cpp` — the random-population configuration block;
+  - `src/PlayerbotAIConfig.h` — adjacent config members.
+  The other five overlap paths currently change disjoint base hunks and should still receive semantic review, but are expected to be lower-risk insertion preservation rather than wholesale conflict resolution.
+- **Do not carry obsolete surrounding PB15 population code:** current upstream deliberately replaces `EnablePeriodicOnlineOffline`, `PeriodicOnlineOfflineRatio`, `MinRandomBotInWorldTime`, `MaxRandomBotInWorldTime` and `PermanentlyInWorldTime` with `RandomBotCountMode`, scheduled/variable count logic and fixed saved-add lifetime. The future restack must use current upstream as the population-management base and reapply only CosmicCuddle's F14 behavior. It must **not** reintroduce the removed historical knobs merely because they surround local F14 insertions.
+- **New scheduler interaction requiring a real adaptation:** PB14's manual Vanilla race10/11 hold keeps the owner's saved `add` event and `currentBots` membership but deliberately omits positively verified held type-1 BE/Draenei GUIDs from the **effective scheduling quota**, so held records cannot starve eligible Vanilla bots. New upstream `UpdateAIInternal()` now snapshots `availableBotCount = currentBots.size()` and uses that raw count for both the outer add and remove decisions. New `RemoveRandomBots()` also uses raw `currentBots.size()` for its early return and removal delta.
+- **Why a naive merge is unsafe:** if the manual hold is ON and held BE/Draenei GUIDs remain in `currentBots`, the raw upstream count can prevent `AddRandomBots()` from being called at all and can falsely trigger `RemoveRandomBots()`, potentially logging out unrelated eligible bots even though the held GUIDs are intentionally excluded from effective Vanilla scheduling capacity.
+- **Required future resolution:** preserve upstream count modes and calculate one reviewed **effective scheduled-bot count** using the existing positive type-1 account + character-cache race proof. Use that same effective count for:
+  1. `UpdateAIInternal()` add-vs-target decision;
+  2. `UpdateAIInternal()` remove-vs-target decision;
+  3. `AddRandomBots()` remaining-capacity delta;
+  4. `RemoveRandomBots()` excess-capacity / per-tick removal delta.
+  With the manual hold OFF, the helper must return exact `currentBots.size()` and avoid the cache walk, preserving upstream behavior.
+- **Keep upstream downsize safety:** `IsRemovableBot()`, faction balancing, combat/flight/teleport/BG/dungeon/real-player-group protection and the new `RemoveRandomBots()` teardown semantics are upstream behavior to preserve. Do not solve the quota mismatch by disabling downsizing or deleting held saved events. The existing F14 holder/session retirement must be regression-tested when upstream erases a GUID from `currentBots` immediately before `LogoutPlayerBot()`.
+- **Downsize faction accounting refinement:** the held type-1 BE/Draenei GUIDs are intentionally outside the effective scheduling quota, so they must also be outside the **effective Alliance/Horde occupancy used only by population downsizing**. Otherwise an already-online held bot can inflate `onlineAlliance`/`onlineHorde` and cause an unrelated eligible bot in that faction to be removed even when that eligible population is already at/below its target share. This exception is narrowly for positively verified F14-held GUIDs. Ordinary upstream non-removable bots (combat, flight/teleport, BG/arena/queue, dungeon/raid, real-player control/group) must continue to count toward their faction share exactly as upstream currently does.
+- **Single-snapshot adaptation:** current upstream calls `AddRandomBots()` and `RemoveRandomBots()` only from `UpdateAIInternal()`. Prefer computing the effective scheduled count once after `GetBots()` and passing that count into the private add/remove helpers, rather than repeating a CharacterCache/account classification walk inside each helper. This keeps the outer decision and capacity delta on one world-thread snapshot and avoids duplicate work.
+- **Online-login budget refinement:** upstream separately uses raw `playerBots.size()` to choose the login/update focus and to calculate `maxNewBots`. Already-online F14-held BE/Draenei bots are intentionally not deleted, but they must not consume this **effective scheduling login budget** either; otherwise they can still starve eligible Vanilla bots even after the `currentBots` quota is corrected. Keep the raw online count for upstream operational behavior such as `DisabledWithoutRealPlayer` logout-all handling, but derive an effective online count by excluding only GUIDs in the same held-GUID snapshot for target/focus/login-budget comparisons.
+- **GetBots boundary checked:** no extra quota rewrite is needed inside upstream `GetBots()`. With the hold ON at startup, PB15's saved-`add` replay guard skips a positively verified held GUID before `currentBots.insert`, so the raw size used by its load cap already equals the effective size. Once `currentBots` is non-empty, `GetBots()` returns early; live hold toggles are handled by the post-`GetBots()` effective snapshot and ProcessBot hold.
+- **Config merge recipe:** retain current upstream `RandomBotCountMode`, `RandomBotCountMinTime`, `RandomBotCountMaxTime` and its Min/Max validation; reinsert the three default-OFF F14 fields and the reset-marker atomic mask without reviving removed population members. Distributed config must likewise take the current upstream population section and add the F14 options independently.
+- **Required new regressions after restack:** hold OFF under count modes 0/1/2 must match upstream scheduling/downsize behavior; hold ON with enough held BE/D GUIDs to cross the target must neither starve eligible Vanilla bots nor cause false removals; target increases/decreases and live count-mode reloads must remain coherent; already-online BE/D bots are not silently deleted; Altbot/SelfBot/human GUIDs never enter the held-count predicate; upstream downsize logout must retire F14 session/actor evidence without reviving a stale identity.
+- **Status:** design/preservation finding only. No upstream merge, runtime code, config, SQL, bot logout, server start or deployment has been performed.
+
+
+### Playerbots upstream SQL applicability triage — PB19 restack (12 Nov 2026)
+
+The current upstream restack introduces four Playerbots updater files beyond protected PB15:
+
+- `2026_10_06_00_ai_playerbot_craft_link_texts.sql`
+- `2026_10_16_00_ai_playerbot_spanish_es-MX_texts.sql`
+- `2026_10_22_00_ai_playerbot_calc_breakdown_text.sql`
+- `2026_10_27_00_ai_playerbot_class_role_texts.sql`
+
+Read-only inspection confirms these affect Playerbots text/localisation tables only:
+- `ai_playerbot_texts`;
+- `ai_playerbot_texts_chance`;
+- primarily DELETE/INSERT replacement of named text records or localisation-column UPDATEs.
+
+They do **not** alter the F14 hold/account-type schema, bot population tables, character progression markers, Core world schema or account data.
+
+Risk is therefore lower than the accompanying Core25 SQL migrations, but application is still conditional:
+- verify the Playerbots updater history/version on the disposable DB copy;
+- back up the Playerbots database/text tables before catch-up;
+- preserve any owner-custom text rows/names that overlap these exact keys/IDs;
+- verify localisation and the `craft`, `calc`, and class-role command responses after update;
+- do not execute SQL as part of CI or merely because PB19 compiles.
+
+No SQL has been run by this audit.
