@@ -1,6 +1,6 @@
 # Playerbots current-upstream F14 restack candidate — 12 November 2026
 
-Owner: CosmicCuddle  
+Owner: CosmicCuddle
 Status: **DRAFT / DEVELOPMENT ONLY — no merge or deployment authority**
 
 ## Exact ancestry
