@@ -4,7 +4,7 @@
 
 The existing queued `GroupInviteOperation` also receives the standard group-invite veto before its direct group creation/conversion/add. It captures both participant epochs to reject stale queued work. This preserves ordinary IP grouping enforcement for permitted personal/Altbots without classifying them as F14 social RandomBots. Same-session invite-policy changes after preflight and native/gameplay behavior remain unverified.
 
-Lifetime audit: map-worker AI can call `LogoutPlayerBot` directly while a world operation is executing. The generation lock does not span Player/session mutation and teardown; this concurrency risk remains open pending a separate lifetime-serialization design.
+Lifetime audit: public Core `395b68ee` waits for map workers in `MapMgr::Update` before the PB world-operation drain, so the map-AI logout path is serialized at that pin. The installed Core and other exceptional teardown paths remain unverified; the generation lock itself does not protect Player/session lifetime.
 The Player destruction hook retires login and invitation generations as an idempotent fallback if a higher-level logout path was skipped.
 
 - **Owner:** CosmicCuddle. **Owning component:** `mod-playerbots` in its own repository.

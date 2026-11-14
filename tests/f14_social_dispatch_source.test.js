@@ -293,7 +293,7 @@ test("overflow invalidates the previous value for that subject", () => {
     assert.equal(oldValueSurvives(header.replace("_logins.erase(key);", "// erased removed")), false);
 });
 
-test("teardown audit keeps the map-update race visible", () => {
+test("teardown audit keeps the direct AI logout path visible", () => {
     const script = read("src/Script/Playerbots.cpp");
     const ai = read("src/Bot/PlayerbotAI.cpp");
     const holder = read("src/Bot/PlayerbotMgr.cpp");
