@@ -724,30 +724,45 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     }
 }
 
+static std::string PersonalBotAccountRejection(uint32 accountId, ObjectGuid guid)
+{
+    if (!accountId)
+        return "bot account classification unavailable";
+
+    auto const& randomAccounts = sRandomPlayerbotMgr.rndBotTypeAccounts;
+    if (std::find(randomAccounts.begin(), randomAccounts.end(), accountId) != randomAccounts.end() ||
+        (guid.IsPlayer() && sRandomPlayerbotMgr.IsRandomBot(guid.GetCounter())))
+        return "random bots cannot be added as personal bots";
+
+    auto const& addClassAccounts = sRandomPlayerbotMgr.addClassTypeAccounts;
+    if (sPlayerbotAIConfig.IsInRandomAccountList(accountId) &&
+        std::find(addClassAccounts.begin(), addClassAccounts.end(), accountId) == addClassAccounts.end())
+        return "bot account classification unavailable";
+
+    return {};
+}
+
 std::string const PlayerbotHolder::ProcessBotCommand(std::string const cmd, ObjectGuid guid, ObjectGuid masterguid,
                                                      bool admin, uint32 masterAccountId, uint32)
 {
     if (!sPlayerbotAIConfig.Enabled || guid.IsEmpty())
         return "bot system is disabled";
 
-    //bool isRandomBot = sRandomPlayerbotMgr.IsRandomBot(guid.GetCounter()); //not used, line marked for removal.
-    //bool isRandomAccount = sPlayerbotAIConfig.IsInRandomAccountList(botAccount); //not used, shadowed, line marked for removal.
-    //bool isMasterAccount = (masterAccountId == botAccount); //not used, line marked for removal.
-
     if (cmd == "add" || cmd == "addaccount" || cmd == "login")
     {
+        uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(guid);
+        if (!accountId)
+            return "character not found";
+
+        if (std::string rejection = PersonalBotAccountRejection(accountId, guid); !rejection.empty())
+            return rejection;
+
         if (ObjectAccessor::FindPlayer(guid))
             return "player already logged in";
 
         // For addaccount command, verify it's an account name
         if (cmd == "addaccount")
         {
-            uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(guid);
-            if (!accountId)
-            {
-                return "character not found";
-            }
-
             if (!sPlayerbotAIConfig.AllowAccountBots && accountId != masterAccountId &&
                 !(sPlayerbotAIConfig.AllowTrustedAccountBots && IsAccountLinked(accountId, masterAccountId)))
             {
@@ -1348,6 +1363,13 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
                     messages.push_back("Could not find account for character '" + s + "'");
                     continue;
                 }
+            }
+
+            if (std::string rejection = PersonalBotAccountRejection(accountId, ObjectGuid::Empty);
+                !rejection.empty())
+            {
+                messages.push_back("Account '" + s + "': " + rejection);
+                continue;
             }
 
             QueryResult results = CharacterDatabase.Query("SELECT name FROM characters WHERE account = {}", accountId);
