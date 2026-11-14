@@ -1,6 +1,6 @@
 # F14 Playerbots social dispatch candidate — source and test plan
 
-This DRAFT source candidate starts at public Playerbots `405f81196161017eebae3ee7a612d786a3ed2a9d`. Installed Core, Playerbots, IP and map-worker configuration remain UNKNOWN. It does not change Core, IP, SQL, config, DBC, client files or a server. F14/Paid remain OFF.
+This DRAFT source candidate starts at public Playerbots `405f81196161017eebae3ee7a612d786a3ed2a9d`. The pre-sync Phase-A Core line is Core23 `dbb1dd5150f330d88522a10b85e93546fff72bad` plus the isolated Core #30 guild seam `8a306898bfa4dd5ee7ef5195e0b539ba05824799`; installed Core, Playerbots, IP and map-worker configuration remain UNKNOWN. It does not change Core, IP, SQL, config, DBC, client files or a server. F14/Paid remain OFF.
 
 ## Thread route and exact scope
 
@@ -11,7 +11,7 @@ Player destruction retires both again, so an exceptional path that skips normal 
 
 The existing `GroupInviteOperation` is also a queued direct add: it can create or convert a group and call `Group::AddMember` without a normal client invite/accept. It now captures bot and target login epochs, rejects stale sessions, and calls the standard `OnPlayerCanGroupInvite` veto after the stock grouped-target check but before group mutation. The IP invite hook is inert when disabled or when ordinary group enforcement is off; when enforced, it checks the target against the inviter and existing members. PB does not infer eligibility from race. This world-thread preflight does not call IP's accept hook, which can write progression state on a later failed direct add. Other special-group direct adds are outside this candidate.
 
-In pinned Playerbots, AI actions run from the player update path and can execute on map workers. `InviteToGroupAction`, `TradeAction` and `AcceptBattlegroundInvitationAction` previously called `PROCESS_THREADUNSAFE` handlers directly. Their existing payload fields and order now enter `WorldSession::QueuePacket`. For headless RandomBots, `PlayerbotsWorldScript::OnUpdate` calls `sRandomPlayerbotMgr.UpdateSessions()`; for a master's bots, `PlayerbotsSessionScript::OnSessionUpdate` calls `PlayerbotMgr::UpdateSessions()`. Both reach `PlayerbotHolder::HandleBotPackets`, which drains `NextQueuedPacket()` and invokes the opcode handler. At candidate Core #25, `WorldSession::Update` calls `OnSessionUpdate` in its unsafe/world pass. Session queues own packet copies; a destroyed session loses its queue. A new session is not handed a prior session's packet by this candidate.
+In pinned Playerbots, AI actions run from the player update path and can execute on map workers. `InviteToGroupAction`, `TradeAction` and `AcceptBattlegroundInvitationAction` previously called `PROCESS_THREADUNSAFE` handlers directly. Their existing payload fields and order now enter `WorldSession::QueuePacket`. For headless RandomBots, `PlayerbotsWorldScript::OnUpdate` calls `sRandomPlayerbotMgr.UpdateSessions()`; for a master's bots, `PlayerbotsSessionScript::OnSessionUpdate` calls `PlayerbotMgr::UpdateSessions()`. Both reach `PlayerbotHolder::HandleBotPackets`, which drains `NextQueuedPacket()` and invokes the opcode handler. At the Phase-A Core23/#30 source pin, `WorldSession::Update` calls `OnSessionUpdate` in its unsafe/world pass. Session queues own packet copies; a destroyed session loses its queue. A new session is not handed a prior session's packet by this candidate.
 
 Group accept cannot simply queue its packet because `GetGroup`, `SetMaster`, strategies, greeting and summon depend immediately on the handler result. `GroupAcceptOperation` runs from `PlayerbotWorldThreadProcessor::Update` in the world script, resolves GUIDs at execution, checks the same pending group/leader and live bot session, runs the unchanged zero-role payload through `HandleGroupAcceptOpcode`, verifies new membership, then performs the follow-up in the old order. A duplicate operation sees the invite removed by the first successful accept and skips before the handler. A refused accept cannot run the follow-up. Queue-full returns false from the action. The operation stores no `Player*` or `WorldSession*` across ticks.
 
@@ -29,16 +29,17 @@ The command guard uses `RandomPlayerbotMgr::rndBotTypeAccounts`, populated from 
 
 ## Local checks and required staged matrix
 
-The public Core update loop waits for map workers before the PB world-operation drain, so the AI-triggered logout path is serialized with that drain at Core `395b68ee`. The generation registry does not itself protect Player/session lifetime; verify the installed Core barrier and exceptional teardown paths before native safety is claimed.
+The public Core update loop waits for map workers before the PB world-operation drain, so the AI-triggered logout path is serialized with that drain at Core `395b68ee`; Core #30 also places map update before world-script drain. The generation registry does not itself protect Player/session lifetime; verify the installed Core barrier and exceptional teardown paths before native safety is claimed.
 
 `node --test tests/f14_social_dispatch_source.test.js`: 17/17 PASS at the candidate source, covering packet fields/order, removal of the four direct calls, group-accept handler-before-follow-up, epoch hooks and adversarial models, account-classification models, and adoption guard placement. `git diff --check`: PASS. Python, clang-format, a C++ compiler, a Core build and ThreadSanitizer are unavailable here; repository instructions also prohibit configuring/building unless explicitly requested.
 
-Before any merge or deployment, test against the owner's exact installed source tuple on a disposable realm, with map workers **>0 and =0** separately:
+Phase A requires current-baseline composition, source review and available native compile/link evidence before owner-approved merge. Under the owner's revised sequence, the following **in-game** matrix runs once on the final combined stack after merge and Phase-B synchronization, preferably on a disposable realm, with map workers **>0 and =0** separately:
 
 1. Bot→human, bot→bot and human→bot group invite; accept/decline, duplicate ticks, same-group cancel/reinvite, bot and inviter logout/relog before drain, full group, role payload and original follow-up order. Prove no old queued accept crosses an invitation cycle.
 2. Trade initiation with repeat ticks, disconnect and a pre-existing trade; blocked IP social pair must stay blocked at the world-thread hook.
 3. BG invite port with repeat ticks, canceled/expired queue, logout, normal eligible entry and IP denial; compare packet fields and outcome to pre-change behavior.
 4. `.playerbots bot add`, `login` and `addaccount` for offline type-1 RandomBot, active RandomBot, own-account alt, linked-account alt, type-2 AddClass and unknown/unavailable managed-account classification. Confirm a restricted RandomBot cannot reach the direct `GroupInviteOperation::AddMember` command path.
-5. Run native compile/link and ThreadSanitizer if the disposable build environment permits; inspect queue lifetime and map/world handoff at exact installed refs. Keep this separate from all other direct `PROCESS_THREADUNSAFE` Playerbots calls.
+
+Compile/link the final tuple before that in-game run; use ThreadSanitizer if the build environment permits. Inspect queue lifetime and map/world handoff at exact installed refs. Keep this separate from all other direct `PROCESS_THREADUNSAFE` Playerbots calls.
 
 No gameplay, installed-version or live safety conclusion follows from the local source/model checks.
