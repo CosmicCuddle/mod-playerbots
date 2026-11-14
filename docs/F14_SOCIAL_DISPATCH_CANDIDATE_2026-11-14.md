@@ -26,7 +26,9 @@ The command guard uses `RandomPlayerbotMgr::rndBotTypeAccounts`, populated from 
 
 ## Local checks and required staged matrix
 
-`node --test tests/f14_social_dispatch_source.test.js`: 14/14 PASS at the candidate source, covering packet fields/order, removal of the four direct calls, group-accept handler-before-follow-up, epoch hooks and adversarial models, account-classification models, and adoption guard placement. `git diff --check`: PASS. Python, clang-format, a C++ compiler, a Core build and ThreadSanitizer are unavailable here; repository instructions also prohibit configuring/building unless explicitly requested.
+The follow-up audit identifies an open teardown race: AI-triggered `LogoutPlayerBot` may run from a map worker while the world operation is past its final generation check. The generation registry does not protect Player/session lifetime. This needs a separately reviewed serialization or lifetime-guard design before native safety can be claimed.
+
+`node --test tests/f14_social_dispatch_source.test.js`: 15/15 PASS at the candidate source, covering packet fields/order, removal of the four direct calls, group-accept handler-before-follow-up, epoch hooks and adversarial models, account-classification models, and adoption guard placement. `git diff --check`: PASS. Python, clang-format, a C++ compiler, a Core build and ThreadSanitizer are unavailable here; repository instructions also prohibit configuring/building unless explicitly requested.
 
 Before any merge or deployment, test against the owner's exact installed source tuple on a disposable realm, with map workers **>0 and =0** separately:
 
