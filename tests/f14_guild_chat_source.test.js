@@ -29,6 +29,8 @@ test("guild chat operation rechecks the live identity and guild before Core filt
     const preflight = operation.indexOf("OnPlayerCanUseChat(bot, CHAT_MSG_GUILD, LANG_UNIVERSAL, message, guild)");
     const broadcast = operation.indexOf("guild->BroadcastToGuild(session, false, message.c_str(), LANG_UNIVERSAL)");
     assert.ok(preflight >= 0 && preflight < broadcast);
+    assert.doesNotMatch(operation, /CHAT_MSG_OFFICER|LANG_ADDON|CMSG_MESSAGECHAT|QueuePacket/,
+        "guild operation must not become an officer, addon, or fake client transport");
     assert.match(operation, /OnPlayerCanUseChat[^;]+\|\| message\.empty\(\)\)/);
     assert.doesNotMatch(operation, /Player\* m_|WorldSession\* m_|Guild\* m_/);
 });
