@@ -51,6 +51,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "SocialMgr.h"
+#include "TaxiSplineSnapshot.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "Transport.h"
@@ -915,6 +916,7 @@ void PlayerbotAI::HandleTeleportAck()
      */
     if (bot->IsBeingTeleportedNear())
     {
+        TaxiSplineSnapshot taxiSpline(bot, "near-teleport-ack");
         if (!bot->IsInWorld())
             return;
 

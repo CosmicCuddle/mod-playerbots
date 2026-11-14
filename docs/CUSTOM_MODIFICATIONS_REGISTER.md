@@ -1,5 +1,18 @@
 # Custom Modifications Register
 
+## PB57-TAXI-SPLINE-ATTRIBUTION-20261114 — flight interruption diagnostics
+
+- **Owner/component:** CosmicCuddle / `mod-playerbots`.
+- **Parent/source reference:** synced fork master `3a9e39f1be9f988ce53f9d4f19636207ff25c4a9`; `feature/codex-pb57-spline-attribution-20261114`. The diagnostic idea follows [upstream issue #2863](https://github.com/mod-playerbots/mod-playerbots/issues/2863); this implementation is local.
+- **Intended behavior:** record a warning only when an active bot taxi spline changes or finalizes during action execution, the PB AI update, or near-teleport acknowledgment on the same map. It does not stop, restart, or teleport the bot.
+- **Affected files:** `src/Bot/TaxiSplineSnapshot.h`, `src/Bot/Engine/Engine.cpp`, `src/Bot/PlayerbotAI.cpp`, `src/Script/Playerbots.cpp`, this Register.
+- **Dependencies:** pinned PB/Core movement spline APIs. No SQL, configuration, DBC, or client patch.
+- **Risks:** extra per-action/per-tick checks and warning logs on transitions; nested action and tick scopes can log the same transition twice. A change outside these PB scopes is not attributed. Native compilation, performance, and staged taxi behavior are unverified.
+- **Tests:** `git diff --check` PASS and source seam review complete. Codestyle could not run because no Python interpreter is installed; clang-format is unavailable. No native build or gameplay test in this workspace.
+- **Live status:** local diagnostic candidate only; not merged or deployed. F14/Paid remain off.
+- **Decision:** root-cause instrumentation before a recovery rule, tracked in [coordination Issue #57](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/57).
+- **Rollback:** omit or revert this isolated diagnostic change before an owner-approved deployment; no persistent data is changed.
+
 ## PB-F14-SOCIAL-DISPATCH-20261114 — world-thread social dispatch and RandomBot adoption guard
 
 The existing queued `GroupInviteOperation` also receives the standard group-invite veto before its direct group creation/conversion/add. It captures both participant epochs to reject stale queued work. This preserves ordinary IP grouping enforcement for permitted personal/Altbots without classifying them as F14 social RandomBots. Same-session invite-policy changes after preflight and native/gameplay behavior remain unverified.

@@ -11,6 +11,7 @@
 #include "Playerbots.h"
 #include "Queue.h"
 #include "Strategy.h"
+#include "TaxiSplineSnapshot.h"
 #include "Timer.h"
 
 Engine::Engine(PlayerbotAI* botAI, AiObjectContext* factory) : PlayerbotAIAware(botAI), aiObjectContext(factory)
@@ -599,7 +600,13 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
     if (actionExecutionListeners.Before(action, event))
     {
-        actionExecuted = actionExecutionListeners.AllowExecution(action, event) ? action->Execute(event) : true;
+        if (actionExecutionListeners.AllowExecution(action, event))
+        {
+            TaxiSplineSnapshot taxiSpline(botAI->GetBot(), botAI->GetBot()->IsInFlight() ? action->getName() : std::string());
+            actionExecuted = action->Execute(event);
+        }
+        else
+            actionExecuted = true;
     }
 
     if (botAI->HasStrategy("debug", BOT_STATE_NON_COMBAT))

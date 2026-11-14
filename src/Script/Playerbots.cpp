@@ -31,6 +31,7 @@
 #include "ScriptMgr.h"
 #include "ServerScript.h"
 #include "SessionScript.h"
+#include "TaxiSplineSnapshot.h"
 #include "WorldScript.h"
 #include "cmath"
 
@@ -255,6 +256,7 @@ public:
 
         if (botAI != nullptr)
         {
+            TaxiSplineSnapshot taxiSpline(player, "ai-update");
             botAI->UpdateAI(diff);
         }
 
