@@ -192,3 +192,36 @@ test("group accept model rejects canceled, duplicate, disconnected and removed-b
     issue(state.bot); state.hasAI = true;
     assert.equal(eligible(disconnected), false); // same GUID after relog
 });
+
+test("direct group add checks session epochs and invite veto before mutation", () => {
+    const operations = read("src/Script/WorldThr/PlayerbotOperations.h");
+    const invite = operations.split("class GroupInviteOperation")[1]?.split("// Remove member from group")[0];
+    assert.ok(invite);
+    assert.match(invite, /m_botEpoch\(GroupAcceptSessionEpoch::Instance\(\)\.Current\(botGuid\)\)/);
+    assert.match(invite, /m_targetEpoch\(GroupAcceptSessionEpoch::Instance\(\)\.Current\(targetGuid\)\)/);
+    assert.match(invite, /bool Execute\(\) override\s*\{\s*if \(!EpochsMatch\(\)\)/);
+    assert.match(invite, /bool IsValid\(\) const override\s*\{\s*if \(!EpochsMatch\(\)\)/);
+    const veto = invite.indexOf("OnPlayerCanGroupInvite(bot, targetName)");
+    assert.ok(veto > invite.indexOf("if (target->GetGroup())"));
+    for (const mutation of ["group = new Group", "group->Create(bot)", "sGroupMgr->AddGroup(group)",
+        "group->ConvertToRaid()", "group->AddMember(target)"])
+        assert.ok(veto < invite.indexOf(mutation), `${mutation} must follow veto`);
+    assert.doesNotMatch(invite, /OnPlayerCanGroupAccept/);
+    const hasPreMutationVeto = source => source.indexOf("OnPlayerCanGroupInvite(bot, targetName)") >= 0 &&
+        source.indexOf("OnPlayerCanGroupInvite(bot, targetName)") < source.indexOf("group = new Group");
+    assert.equal(hasPreMutationVeto(invite), true);
+    assert.equal(hasPreMutationVeto(invite.replace("OnPlayerCanGroupInvite(bot, targetName)", "true")), false);
+});
+
+test("invite preflight model delegates ordinary group policy without PB race inference", () => {
+    const mayGroup = (memberEra, targetEra) => memberEra === targetEra;
+    const preflight = ({enabled, enforce, targetGrouped, memberEras, targetEra}) =>
+        !targetGrouped && (!enabled || !enforce || memberEras.every(era => mayGroup(era, targetEra)));
+    const base = {enabled: true, enforce: true, targetGrouped: false, memberEras: [1, 1], targetEra: 1};
+    assert.equal(preflight({...base, enabled: false, targetEra: 2}), true);
+    assert.equal(preflight({...base, enforce: false, targetEra: 2}), true);
+    assert.equal(preflight(base), true); // same era, including an ordinary personal bot
+    assert.equal(preflight({...base, targetEra: 2}), false); // Vanilla to TBC
+    assert.equal(preflight({...base, memberEras: [2, 3], targetEra: 2}), false); // existing member mismatch
+    assert.equal(preflight({...base, targetGrouped: true}), false); // stock refusal
+});
