@@ -10,6 +10,8 @@
 #include "ArenaTeamMgr.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "GuildPackets.h"
+#include "PlayerbotIdentityGeneration.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -18,24 +20,212 @@
 #include "PlayerbotMgr.h"
 #include "PlayerbotOperation.h"
 #include "PlayerbotRepository.h"
+#include "PlayerbotSecurity.h"
+#include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "ScriptMgr.h"
 #include "UseMeetingStoneAction.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
+#include "WorldPacket.h"
+#include <utility>
+
+class GuildChatOperation : public PlayerbotOperation
+{
+public:
+    GuildChatOperation(ObjectGuid botGuid, uint32 guildId, std::uint64_t botEpoch, std::string message)
+        : m_botGuid(botGuid), m_guildId(guildId), m_botEpoch(botEpoch), m_message(std::move(message))
+    {
+    }
+
+    bool Execute() override
+    {
+        if (!EpochMatches())
+            return false;
+
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        WorldSession* session = bot ? bot->GetSession() : nullptr;
+        Guild* guild = sGuildMgr->GetGuildById(m_guildId);
+        if (!bot || !session || session->GetPlayer() != bot || bot->GetGuildId() != m_guildId || !guild ||
+            !guild->GetMember(m_botGuid) || !guild->HasRankRight(bot, GR_RIGHT_GCHATSPEAK))
+            return false;
+
+        std::string message = m_message;
+        if (!sScriptMgr->OnPlayerCanUseChat(bot, CHAT_MSG_GUILD, LANG_UNIVERSAL, message, guild) || message.empty())
+            return false;
+
+        guild->BroadcastToGuild(session, false, message.c_str(), LANG_UNIVERSAL);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    std::string GetName() const override { return "GuildChat"; }
+
+    bool IsValid() const override { return EpochMatches(); }
+
+private:
+    bool EpochMatches() const
+    {
+        return m_botEpoch && PlayerbotIdentityGeneration::Instance().CurrentLogin(m_botGuid) == m_botEpoch;
+    }
+
+    ObjectGuid m_botGuid;
+    uint32 m_guildId;
+    std::uint64_t m_botEpoch;
+    std::string m_message;
+};
+
+class GuildAcceptOperation : public PlayerbotOperation
+{
+public:
+    GuildAcceptOperation(ObjectGuid botGuid, uint32 guildId, std::uint64_t botEpoch)
+        : m_botGuid(botGuid), m_guildId(guildId), m_botEpoch(botEpoch)
+    {
+    }
+
+    bool Execute() override
+    {
+        if (!EpochMatches())
+            return false;
+
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        WorldSession* session = bot ? bot->GetSession() : nullptr;
+        if (!bot || !session || session->GetPlayer() != bot || bot->GetGuildId() ||
+            bot->GetGuildIdInvited() != m_guildId)
+            return false;
+
+        WorldPackets::Guild::AcceptGuildInvite data = WorldPacket(CMSG_GUILD_ACCEPT);
+        session->HandleGuildAcceptOpcode(data);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    std::string GetName() const override { return "GuildAccept"; }
+    bool IsValid() const override { return EpochMatches(); }
+
+private:
+    bool EpochMatches() const
+    {
+        return m_botEpoch && PlayerbotIdentityGeneration::Instance().CurrentLogin(m_botGuid) == m_botEpoch;
+    }
+
+    ObjectGuid m_botGuid;
+    uint32 m_guildId;
+    std::uint64_t m_botEpoch;
+};
+
+class GroupAcceptOperation : public PlayerbotOperation
+{
+public:
+    GroupAcceptOperation(ObjectGuid botGuid, ObjectGuid inviterGuid, ObjectGuid inviteGroupGuid,
+                         std::uint64_t botEpoch, std::uint64_t inviterEpoch, std::uint64_t invitationGeneration)
+        : m_botGuid(botGuid), m_inviterGuid(inviterGuid), m_inviteGroupGuid(inviteGroupGuid),
+          m_botEpoch(botEpoch), m_inviterEpoch(inviterEpoch), m_invitationGeneration(invitationGeneration)
+    {
+    }
+
+    bool Execute() override
+    {
+        if (!EpochsMatch())
+            return false;
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        Player* inviter = ObjectAccessor::FindPlayer(m_inviterGuid);
+        if (!bot || !inviter || !bot->GetSession() || bot->GetSession()->GetPlayer() != bot)
+            return false;
+
+        Group* invite = bot->GetGroupInvite();
+        if (!invite || invite->GetGUID() != m_inviteGroupGuid || invite->GetLeaderGUID() != m_inviterGuid)
+            return false;
+
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!botAI)
+            return false;
+
+        if (!botAI->GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, false, inviter))
+        {
+            WorldPacket data(SMSG_GROUP_DECLINE, 10);
+            data << bot->GetName();
+            inviter->SendDirectMessage(&data);
+            bot->UninviteFromGroup();
+            return false;
+        }
+
+        if (bot->isAFK() && !IsSelfBot(bot))
+            bot->ToggleAFK();
+
+        WorldPacket packet;
+        uint32 rolesMask = 0;
+        packet << rolesMask;
+        bot->GetSession()->HandleGroupAcceptOpcode(packet);
+
+        Group* group = bot->GetGroup();
+        if (!group || !group->IsMember(m_inviterGuid))
+            return false;
+
+        if (sRandomPlayerbotMgr.IsRandomBot(bot))
+            botAI->SetMaster(inviter);
+
+        botAI->ResetStrategies();
+        botAI->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
+        botAI->Reset();
+        botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
+
+        if (sPlayerbotAIConfig.SummonWhenGroup && bot->GetDistance(inviter) > sPlayerbotAIConfig.SightDistance)
+        {
+            SummonAction summonAction(botAI, "group summon");
+            summonAction.Teleport(inviter, bot, true);
+        }
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    uint32 GetPriority() const override { return 50; }
+    std::string GetName() const override { return "GroupAccept"; }
+
+    bool IsValid() const override
+    {
+        if (!EpochsMatch())
+            return false;
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        Group* invite = bot ? bot->GetGroupInvite() : nullptr;
+        return invite && invite->GetGUID() == m_inviteGroupGuid && invite->GetLeaderGUID() == m_inviterGuid;
+    }
+
+private:
+    bool EpochsMatch() const
+    {
+        PlayerbotIdentityGeneration& epochs = PlayerbotIdentityGeneration::Instance();
+        return m_botEpoch && m_inviterEpoch && m_invitationGeneration &&
+               epochs.CurrentLogin(m_botGuid) == m_botEpoch &&
+               epochs.CurrentLogin(m_inviterGuid) == m_inviterEpoch &&
+               epochs.CurrentInvitation(m_botGuid) == m_invitationGeneration;
+    }
+
+    ObjectGuid m_botGuid;
+    ObjectGuid m_inviterGuid;
+    ObjectGuid m_inviteGroupGuid;
+    std::uint64_t m_botEpoch;
+    std::uint64_t m_inviterEpoch;
+    std::uint64_t m_invitationGeneration;
+};
 
 // Group invite operation
 class GroupInviteOperation : public PlayerbotOperation
 {
 public:
     GroupInviteOperation(ObjectGuid botGuid, ObjectGuid targetGuid)
-        : m_botGuid(botGuid), m_targetGuid(targetGuid)
+        : m_botGuid(botGuid), m_targetGuid(targetGuid),
+          m_botEpoch(PlayerbotIdentityGeneration::Instance().CurrentLogin(botGuid)),
+          m_targetEpoch(PlayerbotIdentityGeneration::Instance().CurrentLogin(targetGuid))
     {
     }
 
     bool Execute() override
     {
+        if (!EpochsMatch())
+            return false;
         Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
         Player* target = ObjectAccessor::FindPlayer(m_targetGuid);
 
@@ -51,6 +241,10 @@ public:
             LOG_DEBUG("playerbots", "GroupInviteOperation: Target {} is already in a group", target->GetName());
             return false;
         }
+
+        std::string targetName = target->GetName();
+        if (!sScriptMgr->OnPlayerCanGroupInvite(bot, targetName))
+            return false;
 
         Group* group = bot->GetGroup();
 
@@ -105,6 +299,8 @@ public:
 
     bool IsValid() const override
     {
+        if (!EpochsMatch())
+            return false;
         // Check if bot still exists and is online
         Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
         Player* target = ObjectAccessor::FindPlayer(m_targetGuid);
@@ -112,8 +308,17 @@ public:
     }
 
 private:
+    bool EpochsMatch() const
+    {
+        PlayerbotIdentityGeneration& epochs = PlayerbotIdentityGeneration::Instance();
+        return m_botEpoch && m_targetEpoch && epochs.CurrentLogin(m_botGuid) == m_botEpoch &&
+               epochs.CurrentLogin(m_targetGuid) == m_targetEpoch;
+    }
+
     ObjectGuid m_botGuid;
     ObjectGuid m_targetGuid;
+    std::uint64_t m_botEpoch;
+    std::uint64_t m_targetEpoch;
 };
 
 // Remove member from group

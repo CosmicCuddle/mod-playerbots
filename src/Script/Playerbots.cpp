@@ -19,6 +19,8 @@
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "GroupScript.h"
+#include "PlayerbotIdentityGeneration.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
@@ -147,6 +149,7 @@ public:
     {
         if (!player->GetSession()->IsHeadless())
         {
+            PlayerbotIdentityGeneration::Instance().IssueLogin(player->GetGUID());
             PlayerbotsMgr::instance().AddPlayerbotData(player, false);
             sRandomPlayerbotMgr.OnPlayerLogin(player);
 
@@ -173,6 +176,7 @@ public:
 
     void OnPlayerBeforeLogout(Player* player) override
     {
+        PlayerbotIdentityGeneration::Instance().RetireLogin(player->GetGUID());
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
         {
             PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);
@@ -389,6 +393,17 @@ public:
     }
 };
 
+class PlayerbotsGroupScript : public GroupScript
+{
+public:
+    PlayerbotsGroupScript() : GroupScript("PlayerbotsGroupScript", {GROUPHOOK_ON_INVITE_MEMBER}) {}
+
+    void OnInviteMember(Group* /*group*/, ObjectGuid guid) override
+    {
+        PlayerbotIdentityGeneration::Instance().IssueInvitation(guid);
+    }
+};
+
 class PlayerbotsMiscScript : public MiscScript
 {
 public:
@@ -396,6 +411,7 @@ public:
 
     void OnDestructPlayer(Player* player) override
     {
+        PlayerbotIdentityGeneration::Instance().RetireLogin(player->GetGUID());
         PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);
 
         if (botAI != nullptr)
@@ -624,6 +640,7 @@ void AddPlayerbotsScripts()
     new PlayerbotsBattlefieldScript();
     new PlayerbotsDatabaseScript();
     new PlayerbotsPlayerScript();
+    new PlayerbotsGroupScript();
     new PlayerbotsMiscScript();
     new PlayerbotsServerScript();
     new PlayerbotsSessionScript();

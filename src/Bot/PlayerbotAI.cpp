@@ -36,8 +36,10 @@
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
+#include "PlayerbotOperations.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotTextMgr.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "PositionValue.h"
 #include "RBAC.h"
@@ -462,7 +464,7 @@ bool PlayerbotAI::UpdateAIReaction(uint32 elapsed, bool minimal, bool canControl
         if (reaction)
         {
             if (reaction->ShouldInterruptCast())
-                bot->InterruptNonMeleeSpells(true);
+                bot->CastStop();
 
             if (reaction->ShouldInterruptMovement())
                 bot->StopMoving();
@@ -2938,25 +2940,16 @@ std::vector<Player*> PlayerbotAI::GetAllPlayersInGroup()
 
 bool PlayerbotAI::SayToGuild(std::string const& msg)
 {
-    if (msg.empty())
-    {
+    if (msg.empty() || !bot->GetGuildId())
         return false;
-    }
 
-    if (bot->GetGuildId())
-    {
-        if (Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId()))
-        {
-            if (!guild->HasRankRight(bot, GR_RIGHT_GCHATSPEAK))
-            {
-                return false;
-            }
-            guild->BroadcastToGuild(bot->GetSession(), false, msg.c_str(), LANG_UNIVERSAL);
-            return true;
-        }
-    }
+    ObjectGuid botGuid = bot->GetGUID();
+    std::uint64_t botEpoch = PlayerbotIdentityGeneration::Instance().CurrentLogin(botGuid);
+    if (!botEpoch)
+        return false;
 
-    return false;
+    auto operation = std::make_unique<GuildChatOperation>(botGuid, bot->GetGuildId(), botEpoch, msg);
+    return PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(operation));
 }
 
 bool PlayerbotAI::SayToWorld(std::string const& msg)
