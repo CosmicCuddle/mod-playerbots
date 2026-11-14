@@ -10,6 +10,8 @@ Pin: parent `405f81196161017eebae3ee7a612d786a3ed2a9d`, candidate branch `featur
 
 ## Account assignment lifecycle
 
+Two explicit reinitialization entries are present: the `reload` branch in `RandomPlayerbotMgr::HandlePlayerbotConsoleCommand` and the GM `reload` branch in `PlayerbotHolder::HandlePlayerbotCommand`. Both call `sPlayerbotAIConfig.Initialize`, which rebuilds the assignment lists. The exact thread for each command entry must be verified against Core chat/console dispatch; the vectors are read without a snapshot lock in the personal-bot refusal and rewritten by assignment initialization. Concurrent reload/read is therefore an open data-race question rather than a proven safe snapshot.
+
 `PlayerbotAIConfig::Initialize` calls `RandomPlayerbotMgr::AssignAccountTypes` after random-account creation during world-script startup. The `rndbot reload` console path also calls `Initialize`. `AssignAccountTypes` queries login `account` rows by managed prefix, reads persisted account-type assignments, creates type 0 rows for newly found managed accounts, assigns type 1 and type 2 from their configured pools, then rebuilds `rndBotTypeAccounts` and `addClassTypeAccounts`. The command refusal uses the type-1 snapshot plus active `IsRandomBot` as positive evidence. A managed-prefix account missing from both lists is refused as unresolved; an ordinary account missing from both lists is not refused. A DB/account change after the last initialization may leave the snapshot stale until reload; no automatic refresh was found in this tree. Whether reload can race a concurrent command read needs a native/thread-ownership check. No DB operation was performed for this audit.
 
 ## Existing world-operation queue
