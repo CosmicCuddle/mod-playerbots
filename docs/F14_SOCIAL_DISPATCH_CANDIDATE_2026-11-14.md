@@ -16,7 +16,7 @@ The command guard uses `RandomPlayerbotMgr::rndBotTypeAccounts`, populated from 
 
 ## Local checks and required staged matrix
 
-`node --test tests/f14_social_dispatch_source.test.js`: 5/5 PASS at the candidate source, covering packet fields/order, removal of the four direct calls, group-accept handler-before-follow-up, stale/duplicate/disconnect and account-classification models, and adoption guard placement. `git diff --check`: PASS. Python, clang-format, a C++ compiler, a Core build and ThreadSanitizer are unavailable here; repository instructions also prohibit configuring/building unless explicitly requested.
+`node --test tests/f14_social_dispatch_source.test.js`: 7/7 PASS at the candidate source, covering packet fields/order, removal of the four direct calls, group-accept handler-before-follow-up, stale/duplicate/disconnect and account-classification models, and adoption guard placement. `git diff --check`: PASS. Python, clang-format, a C++ compiler, a Core build and ThreadSanitizer are unavailable here; repository instructions also prohibit configuring/building unless explicitly requested.
 
 Before any merge or deployment, test against the owner's exact installed source tuple on a disposable realm, with map workers **>0 and =0** separately:
 

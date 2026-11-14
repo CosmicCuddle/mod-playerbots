@@ -96,3 +96,25 @@ test("account classification model keeps ordinary and AddClass alts distinct fro
     assert.equal(classify({accountId: 14, type1: false, type2: false, managed: true}), "unavailable");
     assert.equal(classify({accountId: 0}), "unavailable");
 });
+
+test("owned and random bot packet queues drain through existing world-thread callbacks", () => {
+    const scripts = read("src/Script/Playerbots.cpp");
+    const holder = read("src/Bot/PlayerbotMgr.cpp");
+    const processor = read("src/Script/WorldThr/PlayerbotWorldThreadProcessor.cpp");
+    assert.match(scripts, /void OnSessionUpdate\(WorldSession\* session, uint32[\s\S]*?playerbotMgr->UpdateSessions\(\)/);
+    assert.match(scripts, /void OnUpdate\(uint32 diff\) override[\s\S]*?sRandomPlayerbotMgr\.UpdateSessions\(\)[\s\S]*?PlayerbotWorldThreadProcessor::instance\(\)\.Update\(diff\)/);
+    assert.match(holder, /void PlayerbotHolder::UpdateSessions\(\)[\s\S]*?HandleBotPackets\(bot->GetSession\(\)\)/);
+    assert.match(holder, /void PlayerbotHolder::HandleBotPackets\(WorldSession\* session\)[\s\S]*?session->NextQueuedPacket\(\)[\s\S]*?opHandle->Call\(session, \*packet\)/);
+    assert.match(processor, /void PlayerbotWorldThreadProcessor::ProcessBatch\(\)[\s\S]*?operation->IsValid\(\)[\s\S]*?operation->Execute\(\)/);
+});
+
+test("offline RandomBot account classification comes from assigned type 1", () => {
+    const manager = read("src/Bot/RandomPlayerbotMgr.cpp");
+    const assignment = manager.split("void RandomPlayerbotMgr::AssignAccountTypes()")[1]?.split("bool RandomPlayerbotMgr::IsAccountType")[0];
+    assert.ok(assignment);
+    assert.match(assignment, /PLAYERBOTS_SEL_ACCOUNT_TYPE/);
+    assert.match(assignment, /if \(accountType == 1\)\s*rndBotTypeAccounts\.push_back\(accountId\)/);
+    assert.match(assignment, /else if \(accountType == 2\)\s*addClassTypeAccounts\.push_back\(accountId\)/);
+    const runtime = manager.split("bool RandomPlayerbotMgr::IsRandomBot\(ObjectGuid::LowType bot\)")[1]?.split("bool RandomPlayerbotMgr::IsAddclassBot")[0];
+    assert.match(runtime, /currentBots\.contains\(bot\)/, "active identity alone misses offline targets");
+});
