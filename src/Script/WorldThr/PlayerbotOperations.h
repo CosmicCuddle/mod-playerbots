@@ -29,6 +29,52 @@
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
 #include "WorldPacket.h"
+#include <utility>
+
+class GuildChatOperation : public PlayerbotOperation
+{
+public:
+    GuildChatOperation(ObjectGuid botGuid, uint32 guildId, std::uint64_t botEpoch, std::string message)
+        : m_botGuid(botGuid), m_guildId(guildId), m_botEpoch(botEpoch), m_message(std::move(message))
+    {
+    }
+
+    bool Execute() override
+    {
+        if (!EpochMatches())
+            return false;
+
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        WorldSession* session = bot ? bot->GetSession() : nullptr;
+        Guild* guild = sGuildMgr->GetGuildById(m_guildId);
+        if (!bot || !session || session->GetPlayer() != bot || bot->GetGuildId() != m_guildId || !guild ||
+            !guild->GetMember(m_botGuid) || !guild->HasRankRight(bot, GR_RIGHT_GCHATSPEAK))
+            return false;
+
+        std::string message = m_message;
+        if (!sScriptMgr->OnPlayerCanUseChat(bot, CHAT_MSG_GUILD, LANG_UNIVERSAL, message, guild) || message.empty())
+            return false;
+
+        guild->BroadcastToGuild(session, false, message.c_str(), LANG_UNIVERSAL);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    std::string GetName() const override { return "GuildChat"; }
+
+    bool IsValid() const override { return EpochMatches(); }
+
+private:
+    bool EpochMatches() const
+    {
+        return m_botEpoch && PlayerbotIdentityGeneration::Instance().CurrentLogin(m_botGuid) == m_botEpoch;
+    }
+
+    ObjectGuid m_botGuid;
+    uint32 m_guildId;
+    std::uint64_t m_botEpoch;
+    std::string m_message;
+};
 
 class GroupAcceptOperation : public PlayerbotOperation
 {
