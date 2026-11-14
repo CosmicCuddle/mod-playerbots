@@ -10,6 +10,7 @@
 #include "ArenaTeamMgr.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "GuildPackets.h"
 #include "PlayerbotIdentityGeneration.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
@@ -74,6 +75,45 @@ private:
     uint32 m_guildId;
     std::uint64_t m_botEpoch;
     std::string m_message;
+};
+
+class GuildAcceptOperation : public PlayerbotOperation
+{
+public:
+    GuildAcceptOperation(ObjectGuid botGuid, uint32 guildId, std::uint64_t botEpoch)
+        : m_botGuid(botGuid), m_guildId(guildId), m_botEpoch(botEpoch)
+    {
+    }
+
+    bool Execute() override
+    {
+        if (!EpochMatches())
+            return false;
+
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        WorldSession* session = bot ? bot->GetSession() : nullptr;
+        if (!bot || !session || session->GetPlayer() != bot || bot->GetGuildId() ||
+            bot->GetGuildIdInvited() != m_guildId)
+            return false;
+
+        WorldPackets::Guild::AcceptGuildInvite data = WorldPacket(CMSG_GUILD_ACCEPT);
+        session->HandleGuildAcceptOpcode(data);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    std::string GetName() const override { return "GuildAccept"; }
+    bool IsValid() const override { return EpochMatches(); }
+
+private:
+    bool EpochMatches() const
+    {
+        return m_botEpoch && PlayerbotIdentityGeneration::Instance().CurrentLogin(m_botGuid) == m_botEpoch;
+    }
+
+    ObjectGuid m_botGuid;
+    uint32 m_guildId;
+    std::uint64_t m_botEpoch;
 };
 
 class GroupAcceptOperation : public PlayerbotOperation
