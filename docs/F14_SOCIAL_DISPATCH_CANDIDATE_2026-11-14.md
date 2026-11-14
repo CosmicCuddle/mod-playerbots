@@ -20,6 +20,8 @@ Pinned Core's group-invite handler rejects an already grouped/invited target; tr
 
 ## RandomBot personal-bot adoption
 
+The read-only reachability, account-refresh and remaining-operation inventory is in `docs/F14_PLAYERBOTS_FOLLOWUP_AUDIT_2026-11-14.md`.
+
 The command guard uses `RandomPlayerbotMgr::rndBotTypeAccounts`, populated from the persisted type-1 account assignment snapshot, plus active `IsRandomBot(guid)` as an additional positive signal. It does not use race or character name. `RandomBotAccounts` contains managed-prefix accounts, including type-2 AddClass accounts; a managed account in neither type list is treated as unavailable and refused, while type-2 remains eligible. Character account ID zero is refused. `addaccount` checks the account before enumerating its characters; `add`/`login` check before `AddPlayerBot`. This is a command-path restriction, not a claim that every possible direct `AddPlayerBot` caller has been gated. Source reachability and staged tests remain necessary.
 
 ## Local checks and required staged matrix
