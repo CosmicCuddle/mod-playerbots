@@ -18,12 +18,92 @@
 #include "PlayerbotMgr.h"
 #include "PlayerbotOperation.h"
 #include "PlayerbotRepository.h"
+#include "PlayerbotSecurity.h"
+#include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "UseMeetingStoneAction.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
+#include "WorldPacket.h"
+
+class GroupAcceptOperation : public PlayerbotOperation
+{
+public:
+    GroupAcceptOperation(ObjectGuid botGuid, ObjectGuid inviterGuid, ObjectGuid inviteGroupGuid)
+        : m_botGuid(botGuid), m_inviterGuid(inviterGuid), m_inviteGroupGuid(inviteGroupGuid)
+    {
+    }
+
+    bool Execute() override
+    {
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        Player* inviter = ObjectAccessor::FindPlayer(m_inviterGuid);
+        if (!bot || !inviter || !bot->GetSession() || bot->GetSession()->GetPlayer() != bot)
+            return false;
+
+        Group* invite = bot->GetGroupInvite();
+        if (!invite || invite->GetGUID() != m_inviteGroupGuid || invite->GetLeaderGUID() != m_inviterGuid)
+            return false;
+
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!botAI)
+            return false;
+
+        if (!botAI->GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, false, inviter))
+        {
+            WorldPacket data(SMSG_GROUP_DECLINE, 10);
+            data << bot->GetName();
+            inviter->SendDirectMessage(&data);
+            bot->UninviteFromGroup();
+            return false;
+        }
+
+        if (bot->isAFK() && !IsSelfBot(bot))
+            bot->ToggleAFK();
+
+        WorldPacket packet;
+        uint32 rolesMask = 0;
+        packet << rolesMask;
+        bot->GetSession()->HandleGroupAcceptOpcode(packet);
+
+        Group* group = bot->GetGroup();
+        if (!group || !group->IsMember(m_inviterGuid))
+            return false;
+
+        if (sRandomPlayerbotMgr.IsRandomBot(bot))
+            botAI->SetMaster(inviter);
+
+        botAI->ResetStrategies();
+        botAI->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
+        botAI->Reset();
+        botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
+
+        if (sPlayerbotAIConfig.SummonWhenGroup && bot->GetDistance(inviter) > sPlayerbotAIConfig.SightDistance)
+        {
+            SummonAction summonAction(botAI, "group summon");
+            summonAction.Teleport(inviter, bot, true);
+        }
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    uint32 GetPriority() const override { return 50; }
+    std::string GetName() const override { return "GroupAccept"; }
+
+    bool IsValid() const override
+    {
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        Group* invite = bot ? bot->GetGroupInvite() : nullptr;
+        return invite && invite->GetGUID() == m_inviteGroupGuid && invite->GetLeaderGUID() == m_inviterGuid;
+    }
+
+private:
+    ObjectGuid m_botGuid;
+    ObjectGuid m_inviterGuid;
+    ObjectGuid m_inviteGroupGuid;
+};
 
 // Group invite operation
 class GroupInviteOperation : public PlayerbotOperation

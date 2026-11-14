@@ -41,7 +41,7 @@ bool TradeAction::Execute(Event event)
         {
             WorldPacket packet(CMSG_INITIATE_TRADE);
             packet << player->GetGUID();
-            bot->GetSession()->HandleInitiateTradeOpcode(packet);
+            bot->GetSession()->QueuePacket(new WorldPacket(packet));
             return true;
         }
         else if (player->GetTrader() != bot)
