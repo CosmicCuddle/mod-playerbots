@@ -27,7 +27,7 @@ The command guard uses `RandomPlayerbotMgr::rndBotTypeAccounts`, populated from 
 
 ## Local checks and required staged matrix
 
-The follow-up audit identifies an open teardown race: AI-triggered `LogoutPlayerBot` may run from a map worker while the world operation is past its final generation check. The generation registry does not protect Player/session lifetime. This needs a separately reviewed serialization or lifetime-guard design before native safety can be claimed.
+The public Core update loop waits for map workers before the PB world-operation drain, so the AI-triggered logout path is serialized with that drain at Core `395b68ee`. The generation registry does not itself protect Player/session lifetime; verify the installed Core barrier and exceptional teardown paths before native safety is claimed.
 
 `node --test tests/f14_social_dispatch_source.test.js`: 15/15 PASS at the candidate source, covering packet fields/order, removal of the four direct calls, group-accept handler-before-follow-up, epoch hooks and adversarial models, account-classification models, and adoption guard placement. `git diff --check`: PASS. Python, clang-format, a C++ compiler, a Core build and ThreadSanitizer are unavailable here; repository instructions also prohibit configuring/building unless explicitly requested.
 
