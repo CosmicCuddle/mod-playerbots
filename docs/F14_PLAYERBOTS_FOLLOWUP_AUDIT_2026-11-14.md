@@ -29,4 +29,17 @@ Pin: parent `405f81196161017eebae3ee7a612d786a3ed2a9d`, candidate branch `featur
 
 ## Direct handler calls still outside PR #21
 
-Search of `Handle*Opcode(` in `src/Ai`, `src/Bot` and `src/Script` found direct calls in guild accept/decline/leave/petition, arena accept/decline, trade status/accept, duel, quest/gossip/item, battleground leave/status, logout cancel, emote and other gameplay paths. Their exact Core opcode thread classification and whether each caller runs on a map worker remain to be verified against the installed Core. Highest next F14 social candidates are `GuildAcceptAction`, `TradeStatusAction`, `RpgSubActions` trade accept, `ArenaTeamActions` and direct group conversion/leadership. Do not transfer the four-route queue treatment mechanically: some handlers may be map safe or depend on immediate results. This is audit/design only; no other handler is changed by PR #21.
+At public Core `395b68ee4ce425826c2a79c0ddf3ade3c67c8160`, `src/server/game/Server/Protocol/Opcodes.cpp` marks the following handler types `PROCESS_THREADUNSAFE`, and the pinned PB tree contains active direct calls. This is a source inventory, not proof that every call site executes on a map worker. `HandleGroupAcceptOpcode` is also classified unsafe, but its one direct PB call is now inside the world-thread operation in PR #21.
+
+| Surface | Direct unsafe handler types still present | Likely priority |
+| --- | --- | --- |
+| Guild and arena social | guild accept, decline, leave; arena-team accept, decline | High: inspect map-thread action entry and Core hook ordering before any separate fix. |
+| Trade continuation | begin, accept, cancel, set item, clear item, set gold | High: audit immediate trade-state dependencies before queueing. |
+| Duel and group-adjacent | duel accepted/cancelled; reset instances | Medium: confirm worker reachability and immediate follow-up. |
+| Battleground | battlefield status, leave | Medium: inspect queue state and callback ordering. |
+| Other gameplay | gossip select, turn-in petition, mount special animation | Lower F14 relevance; classify each caller before changing. |
+| Session lifecycle | logout cancel | Separate lifecycle review: calls also originate in bot holder/AI paths. |
+
+The comparison excluded commented-out calls. Exact installed Core may differ from this public pin, and its own opcode table must be checked before native or gameplay conclusions.
+
+Search of `Handle*Opcode(` in `src/Ai`, `src/Bot` and `src/Script` found direct calls in guild accept/decline/leave/petition, arena accept/decline, trade status/accept, duel, quest/gossip/item, battleground leave/status, logout cancel, emote and other gameplay paths. The public Core pin classifies the subset listed above; caller thread ownership and the installed Core remain unverified. Highest next F14 social candidates are `GuildAcceptAction`, `TradeStatusAction`, `RpgSubActions` trade accept, `ArenaTeamActions` and direct group conversion/leadership. Do not transfer the four-route queue treatment mechanically: some handlers may be map safe or depend on immediate results. This is audit/design only; no other handler is changed by PR #21.
