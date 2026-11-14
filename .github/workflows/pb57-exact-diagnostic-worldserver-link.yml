@@ -1,0 +1,88 @@
+name: PB57 exact diagnostic Worldserver link
+
+on:
+  push:
+    branches: [ci/pb57-spline-attribution-link-20261114]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linked-worldserver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    steps:
+      - name: Checkout exact synced Core
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/azerothcore-wotlk
+          ref: 21ff1973bc75216f8a0d0f3d7731eb3e8894ff97
+          path: acore
+          persist-credentials: false
+
+      - name: Checkout PB57 diagnostic exact head
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/mod-playerbots
+          ref: 8ec174c0
+          path: acore/modules/mod-playerbots
+          persist-credentials: false
+
+      - name: Checkout exact synced Individual Progression
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/mod-individual-progression
+          ref: 05ff032b625f6e8abb6b2b5be496bb8a3ee65c96
+          path: acore/modules/mod-individual-progression
+          persist-credentials: false
+
+      - name: Checkout exact synced Character Services
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/mod-character-services
+          ref: f43bc2c98aa7a291b673158fd578be304607b5e1
+          path: acore/modules/mod-character-services
+          persist-credentials: false
+
+      - name: Checkout exact synced Naxxramas-Core
+        uses: actions/checkout@v4
+        with:
+          repository: CosmicCuddle/Mod-Naxxramas-Core
+          ref: 80e9de1c39a6dc995188a80c31a5e785d0f2a6f9
+          path: acore/modules/mod-naxxramas-core
+          persist-credentials: false
+
+      - name: Confirm exact tuple and diagnostic diff
+        run: |
+          set -euo pipefail
+          test "$(git -C acore rev-parse HEAD)" = "21ff1973bc75216f8a0d0f3d7731eb3e8894ff97"
+          test "$(git -C acore/modules/mod-playerbots rev-parse HEAD)" = "$(git -C acore/modules/mod-playerbots rev-parse 8ec174c0)"
+          test "$(git -C acore/modules/mod-individual-progression rev-parse HEAD)" = "05ff032b625f6e8abb6b2b5be496bb8a3ee65c96"
+          test "$(git -C acore/modules/mod-character-services rev-parse HEAD)" = "f43bc2c98aa7a291b673158fd578be304607b5e1"
+          test "$(git -C acore/modules/mod-naxxramas-core rev-parse HEAD)" = "80e9de1c39a6dc995188a80c31a5e785d0f2a6f9"
+          git -C acore/modules/mod-playerbots diff --check 3a9e39f1be9f988ce53f9d4f19636207ff25c4a9..HEAD
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends             git cmake ninja-build g++ make pkg-config file             libmysqlclient-dev libssl-dev libbz2-dev             libreadline-dev libncurses-dev libboost-all-dev
+
+      - name: Configure full static stack
+        run: |
+          cmake -S acore -B acore-build -G Ninja             -DCMAKE_BUILD_TYPE=Release -DMODULES=static -DSCRIPTS=static             -DAPPS_BUILD=world-only -DTOOLS_BUILD=none             -DUSE_COREPCH=ON -DUSE_SCRIPTPCH=ON
+
+      - name: Build and link Worldserver only
+        run: cmake --build acore-build --target worldserver --parallel 2
+
+      - name: Record binary evidence
+        run: |
+          set -euo pipefail
+          binary="$(find acore-build -type f -name worldserver -print -quit)"
+          test -n "$binary"
+          test -s "$binary"
+          test -x "$binary"
+          file "$binary"
+          sha256sum "$binary"
+          echo "PASS: PB57 diagnostics exact head compiles/links against synced stack."
+          echo "No server startup, taxi reproduction, DB/config or production deployment."
