@@ -124,18 +124,30 @@ test("group accept captures and rechecks both non-reusing login epochs", () => {
     const operations = read("src/Script/WorldThr/PlayerbotOperations.h");
     const playerScript = read("src/Script/Playerbots.cpp");
     const holder = read("src/Bot/PlayerbotMgr.cpp");
-    const epochs = read("src/Script/WorldThr/GroupAcceptSessionEpoch.h");
-    assert.match(action, /botEpoch = epochs\.Current\(bot->GetGUID\(\)\)/);
-    assert.match(action, /inviterEpoch = epochs\.Current\(grp->GetLeaderGUID\(\)\)/);
+    const epochs = read("src/Script/WorldThr/PlayerbotIdentityGeneration.h");
+    assert.match(action, /botEpoch = epochs\.CurrentLogin\(bot->GetGUID\(\)\)/);
+    assert.match(action, /inviterEpoch = epochs\.CurrentLogin\(grp->GetLeaderGUID\(\)\)/);
+    assert.match(action, /invitationGeneration = epochs\.CurrentInvitation\(bot->GetGUID\(\)\)/);
     assert.match(operations, /bool IsValid\(\) const override\s*\{\s*if \(!EpochsMatch\(\)\)/);
     assert.match(operations, /bool Execute\(\) override\s*\{\s*if \(!EpochsMatch\(\)\)/);
-    assert.match(operations, /epochs\.Current\(m_botGuid\) == m_botEpoch[\s\S]*epochs\.Current\(m_inviterGuid\) == m_inviterEpoch/);
-    assert.match(playerScript, /OnPlayerLogin\(Player\* player\)[\s\S]*?Issue\(player->GetGUID\(\)\)/);
-    assert.match(playerScript, /OnPlayerBeforeLogout\(Player\* player\)[\s\S]*?Retire\(player->GetGUID\(\)\)/);
-    assert.match(holder, /LogoutPlayerBot\(ObjectGuid guid\)[\s\S]*?Retire\(guid\)/);
-    assert.match(holder, /DisablePlayerBot\(ObjectGuid guid\)[\s\S]*?Retire\(guid\)/);
-    assert.match(holder, /OnBotLogin\(Player\* const bot\)[\s\S]*?Issue\(bot->GetGUID\(\)\)/);
-    assert.match(epochs, /if \(_next == std::numeric_limits<std::uint64_t>::max\(\)\)\s*return 0/);
+    assert.match(operations, /epochs\.CurrentLogin\(m_botGuid\) == m_botEpoch[\s\S]*epochs\.CurrentLogin\(m_inviterGuid\) == m_inviterEpoch[\s\S]*epochs\.CurrentInvitation\(m_botGuid\) == m_invitationGeneration/);
+    assert.match(playerScript, /OnPlayerLogin\(Player\* player\)[\s\S]*?if \(!player->GetSession\(\)->IsHeadless\(\)\)[\s\S]*?IssueLogin\(player->GetGUID\(\)\)/);
+    assert.match(playerScript, /OnPlayerBeforeLogout\(Player\* player\)[\s\S]*?RetireLogin\(player->GetGUID\(\)\)/);
+    assert.match(holder, /LogoutPlayerBot\(ObjectGuid guid\)[\s\S]*?RetireLogin\(guid\)/);
+    assert.match(holder, /DisablePlayerBot\(ObjectGuid guid\)[\s\S]*?RetireLogin\(guid\)/);
+    assert.match(holder, /OnBotLogin\(Player\* const bot\)[\s\S]*?IssueLogin\(bot->GetGUID\(\)\)/);
+    assert.match(epochs, /if \(_nextLogin == std::numeric_limits<std::uint64_t>::max\(\)\)\s*\{\s*_logins.erase\(key\);\s*return 0/);
+    assert.match(epochs, /if \(_nextInvitation == std::numeric_limits<std::uint64_t>::max\(\)\)\s*\{\s*_invitations.erase\(key\);\s*return 0/);
+    assert.match(epochs, /void RetireLogin\(ObjectGuid guid\)[\s\S]*?_logins.erase\(key\);\s*_invitations.erase\(key\)/);
+    assert.match(playerScript, /GROUPHOOK_ON_INVITE_MEMBER[\s\S]*?OnInviteMember\(Group\* \/\*group\*\/, ObjectGuid guid\)[\s\S]*?IssueInvitation\(guid\)/);
+    assert.match(playerScript, /new PlayerbotsGroupScript\(\)/);
+    const login = playerScript.split("void OnPlayerLogin(Player* player) override")[1]?.split("void OnPlayerBeforeLogout")[0];
+    assert.equal((login.match(/IssueLogin\(player->GetGUID\(\)\)/g) || []).length, 1);
+    assert.ok(login.indexOf("if (!player->GetSession()->IsHeadless())") < login.indexOf("IssueLogin(player->GetGUID())"));
+    const accept = operations.split("class GroupAcceptOperation")[1]?.split("// Group invite operation")[0];
+    assert.match(accept, /m_invitationGeneration &&[\s\S]*CurrentInvitation\(m_botGuid\) == m_invitationGeneration/);
+    assert.doesNotMatch(accept.replace("epochs.CurrentInvitation(m_botGuid) == m_invitationGeneration", "true"),
+        /CurrentInvitation\(m_botGuid\) == m_invitationGeneration/);
 });
 
 test("epoch model refuses old bot or inviter sessions even with matching GUID and group", () => {
@@ -197,8 +209,8 @@ test("direct group add checks session epochs and invite veto before mutation", (
     const operations = read("src/Script/WorldThr/PlayerbotOperations.h");
     const invite = operations.split("class GroupInviteOperation")[1]?.split("// Remove member from group")[0];
     assert.ok(invite);
-    assert.match(invite, /m_botEpoch\(GroupAcceptSessionEpoch::Instance\(\)\.Current\(botGuid\)\)/);
-    assert.match(invite, /m_targetEpoch\(GroupAcceptSessionEpoch::Instance\(\)\.Current\(targetGuid\)\)/);
+    assert.match(invite, /m_botEpoch\(PlayerbotIdentityGeneration::Instance\(\)\.CurrentLogin\(botGuid\)\)/);
+    assert.match(invite, /m_targetEpoch\(PlayerbotIdentityGeneration::Instance\(\)\.CurrentLogin\(targetGuid\)\)/);
     assert.match(invite, /bool Execute\(\) override\s*\{\s*if \(!EpochsMatch\(\)\)/);
     assert.match(invite, /bool IsValid\(\) const override\s*\{\s*if \(!EpochsMatch\(\)\)/);
     const veto = invite.indexOf("OnPlayerCanGroupInvite(bot, targetName)");
@@ -224,4 +236,58 @@ test("invite preflight model delegates ordinary group policy without PB race inf
     assert.equal(preflight({...base, targetEra: 2}), false); // Vanilla to TBC
     assert.equal(preflight({...base, memberEras: [2, 3], targetEra: 2}), false); // existing member mismatch
     assert.equal(preflight({...base, targetGrouped: true}), false); // stock refusal
+});
+
+test("invitation generation model rejects same-group reinvite and later cycles", () => {
+    let nextLogin = 1;
+    let nextInvitation = 1;
+    const logins = new Map();
+    const invitations = new Map();
+    const login = guid => { invitations.delete(guid); logins.set(guid, nextLogin++); };
+    const retire = guid => { logins.delete(guid); invitations.delete(guid); };
+    const invite = guid => invitations.set(guid, nextInvitation++);
+    const capture = group => ({bot: logins.get("bot"), inviter: logins.get("human"),
+        invitation: invitations.get("bot"), group});
+    const valid = op => !!op.bot && !!op.inviter && !!op.invitation && op.bot === logins.get("bot") &&
+        op.inviter === logins.get("human") && op.invitation === invitations.get("bot");
+
+    login("bot"); login("human"); invite("bot");
+    const first = capture("G1");
+    assert.equal(valid(first), true);
+    invite("bot"); // cancel followed by a successful fresh AddInvite to the same Group
+    assert.equal(valid(first), false);
+    assert.equal(valid(capture("G1")), true);
+    const second = capture("G1");
+    invite("bot"); // G1 -> G2
+    assert.equal(valid(second), false);
+    const third = capture("G2");
+    invite("bot"); // G2 -> G1
+    assert.equal(valid(third), false);
+    assert.equal(valid(capture("G1")), true);
+    retire("human"); login("human");
+    assert.equal(valid(capture("G1")), true);
+    assert.equal(valid(first), false);
+    retire("bot"); login("bot");
+    assert.equal(valid(capture("G1")), false); // no invitation in new login
+});
+
+test("overflow invalidates the previous value for that subject", () => {
+    const max = 3;
+    let next = 1;
+    const current = new Map();
+    const issue = guid => {
+        if (next === max) { current.delete(guid); return 0; }
+        const value = next++;
+        current.set(guid, value);
+        return value;
+    };
+    const first = issue("bot");
+    assert.equal(first, 1);
+    assert.equal(issue("bot"), 2);
+    assert.equal(issue("bot"), 0);
+    assert.equal(current.has("bot"), false);
+    const oldValueSurvives = source => /if \(_nextLogin == std::numeric_limits<std::uint64_t>::max\(\)\)\s*\{\s*_logins.erase\(key\)/.test(source);
+    const header = read("src/Script/WorldThr/PlayerbotIdentityGeneration.h");
+    assert.equal(oldValueSurvives(header), true);
+    assert.equal(oldValueSurvives(header.replace("_logins.erase(key);", "// erased removed")), false);
 });

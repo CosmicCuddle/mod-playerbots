@@ -10,7 +10,7 @@
 #include "ArenaTeamMgr.h"
 #include "Group.h"
 #include "GroupMgr.h"
-#include "GroupAcceptSessionEpoch.h"
+#include "PlayerbotIdentityGeneration.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -34,9 +34,9 @@ class GroupAcceptOperation : public PlayerbotOperation
 {
 public:
     GroupAcceptOperation(ObjectGuid botGuid, ObjectGuid inviterGuid, ObjectGuid inviteGroupGuid,
-                         std::uint64_t botEpoch, std::uint64_t inviterEpoch)
+                         std::uint64_t botEpoch, std::uint64_t inviterEpoch, std::uint64_t invitationGeneration)
         : m_botGuid(botGuid), m_inviterGuid(inviterGuid), m_inviteGroupGuid(inviteGroupGuid),
-          m_botEpoch(botEpoch), m_inviterEpoch(inviterEpoch)
+          m_botEpoch(botEpoch), m_inviterEpoch(inviterEpoch), m_invitationGeneration(invitationGeneration)
     {
     }
 
@@ -110,9 +110,11 @@ public:
 private:
     bool EpochsMatch() const
     {
-        GroupAcceptSessionEpoch& epochs = GroupAcceptSessionEpoch::Instance();
-        return m_botEpoch && m_inviterEpoch && epochs.Current(m_botGuid) == m_botEpoch &&
-               epochs.Current(m_inviterGuid) == m_inviterEpoch;
+        PlayerbotIdentityGeneration& epochs = PlayerbotIdentityGeneration::Instance();
+        return m_botEpoch && m_inviterEpoch && m_invitationGeneration &&
+               epochs.CurrentLogin(m_botGuid) == m_botEpoch &&
+               epochs.CurrentLogin(m_inviterGuid) == m_inviterEpoch &&
+               epochs.CurrentInvitation(m_botGuid) == m_invitationGeneration;
     }
 
     ObjectGuid m_botGuid;
@@ -120,6 +122,7 @@ private:
     ObjectGuid m_inviteGroupGuid;
     std::uint64_t m_botEpoch;
     std::uint64_t m_inviterEpoch;
+    std::uint64_t m_invitationGeneration;
 };
 
 // Group invite operation
@@ -128,8 +131,8 @@ class GroupInviteOperation : public PlayerbotOperation
 public:
     GroupInviteOperation(ObjectGuid botGuid, ObjectGuid targetGuid)
         : m_botGuid(botGuid), m_targetGuid(targetGuid),
-          m_botEpoch(GroupAcceptSessionEpoch::Instance().Current(botGuid)),
-          m_targetEpoch(GroupAcceptSessionEpoch::Instance().Current(targetGuid))
+          m_botEpoch(PlayerbotIdentityGeneration::Instance().CurrentLogin(botGuid)),
+          m_targetEpoch(PlayerbotIdentityGeneration::Instance().CurrentLogin(targetGuid))
     {
     }
 
@@ -221,9 +224,9 @@ public:
 private:
     bool EpochsMatch() const
     {
-        GroupAcceptSessionEpoch& epochs = GroupAcceptSessionEpoch::Instance();
-        return m_botEpoch && m_targetEpoch && epochs.Current(m_botGuid) == m_botEpoch &&
-               epochs.Current(m_targetGuid) == m_targetEpoch;
+        PlayerbotIdentityGeneration& epochs = PlayerbotIdentityGeneration::Instance();
+        return m_botEpoch && m_targetEpoch && epochs.CurrentLogin(m_botGuid) == m_botEpoch &&
+               epochs.CurrentLogin(m_targetGuid) == m_targetEpoch;
     }
 
     ObjectGuid m_botGuid;

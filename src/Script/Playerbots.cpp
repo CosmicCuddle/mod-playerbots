@@ -19,7 +19,8 @@
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
-#include "GroupAcceptSessionEpoch.h"
+#include "GroupScript.h"
+#include "PlayerbotIdentityGeneration.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
@@ -146,9 +147,9 @@ public:
 
     void OnPlayerLogin(Player* player) override
     {
-        GroupAcceptSessionEpoch::Instance().Issue(player->GetGUID());
         if (!player->GetSession()->IsHeadless())
         {
+            PlayerbotIdentityGeneration::Instance().IssueLogin(player->GetGUID());
             PlayerbotsMgr::instance().AddPlayerbotData(player, false);
             sRandomPlayerbotMgr.OnPlayerLogin(player);
 
@@ -175,7 +176,7 @@ public:
 
     void OnPlayerBeforeLogout(Player* player) override
     {
-        GroupAcceptSessionEpoch::Instance().Retire(player->GetGUID());
+        PlayerbotIdentityGeneration::Instance().RetireLogin(player->GetGUID());
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
         {
             PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);
@@ -389,6 +390,17 @@ public:
 
         // otherwise apply bot XP multiplier.
         amount = static_cast<uint32>(std::round(static_cast<float>(amount) * sPlayerbotAIConfig.RandomBotXPRate));
+    }
+};
+
+class PlayerbotsGroupScript : public GroupScript
+{
+public:
+    PlayerbotsGroupScript() : GroupScript("PlayerbotsGroupScript", {GROUPHOOK_ON_INVITE_MEMBER}) {}
+
+    void OnInviteMember(Group* /*group*/, ObjectGuid guid) override
+    {
+        PlayerbotIdentityGeneration::Instance().IssueInvitation(guid);
     }
 };
 
@@ -627,6 +639,7 @@ void AddPlayerbotsScripts()
     new PlayerbotsBattlefieldScript();
     new PlayerbotsDatabaseScript();
     new PlayerbotsPlayerScript();
+    new PlayerbotsGroupScript();
     new PlayerbotsMiscScript();
     new PlayerbotsServerScript();
     new PlayerbotsSessionScript();
