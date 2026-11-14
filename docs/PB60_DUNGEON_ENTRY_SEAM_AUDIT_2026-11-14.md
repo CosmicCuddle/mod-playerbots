@@ -1,6 +1,6 @@
 # PB60 bot dungeon bracket: entry seam audit
 
-**Status:** source audit on PB `3a9e39f1` and Core `21ff1973`. No runtime behavior or data changed. Tracked in [coordination Issue #60](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/60).
+**Status:** source audit and unmerged PB entry-policy candidate on PB `3a9e39f1` and Core `21ff1973`. No live behavior or data changed. Tracked in [coordination Issue #60](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/60).
 
 ## Entry paths and common policy point
 

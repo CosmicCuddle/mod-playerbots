@@ -8,18 +8,25 @@
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "Channel.h"
+#include "Chat.h"
 #include "CheckMountStateAction.h"
 #include "Config.h"
 #include "BuiltInConfig.h"
 #include "DBUpdater.h"
+#include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "DungeonLevelBracket.h"
 #include "PlayerbotsDatabase.h"
 #include <mysqld_error.h>
 #include "AllMapScript.h"
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "Group.h"
 #include "GroupScript.h"
+#include "LFGMgr.h"
+#include "ObjectMgr.h"
+#include "Player.h"
 #include "PlayerbotIdentityGeneration.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
@@ -33,6 +40,74 @@
 #include "SessionScript.h"
 #include "WorldScript.h"
 #include "cmath"
+#include <vector>
+
+namespace
+{
+    bool CanBotEnterDungeon(Player* player, MapEntry const* entry)
+    {
+        if (!player || !player->GetSession() || !player->GetSession()->IsHeadless() ||
+            !entry || !entry->IsNonRaidDungeon())
+            return true;
+
+        Difficulty difficulty = player->GetDifficulty(false);
+        GetDownscaledMapDifficultyData(entry->MapID, difficulty);
+
+        uint32 selectedDungeonId = 0;
+        if (Group* group = player->GetGroup(); group && group->isLFGGroup())
+            selectedDungeonId = sLFGMgr->GetDungeon(group->GetGUID());
+
+        std::vector<PlayerbotsDungeonBracket::Row> rows;
+        for (uint32 id = 0; id < sLFGDungeonStore.GetNumRows(); ++id)
+        {
+            LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(id);
+            if (!dungeon || dungeon->MapID != entry->MapID || dungeon->Difficulty != difficulty)
+                continue;
+
+            bool const physical = dungeon->TypeID == lfg::LFG_TYPE_DUNGEON ||
+                dungeon->TypeID == lfg::LFG_TYPE_HEROIC;
+            bool const seasonal = (dungeon->Flags & lfg::LFG_FLAG_SEASONAL) != 0;
+            bool const active = seasonal && dungeon->ID == selectedDungeonId &&
+                sLFGMgr->IsSeasonActive(dungeon->ID);
+            rows.push_back({dungeon->ID, dungeon->MapID, dungeon->Difficulty, dungeon->MinLevel,
+                dungeon->MaxLevel, physical, seasonal, active});
+        }
+
+        DungeonProgressionRequirements const* access = sObjectMgr->GetAccessRequirement(entry->MapID, difficulty);
+        uint32 const overrideMin = access ? access->levelMin : 0;
+        uint32 const overrideMax = access ? access->levelMax : 0;
+        auto const decision = PlayerbotsDungeonBracket::Resolve(
+            std::span<PlayerbotsDungeonBracket::Row const>(rows), entry->MapID, difficulty, selectedDungeonId,
+            player->GetLevel(), overrideMin, overrideMax);
+        if (decision.result == PlayerbotsDungeonBracket::Result::Allowed ||
+            decision.result == PlayerbotsDungeonBracket::Result::SeasonalException)
+            return true;
+
+        LOG_WARN("playerbots", "Dungeon bracket denied bot {}: map={} difficulty={} level={} result={} min={} max={}",
+            player->GetGUID().ToString(), entry->MapID, static_cast<uint32>(difficulty), player->GetLevel(),
+            static_cast<uint32>(decision.result), decision.minLevel, decision.maxLevel);
+
+        if (PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player))
+        {
+            if (Player* master = botAI->GetMaster(); master && master->GetSession() &&
+                !master->GetSession()->IsHeadless())
+            {
+                if (decision.result == PlayerbotsDungeonBracket::Result::BelowMinimum ||
+                    decision.result == PlayerbotsDungeonBracket::Result::AboveMaximum)
+                    ChatHandler(master->GetSession()).PSendSysMessage(
+                        "Bot {} cannot enter this dungeon at level {} (allowed levels {}-{}).",
+                        player->GetName(), player->GetLevel(), decision.minLevel, decision.maxLevel);
+                else if (decision.result == PlayerbotsDungeonBracket::Result::SeasonalInactive)
+                    ChatHandler(master->GetSession()).PSendSysMessage(
+                        "Bot {} cannot enter: this holiday dungeon is not active.", player->GetName());
+                else
+                    ChatHandler(master->GetSession()).PSendSysMessage(
+                        "Bot {} cannot enter: this dungeon has no unambiguous level bracket.", player->GetName());
+            }
+        }
+        return false;
+    }
+}
 
 class PlayerbotsDatabaseScript : public DatabaseScript
 {
@@ -142,7 +217,8 @@ public:
         PLAYERHOOK_CAN_PLAYER_USE_GUILD_CHAT,
         PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT,
         PLAYERHOOK_ON_GIVE_EXP,
-        PLAYERHOOK_ON_BEFORE_TELEPORT
+        PLAYERHOOK_ON_BEFORE_TELEPORT,
+        PLAYERHOOK_CAN_ENTER_MAP
     }) {}
 
     void OnPlayerLogin(Player* player) override
@@ -203,9 +279,19 @@ public:
             alreadySignedByAccount = false;
     }
 
-    bool OnPlayerBeforeTeleport(Player* /*player*/, uint32 /*mapid*/, float /*x*/, float /*y*/, float /*z*/,
-                                float /*orientation*/, uint32 /*options*/, Unit* /*target*/) override
+    bool OnPlayerCanEnterMap(Player* player, MapEntry const* entry, InstanceTemplate const* /*instance*/,
+        MapDifficulty const* /*mapDiff*/, bool /*loginCheck*/) override
     {
+        return CanBotEnterDungeon(player, entry);
+    }
+
+    bool OnPlayerBeforeTeleport(Player* player, uint32 mapid, float /*x*/, float /*y*/, float /*z*/,
+                                float /*orientation*/, uint32 options, Unit* /*target*/) override
+    {
+        if (player && ((options & TELE_TO_GM_MODE) || player->IsGameMaster()) &&
+            !CanBotEnterDungeon(player, sMapStore.LookupEntry(mapid)))
+            return false;
+
         /* for now commmented out until proven its actually required
         * havent seen any proof CleanVisibilityReferences() is needed
 

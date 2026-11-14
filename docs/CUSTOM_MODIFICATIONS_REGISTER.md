@@ -1,5 +1,18 @@
 # Custom Modifications Register
 
+## PB60-DUNGEON-LEVEL-BRACKET-20261114 — bot-only entry policy candidate
+
+- **Owner/component:** CosmicCuddle / `mod-playerbots` with existing Core entry hooks.
+- **Parent/source reference:** synced PB master `3a9e39f1be9f988ce53f9d4f19636207ff25c4a9` and Core `21ff1973bc75216f8a0d0f3d7731eb3e8894ff97`; branch `feature/codex-pb60-entry-audit-20261114`.
+- **Intended behavior:** deny a headless bot entering a non-raid dungeon outside one unambiguous level bracket from physical LFG rows and Core access-requirement overrides. An exact selected seasonal dungeon may bypass the new bracket only while its event is active. Humans and raids pass through to existing Core/IP rules.
+- **Affected files:** `src/Bot/DungeonLevelBracket.h`, `src/Script/Playerbots.cpp`, `tests/pb60_dungeon_bracket_resolver.cpp`, this Register, and `docs/PB60_DUNGEON_ENTRY_SEAM_AUDIT_2026-11-14.md`.
+- **Dependencies:** installed LFG DBC/override row coverage, existing Core `OnPlayerCanEnterMap` and `OnPlayerBeforeTeleport` hooks, headless-session bot identity, LFG selected-dungeon identity and holiday state. No new SQL, config, DBC, or client patch.
+- **Risks:** missing or conflicting LFG brackets deny bot entry until installed data is reviewed; a selected LFG ID and event status must be safe to read on an entry path; a controlled bot may have no attached AI/master at login, so its denial is logged but cannot be delivered to a human. Source-only review cannot establish map-thread or gameplay behavior.
+- **Tests:** constexpr resolver fixtures cover bounds, conflicts, selected identity, seasonal state, and overrides; they are not compiled in this workspace. Diff check passed. No native build, installed DBC inventory, or staged gameplay.
+- **Live status:** development candidate only, not merged or deployed. F14/Paid remain off.
+- **Decision:** owner requirement and CS01 source seam review in [coordination Issue #60](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/60). Installed data and gameplay are release gates.
+- **Rollback:** leave the branch unmerged or revert this isolated policy before an owner-approved deployment; no persistent data changes.
+
 ## PB-F14-SOCIAL-DISPATCH-20261114 — world-thread social dispatch and RandomBot adoption guard
 
 The existing queued `GroupInviteOperation` also receives the standard group-invite veto before its direct group creation/conversion/add. It captures both participant epochs to reject stale queued work. This preserves ordinary IP grouping enforcement for permitted personal/Altbots without classifying them as F14 social RandomBots. Same-session invite-policy changes after preflight and native/gameplay behavior remain unverified.
