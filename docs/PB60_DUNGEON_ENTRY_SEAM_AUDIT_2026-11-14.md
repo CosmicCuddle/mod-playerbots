@@ -1,0 +1,32 @@
+# PB60 bot dungeon bracket: entry seam audit
+
+**Status:** source audit on PB `3a9e39f1` and Core `21ff1973`. No runtime behavior or data changed. Tracked in [coordination Issue #60](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/60).
+
+## Entry paths and common policy point
+
+| Route | Source path | Core check |
+| --- | --- | --- |
+| Normal portal/area trigger | Core `Handlers/MiscHandler.cpp`, area trigger | `MapMgr::PlayerCannotEnter(targetMap, player, false)` |
+| PB direct teleport, summon, meeting stone, RPG stuck relocation | PB `UseMeetingStoneAction.cpp`, `NewRpgBaseAction.cpp`, other `TeleportTo` call sites | `Player::TeleportTo` calls `OnPlayerBeforeTeleport`, then `PlayerCannotEnter` for far cross-map teleport |
+| Group/command teleport | PB `PlayerbotOperations.h`, command and movement actions; Core spell/command callers | Same `Player::TeleportTo` path when far cross-map |
+| LFG teleport | PB `LfgTeleportAction.cpp` queues `CMSG_LFG_TELEPORT` | Core LFG teleport eventually calls `Player::TeleportTo` |
+| Login/reconnect already inside instance | Core `PlayerStorage.cpp::CanEnterMap` | `MapMgr::PlayerCannotEnter(currentMap, player, true)` |
+
+`MapMgr::PlayerCannotEnter` checks map metadata and calls `OnPlayerCanEnterMap(player, entry, instance, mapDiff, loginCheck)` for dungeons. This is the closest shared bot-only policy seam for ordinary entry **and** login. It runs before the existing raid, LFG map, and other Core checks; a successful bracket check must leave those checks and IP era restrictions intact. The PB player script currently registers `PLAYERHOOK_ON_BEFORE_TELEPORT` but not `PLAYERHOOK_CAN_ENTER_MAP`.
+
+The single hook does not cover every shortcut: Core returns early for Game Masters before `OnPlayerCanEnterMap`, and `Player::TeleportTo` skips `PlayerCannotEnter` with `TELE_TO_GM_MODE`. A PB `OnPlayerBeforeTeleport` check could cover those teleport cases, sharing the same pure bracket policy with `OnPlayerCanEnterMap`; login still needs the map-entry hook. Same-map movement within an existing instance is not a new entry. The two hooks should call one shared policy rather than maintain separate rules.
+
+## Level source
+
+Core `LFGDungeonEntry` has `MinLevel`, `MaxLevel`, `MapID`, `Difficulty`, and seasonal flags. `LFGMgr::LFGDungeonData` copies those fields. `MapEntry` and `MapDifficulty` do not provide a min/max dungeon bracket. The checked-in `lfgdungeons_dbc.sql` is a schema-only snapshot; the actual server DBC/overrides and map-to-dungeon rows are absent from this checkout. A map can have several LFG rows, including difficulty and event variants, so choosing a range by map ID alone would be unsafe. The exact installed data coverage and any gaps need a read-only inventory before a policy implementation or reviewed override table.
+
+## Holiday exception
+
+Core `LFGMgr::IsSeasonActive(dungeonId)` maps four named seasonal dungeon IDs to their active holidays. The exception must require both an exact seasonal dungeon identity and an active event. Some seasonal content shares a physical map with ordinary dungeons; an active holiday must not exempt every entry into that map. The LFG group's selected dungeon ID may identify the event route. For a non-LFG portal/summon into a shared map, the current hook arguments identify the map but not necessarily the event encounter. Such an entry should not receive a holiday bypass without an authoritative discriminator.
+
+## Implementation and acceptance still required
+
+1. Inventory the installed LFG/DBC rows by map, difficulty, min/max, and seasonal status; compare to accessible non-raid instance maps. Decide a reviewed override only for missing or unsuitable data.
+2. Implement one bot-only, read-only policy helper used by map-entry and teleport hooks. Classify bots during login without assuming their AI object has already been attached. Return a clear denial to the controlling player where a controller exists.
+3. Keep event bypass scoped to an identified seasonal dungeon while its holiday is active. Preserve Core and IP checks after a bracket pass.
+4. Test in-range, under/over-level, human, normal portal, summon, command, LFG, reconnect inside instance, active/inactive holiday, shared holiday map, raid exclusion, and IP era denial. Native build, gameplay tests, installed DBC inventory, and deployment have not run in this workspace.
