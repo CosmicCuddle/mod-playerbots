@@ -46,7 +46,8 @@ namespace
 {
     bool CanBotEnterDungeon(Player* player, MapEntry const* entry)
     {
-        if (!player || !player->GetSession() || !player->GetSession()->IsHeadless() ||
+        if (!sPlayerbotAIConfig.EnforceDungeonLevelBracket || !player || !player->GetSession() ||
+            !player->GetSession()->IsHeadless() ||
             !entry || !entry->IsNonRaidDungeon())
             return true;
 
@@ -54,6 +55,8 @@ namespace
         GetDownscaledMapDifficultyData(entry->MapID, difficulty);
 
         uint32 selectedDungeonId = 0;
+        // GetDungeon currently reads mutable Core LFG group state without a visible lock.
+        // Keep the feature OFF until that access is validated for map-thread teleports.
         if (Group* group = player->GetGroup(); group && group->isLFGGroup())
             selectedDungeonId = sLFGMgr->GetDungeon(group->GetGUID());
 
@@ -288,7 +291,9 @@ public:
     bool OnPlayerBeforeTeleport(Player* player, uint32 mapid, float /*x*/, float /*y*/, float /*z*/,
                                 float /*orientation*/, uint32 options, Unit* /*target*/) override
     {
-        if (player && ((options & TELE_TO_GM_MODE) || player->IsGameMaster()) &&
+        // Cross-map normal teleports reach CanEnterMap through PlayerCannotEnter.
+        // Same-map and GM-mode teleports can skip that call.
+        if (player && (player->GetMapId() == mapid || (options & TELE_TO_GM_MODE) || player->IsGameMaster()) &&
             !CanBotEnterDungeon(player, sMapStore.LookupEntry(mapid)))
             return false;
 

@@ -485,6 +485,12 @@ Playerbots.DropObsoleteQuests = 1
 # Auto add dungeon/raid strategies when entering the instance if implemented
 Playerbots.ApplyInstanceStrategies = 1
 
+# Restrict headless bots to the authoritative level bracket for non-raid dungeon entry.
+# Applies to ordinary entrances, teleports, LFG and login; humans are unaffected.
+# Requires reviewed LFG/DBC and access-requirement rows plus LFG thread-safety review before enabling.
+# Default: 0 (disabled)
+Playerbots.EnforceDungeonLevelBracket = 0
+
 # Enable auto avoid aoe strategy
 # Default: 1 (enabled)
 Playerbots.AutoAvoidAoe = 1
