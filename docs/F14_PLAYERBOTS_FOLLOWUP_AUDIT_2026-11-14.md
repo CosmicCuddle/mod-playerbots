@@ -14,6 +14,23 @@ Pin: parent `405f81196161017eebae3ee7a612d786a3ed2a9d`, candidate branch `featur
 
 ## Existing world-operation queue
 
+### Login/logout versus the final generation check
+
+At public Core `395b68ee4ce425826c2a79c0ddf3ade3c67c8160`, `WorldSession::Update` calls `OnSessionUpdate` and ordinary `LogoutPlayer` under its unsafe/world pass (`WorldSession.cpp:595-609`); `LogoutPlayer` calls `OnPlayerBeforeLogout` before other teardown (`:701-704`) and clears the Player later (`:864`). PB's `PlayerbotsWorldScript::OnUpdate` drains pending headless logins, bot packet queues and then world operations, all on its world-script path. Headless `OnBotLoginOperation` is in that operation queue. These paths serialize with each other on the world thread.
+
+| Transition | Pinned source entry | Thread/lifetime finding |
+| --- | --- | --- |
+| Human login/logout | `PlayerbotsPlayerScript::OnPlayerLogin` / `OnPlayerBeforeLogout`; Core `WorldSession::Update` unsafe pass | Normal session path is world-thread controlled; login issues only for non-headless, logout retires before teardown. |
+| Headless pending login | `PlayerbotHolder::UpdatePendingLogins` in PB world script, then `OnBotLoginOperation` | Holder issues one login generation after attaching successful bot AI; failed pending sessions are logged out/deleted without one. |
+| Explicit personal-bot remove | `ProcessBotCommand` → `LogoutPlayerBot` | Command entry thread must be checked; holder retires before `LogoutPlayer` and session deletion. |
+| RandomBot population/logout | `RandomPlayerbotMgr::ProcessBot`, `LogoutAllBots`, world-script update/shutdown | World-script initiated cases are serialized with operation drain. |
+| AI-triggered bot logout | `PlayerbotsPlayerScript::OnPlayerAfterUpdate` → `PlayerbotAI::UpdateAIInternal` → `LogoutPlayerBot` | Player update can run on map workers. The holder directly retires and calls `WorldSession::LogoutPlayer(true)`/deletes session; this is a potential concurrent teardown against world-operation execution. |
+| Bot disable on player logout | `RandomPlayerbotMgr::OnPlayerLogout` → `DisablePlayerBot` | Retirement happens first; exact callback ownership follows its caller and must be checked in the installed tuple. |
+| Secure-login replacement | `PlayerbotsSecureLoginServerScript::CanPacketReceive` → `ForceLogoutViaPlayerbotHolder` | Direct holder logout during packet receive; exact receive-thread ownership needs Core call-path proof. |
+| Shutdown | `PlayerbotsWorldScript::OnShutdown` → random bot logout and pending-session clear | World-script callback, but sequencing relative to all session/map workers needs installed-host proof. |
+
+**TOCTOU remains OPEN.** The mutex protects generation map reads/writes, not the resolved `Player*` or `WorldSession*` between the final generation check and handler. Since the AI-triggered holder logout can originate in the map update path, world-only serialization cannot be claimed. A stronger design would serialize all destructive bot-session transitions with world operations, or use a PB-owned per-participant lifetime guard held through both mutation and teardown with a defined lock order and reentrant script-hook behavior. Either route needs a separate Core/PB call-path and deadlock review before implementation; another unlocked generation check is insufficient. This draft does not claim native lifetime safety.
+
 `PlayerbotWorldThreadProcessor` has a global queue. Per-bot logout does not clear it, and a later login can reuse a GUID. PR #21 adds epoch checks only to new `GroupAcceptOperation` and the existing, currently reachable `GroupInviteOperation`.
 
 | Operation | Current pinned-tree reachability | State effect and follow-up priority |

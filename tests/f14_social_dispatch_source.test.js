@@ -291,3 +291,14 @@ test("overflow invalidates the previous value for that subject", () => {
     assert.equal(oldValueSurvives(header), true);
     assert.equal(oldValueSurvives(header.replace("_logins.erase(key);", "// erased removed")), false);
 });
+
+test("teardown audit keeps the map-update race visible", () => {
+    const script = read("src/Script/Playerbots.cpp");
+    const ai = read("src/Bot/PlayerbotAI.cpp");
+    const holder = read("src/Bot/PlayerbotMgr.cpp");
+    const world = script.split("void OnUpdate(uint32 diff) override")[1];
+    assert.match(script, /OnPlayerAfterUpdate\(Player\* player, uint32 diff\) override/);
+    assert.match(ai, /UpdateAIInternal[\s\S]*?LogoutPlayerBot\(bot->GetGUID\(\)\)/);
+    assert.match(holder, /LogoutPlayerBot\(ObjectGuid guid\)[\s\S]*?RetireLogin\(guid\)[\s\S]*?LogoutPlayer\(true\)/);
+    assert.match(world, /PlayerbotWorldThreadProcessor::instance\(\)\.Update\(diff\)/);
+});
