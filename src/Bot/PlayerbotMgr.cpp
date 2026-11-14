@@ -745,14 +745,12 @@ static std::string PersonalBotAccountRejection(uint32 accountId, ObjectGuid guid
     if (!accountId)
         return "bot account classification unavailable";
 
-    auto const& randomAccounts = sRandomPlayerbotMgr.rndBotTypeAccounts;
-    if (std::find(randomAccounts.begin(), randomAccounts.end(), accountId) != randomAccounts.end() ||
+    if (sRandomPlayerbotMgr.IsRndBotTypeAccount(accountId) ||
         (guid.IsPlayer() && sRandomPlayerbotMgr.IsRandomBot(guid.GetCounter())))
         return "random bots cannot be added as personal bots";
 
-    auto const& addClassAccounts = sRandomPlayerbotMgr.addClassTypeAccounts;
     if (sPlayerbotAIConfig.IsInRandomAccountList(accountId) &&
-        std::find(addClassAccounts.begin(), addClassAccounts.end(), accountId) == addClassAccounts.end())
+        !sRandomPlayerbotMgr.IsAddClassAccount(accountId))
         return "bot account classification unavailable";
 
     return {};

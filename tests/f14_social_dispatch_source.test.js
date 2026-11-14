@@ -69,9 +69,10 @@ test("personal-bot commands reject authoritative RandomBot account types before 
     const manager = read("src/Bot/PlayerbotMgr.cpp");
     const helper = manager.split("static std::string PersonalBotAccountRejection").at(-1)?.split("std::string const PlayerbotHolder::ProcessBotCommand")[0];
     assert.ok(helper);
-    assert.match(helper, /rndBotTypeAccounts/);
+    assert.match(helper, /IsRndBotTypeAccount\(accountId\)/);
     assert.match(helper, /IsRandomBot\(guid.GetCounter\(\)\)/);
-    assert.match(helper, /addClassTypeAccounts/);
+    assert.match(helper, /IsAddClassAccount\(accountId\)/);
+    assert.ok(!/\.rndBotTypeAccounts|\.addClassTypeAccounts/.test(helper));
     assert.match(helper, /bot account classification unavailable/);
     assert.ok(!/getRace\(|GetRace\(/.test(helper));
     const command = manager.split("std::string const PlayerbotHolder::ProcessBotCommand")[1].split("std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand")[0];
@@ -140,6 +141,9 @@ test("offline RandomBot account classification comes from assigned type 1", () =
     assert.match(assignment, /else if \(accountType == 2\)\s*addClassTypeAccounts\.push_back\(accountId\)/);
     const runtime = manager.split("bool RandomPlayerbotMgr::IsRandomBot\(ObjectGuid::LowType bot\)")[1]?.split("bool RandomPlayerbotMgr::IsAddclassBot")[0];
     assert.match(runtime, /currentBots\.contains\(bot\)/, "active identity alone misses offline targets");
+    assert.match(manager, /bool RandomPlayerbotMgr::IsRndBotTypeAccount\(uint32 accountId\) const[\s\S]*?rndBotTypeAccounts\.begin\(\)[\s\S]*?rndBotTypeAccounts\.end\(\)/);
+    const header = read("src/Bot/RandomPlayerbotMgr.h");
+    assert.match(header, /bool IsRndBotTypeAccount\(uint32 accountId\) const;/);
 });
 
 test("account pool disable unassigns before rebuilding guarded type lists", () => {
