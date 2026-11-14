@@ -27,6 +27,7 @@ jobs:
           repository: CosmicCuddle/mod-playerbots
           ref: 8ec174c00f86fbd61c261b2db809df1833c51952
           path: acore/modules/mod-playerbots
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Checkout exact synced Individual Progression
