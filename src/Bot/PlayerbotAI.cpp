@@ -36,8 +36,10 @@
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
+#include "PlayerbotOperations.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotTextMgr.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "PositionValue.h"
 #include "RBAC.h"
@@ -1176,14 +1178,19 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
         // Only respond if this bot is in master's collection (alt/addclass)
         if (masterBotMgr->GetPlayerBot(bot->GetGUID()))
         {
-            if (type == CHAT_MSG_WHISPER)
-            {
-                std::string message = PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                    "logout_start", "I'm logging out!", {});
-                TellMaster(message);
-            }
+            ObjectGuid botGuid = bot->GetGUID();
+            ObjectGuid masterGuid = master->GetGUID();
+            PlayerbotIdentityGeneration& epochs = PlayerbotIdentityGeneration::Instance();
+            std::uint64_t botEpoch = epochs.CurrentLogin(botGuid);
+            std::uint64_t masterEpoch = epochs.CurrentLogin(masterGuid);
+            if (!botEpoch || !masterEpoch)
+                return;
 
-            masterBotMgr->LogoutPlayerBot(bot->GetGUID());
+            auto operation = std::make_unique<BotCommandLogoutOperation>(botGuid, masterGuid, botEpoch, masterEpoch);
+            if (PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(operation)) &&
+                type == CHAT_MSG_WHISPER)
+                TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "logout_start", "I'm logging out!", {}));
         }
         else if (type == CHAT_MSG_WHISPER)
         {
