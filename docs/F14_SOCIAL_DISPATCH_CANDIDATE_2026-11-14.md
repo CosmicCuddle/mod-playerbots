@@ -4,9 +4,15 @@ This DRAFT source candidate starts at public Playerbots `405f81196161017eebae3ee
 
 ## Thread route and exact scope
 
+Bot disable retires its active group-accept epoch as well.
+
 In pinned Playerbots, AI actions run from the player update path and can execute on map workers. `InviteToGroupAction`, `TradeAction` and `AcceptBattlegroundInvitationAction` previously called `PROCESS_THREADUNSAFE` handlers directly. Their existing payload fields and order now enter `WorldSession::QueuePacket`. For headless RandomBots, `PlayerbotsWorldScript::OnUpdate` calls `sRandomPlayerbotMgr.UpdateSessions()`; for a master's bots, `PlayerbotsSessionScript::OnSessionUpdate` calls `PlayerbotMgr::UpdateSessions()`. Both reach `PlayerbotHolder::HandleBotPackets`, which drains `NextQueuedPacket()` and invokes the opcode handler. At candidate Core #25, `WorldSession::Update` calls `OnSessionUpdate` in its unsafe/world pass. Session queues own packet copies; a destroyed session loses its queue. A new session is not handed a prior session's packet by this candidate.
 
 Group accept cannot simply queue its packet because `GetGroup`, `SetMaster`, strategies, greeting and summon depend immediately on the handler result. `GroupAcceptOperation` runs from `PlayerbotWorldThreadProcessor::Update` in the world script, resolves GUIDs at execution, checks the same pending group/leader and live bot session, runs the unchanged zero-role payload through `HandleGroupAcceptOpcode`, verifies new membership, then performs the follow-up in the old order. A duplicate operation sees the invite removed by the first successful accept and skips before the handler. A refused accept cannot run the follow-up. Queue-full returns false from the action. The operation stores no `Player*` or `WorldSession*` across ticks.
+
+The operation also captures process-local, monotonically issued login epochs for the bot and inviter. `OnPlayerLogin` issues one for a human, `OnBotLogin` issues one for a headless bot, and normal player logout or explicit bot-holder logout retires it. Both `IsValid` and `Execute` compare captured epochs to the current values before resolving players. A queued operation from session A therefore cannot be accepted in session B even when the same GUID and group remain. The registry is mutex protected, stores GUID values and epochs only, and fails closed if the counter reaches its limit. A process restart empties the operation queue and registry together.
+
+An invite canceled and recreated in the **same** sessions for the **same** group still has the same group GUID and login epochs; this candidate has no Core invitation-generation token to distinguish those cycles. Test it on a disposable realm and inspect exact installed Core behavior before treating this as resolved. Epoch checks also do not replace native thread-safety proof for a logout racing with world-thread execution after the check.
 
 Pinned Core's group-invite handler rejects an already grouped/invited target; trade initiation returns if trade data exists; BG port requires a live queue and invitation. These are drain-time duplicate/stale guards, not a promise that the action never queues a duplicate. The group-accept operation has its own pending-invite guard. All four routes need staged checks for disconnect, relog, repeated action ticks and invite/queue cancellation.
 
@@ -16,11 +22,11 @@ The command guard uses `RandomPlayerbotMgr::rndBotTypeAccounts`, populated from 
 
 ## Local checks and required staged matrix
 
-`node --test tests/f14_social_dispatch_source.test.js`: 7/7 PASS at the candidate source, covering packet fields/order, removal of the four direct calls, group-accept handler-before-follow-up, stale/duplicate/disconnect and account-classification models, and adoption guard placement. `git diff --check`: PASS. Python, clang-format, a C++ compiler, a Core build and ThreadSanitizer are unavailable here; repository instructions also prohibit configuring/building unless explicitly requested.
+`node --test tests/f14_social_dispatch_source.test.js`: 10/10 PASS at the candidate source, covering packet fields/order, removal of the four direct calls, group-accept handler-before-follow-up, epoch hooks and adversarial models, account-classification models, and adoption guard placement. `git diff --check`: PASS. Python, clang-format, a C++ compiler, a Core build and ThreadSanitizer are unavailable here; repository instructions also prohibit configuring/building unless explicitly requested.
 
 Before any merge or deployment, test against the owner's exact installed source tuple on a disposable realm, with map workers **>0 and =0** separately:
 
-1. Bot→human, bot→bot and human→bot group invite; accept/decline, duplicate ticks, invite cancellation, logout/relog before drain, full group, role payload and original follow-up order.
+1. Bot→human, bot→bot and human→bot group invite; accept/decline, duplicate ticks, same-group cancel/reinvite, bot and inviter logout/relog before drain, full group, role payload and original follow-up order. Prove no old queued accept crosses an invitation cycle.
 2. Trade initiation with repeat ticks, disconnect and a pre-existing trade; blocked IP social pair must stay blocked at the world-thread hook.
 3. BG invite port with repeat ticks, canceled/expired queue, logout, normal eligible entry and IP denial; compare packet fields and outcome to pre-change behavior.
 4. `.playerbots bot add`, `login` and `addaccount` for offline type-1 RandomBot, active RandomBot, own-account alt, linked-account alt, type-2 AddClass and unknown/unavailable managed-account classification. Confirm a restricted RandomBot cannot reach the direct `GroupInviteOperation::AddMember` command path.

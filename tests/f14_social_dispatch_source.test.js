@@ -118,3 +118,77 @@ test("offline RandomBot account classification comes from assigned type 1", () =
     const runtime = manager.split("bool RandomPlayerbotMgr::IsRandomBot\(ObjectGuid::LowType bot\)")[1]?.split("bool RandomPlayerbotMgr::IsAddclassBot")[0];
     assert.match(runtime, /currentBots\.contains\(bot\)/, "active identity alone misses offline targets");
 });
+
+test("group accept captures and rechecks both non-reusing login epochs", () => {
+    const action = read("src/Ai/Base/Actions/AcceptInvitationAction.cpp");
+    const operations = read("src/Script/WorldThr/PlayerbotOperations.h");
+    const playerScript = read("src/Script/Playerbots.cpp");
+    const holder = read("src/Bot/PlayerbotMgr.cpp");
+    const epochs = read("src/Script/WorldThr/GroupAcceptSessionEpoch.h");
+    assert.match(action, /botEpoch = epochs\.Current\(bot->GetGUID\(\)\)/);
+    assert.match(action, /inviterEpoch = epochs\.Current\(grp->GetLeaderGUID\(\)\)/);
+    assert.match(operations, /bool IsValid\(\) const override\s*\{\s*if \(!EpochsMatch\(\)\)/);
+    assert.match(operations, /bool Execute\(\) override\s*\{\s*if \(!EpochsMatch\(\)\)/);
+    assert.match(operations, /epochs\.Current\(m_botGuid\) == m_botEpoch[\s\S]*epochs\.Current\(m_inviterGuid\) == m_inviterEpoch/);
+    assert.match(playerScript, /OnPlayerLogin\(Player\* player\)[\s\S]*?Issue\(player->GetGUID\(\)\)/);
+    assert.match(playerScript, /OnPlayerBeforeLogout\(Player\* player\)[\s\S]*?Retire\(player->GetGUID\(\)\)/);
+    assert.match(holder, /LogoutPlayerBot\(ObjectGuid guid\)[\s\S]*?Retire\(guid\)/);
+    assert.match(holder, /DisablePlayerBot\(ObjectGuid guid\)[\s\S]*?Retire\(guid\)/);
+    assert.match(holder, /OnBotLogin\(Player\* const bot\)[\s\S]*?Issue\(bot->GetGUID\(\)\)/);
+    assert.match(epochs, /if \(_next == std::numeric_limits<std::uint64_t>::max\(\)\)\s*return 0/);
+});
+
+test("epoch model refuses old bot or inviter sessions even with matching GUID and group", () => {
+    let next = 1;
+    const current = new Map();
+    const issue = guid => { current.set(guid, next++); return current.get(guid); };
+    const retire = guid => current.delete(guid);
+    const eligible = op => current.get(op.bot) === op.botEpoch && current.get(op.inviter) === op.inviterEpoch;
+    issue("bot"); issue("human");
+    const old = {bot: "bot", inviter: "human", botEpoch: current.get("bot"), inviterEpoch: current.get("human"), group: 8};
+    assert.equal(eligible(old), true);
+    retire("bot");
+    assert.equal(eligible(old), false); // logout before drain
+    issue("bot");
+    assert.equal(eligible(old), false); // same GUID and group after relog
+    const fresh = {...old, botEpoch: current.get("bot")};
+    assert.equal(eligible(fresh), true);
+    retire("human"); issue("human");
+    assert.equal(eligible(fresh), false); // inviter relog
+    assert.notEqual(old.botEpoch, fresh.botEpoch); // no reuse in process lifetime
+});
+
+test("group accept model rejects canceled, duplicate, disconnected and removed-bot work", () => {
+    let next = 1;
+    const epochs = new Map();
+    const issue = guid => epochs.set(guid, next++);
+    const retire = guid => epochs.delete(guid);
+    const state = {bot: "bot", inviter: "human", group: 8, connected: true, hasAI: true, member: false};
+    issue(state.bot); issue(state.inviter);
+    const capture = () => ({...state, botEpoch: epochs.get(state.bot), inviterEpoch: epochs.get(state.inviter)});
+    const eligible = op => op.botEpoch === epochs.get(state.bot) && op.inviterEpoch === epochs.get(state.inviter) &&
+        state.connected && state.hasAI && !state.member && state.group === op.group;
+    const accept = op => { if (!eligible(op)) return false; state.group = null; state.member = true; return true; };
+
+    const canceled = capture();
+    state.group = null;
+    assert.equal(eligible(canceled), false);
+    state.group = 9;
+    assert.equal(eligible(canceled), false); // a different invite cycle
+
+    const first = capture();
+    assert.equal(accept(first), true);
+    assert.equal(accept(first), false); // duplicate after membership
+
+    state.member = false; state.group = 10;
+    const disconnected = capture();
+    state.connected = false;
+    assert.equal(eligible(disconnected), false);
+    state.connected = true;
+    state.hasAI = false;
+    assert.equal(eligible(disconnected), false); // holder removed the bot AI
+    retire(state.bot);
+    assert.equal(eligible(disconnected), false); // logout before queue drain
+    issue(state.bot); state.hasAI = true;
+    assert.equal(eligible(disconnected), false); // same GUID after relog
+});

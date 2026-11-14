@@ -19,6 +19,7 @@
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "GroupAcceptSessionEpoch.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
@@ -145,6 +146,7 @@ public:
 
     void OnPlayerLogin(Player* player) override
     {
+        GroupAcceptSessionEpoch::Instance().Issue(player->GetGUID());
         if (!player->GetSession()->IsHeadless())
         {
             PlayerbotsMgr::instance().AddPlayerbotData(player, false);
@@ -173,6 +175,7 @@ public:
 
     void OnPlayerBeforeLogout(Player* player) override
     {
+        GroupAcceptSessionEpoch::Instance().Retire(player->GetGUID());
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
         {
             PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);
