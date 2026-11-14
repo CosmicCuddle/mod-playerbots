@@ -534,6 +534,53 @@ private:
     std::string m_arenaTeamName;
 };
 
+class BotCommandLogoutOperation : public PlayerbotOperation
+{
+public:
+    BotCommandLogoutOperation(ObjectGuid botGuid, ObjectGuid masterGuid, std::uint64_t botEpoch,
+                              std::uint64_t masterEpoch)
+        : m_botGuid(botGuid), m_masterGuid(masterGuid), m_botEpoch(botEpoch), m_masterEpoch(masterEpoch)
+    {
+    }
+
+    bool Execute() override
+    {
+        if (!EpochsMatch())
+            return false;
+
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        Player* master = ObjectAccessor::FindPlayer(m_masterGuid);
+        WorldSession* session = bot ? bot->GetSession() : nullptr;
+        if (!bot || !master || !session || session->GetPlayer() != bot || session->IsLoggingOut())
+            return false;
+
+        PlayerbotMgr* holder = PlayerbotsMgr::instance().GetPlayerbotMgr(master);
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!holder || holder->GetPlayerBot(m_botGuid) != bot || !botAI || botAI->GetMaster() != master)
+            return false;
+
+        holder->LogoutPlayerBot(m_botGuid);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    std::string GetName() const override { return "BotCommandLogout"; }
+    bool IsValid() const override { return EpochsMatch(); }
+
+private:
+    bool EpochsMatch() const
+    {
+        PlayerbotIdentityGeneration& epochs = PlayerbotIdentityGeneration::Instance();
+        return m_botEpoch && m_masterEpoch && epochs.CurrentLogin(m_botGuid) == m_botEpoch &&
+               epochs.CurrentLogin(m_masterGuid) == m_masterEpoch;
+    }
+
+    ObjectGuid m_botGuid;
+    ObjectGuid m_masterGuid;
+    std::uint64_t m_botEpoch;
+    std::uint64_t m_masterEpoch;
+};
+
 // Bot logout group cleanup operation
 class BotLogoutGroupCleanupOperation : public PlayerbotOperation
 {
