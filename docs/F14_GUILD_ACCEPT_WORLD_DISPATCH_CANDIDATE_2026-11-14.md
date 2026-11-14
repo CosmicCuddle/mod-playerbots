@@ -3,8 +3,11 @@
 This DRAFT child change starts at Playerbots PR #21 head
 `1cf279183a35721b997033d73270e2d69becad75`. Claude's F-5 source
 finding in coordination Issue #13 identified bot `GuildAcceptAction` calling
-Core's `HandleGuildAcceptOpcode` directly from map-worker AI. At Core #28 v2
-`2b356ff99ea93a1c8da1323aa1a07a6bb96384f0`, guild admission from an
+Core's `HandleGuildAcceptOpcode` directly from map-worker AI. The owner's
+pre-sync Phase A uses Core DRAFT #30 v2
+`8a306898bfa4dd5ee7ef5195e0b539ba05824799` on Core23. Core DRAFT
+#28 v2 `2b356ff99ea93a1c8da1323aa1a07a6bb96384f0` is the equivalent
+upstream-stage seam. In either version, guild admission from an
 off-world thread relies on IP late recheck after persistence. This change
 moves just the accept handler to the existing world-operation queue so the
 Core/IP veto can run before persistence. Decline/leave remain outside scope;
