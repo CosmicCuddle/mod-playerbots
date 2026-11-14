@@ -43,11 +43,11 @@ bool InviteToGroupAction::Invite(Player* inviter, Player* player)
             }
     }
 
-    WorldPacket p;
+    WorldPacket p(CMSG_GROUP_INVITE);
     uint32 roles_mask = 0;
     p << player->GetName();
     p << roles_mask;
-    inviter->GetSession()->HandleGroupInviteOpcode(p);
+    inviter->GetSession()->QueuePacket(new WorldPacket(p));
 
     return true;
 }

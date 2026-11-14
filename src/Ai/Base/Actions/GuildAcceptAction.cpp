@@ -7,8 +7,11 @@
 #include "GuildAcceptAction.h"
 #include "Event.h"
 #include "GuildPackets.h"
+#include "PlayerbotIdentityGeneration.h"
+#include "PlayerbotOperations.h"
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 
 bool GuildAcceptAction::Execute(Event event)
@@ -48,8 +51,13 @@ bool GuildAcceptAction::Execute(Event event)
 
     if (accept)
     {
-        WorldPackets::Guild::AcceptGuildInvite data = WorldPacket(CMSG_GUILD_ACCEPT);
-        bot->GetSession()->HandleGuildAcceptOpcode(data);
+        uint32 invitedGuildId = bot->GetGuildIdInvited();
+        std::uint64_t botEpoch = PlayerbotIdentityGeneration::Instance().CurrentLogin(bot->GetGUID());
+        if (!invitedGuildId || invitedGuildId != guildId || !botEpoch)
+            return false;
+
+        auto operation = std::make_unique<GuildAcceptOperation>(bot->GetGUID(), invitedGuildId, botEpoch);
+        return PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(operation));
     }
     else
     {

@@ -207,6 +207,7 @@ public:
     // Account type management
     void AssignAccountTypes();
     bool IsAccountType(uint32 accountId, uint8 accountType);
+    bool IsRndBotTypeAccount(uint32 accountId) const;
     bool IsAddClassAccount(uint32 accountId) const;
 
 protected:

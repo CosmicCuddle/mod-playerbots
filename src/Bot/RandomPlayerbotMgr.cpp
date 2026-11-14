@@ -692,6 +692,12 @@ bool RandomPlayerbotMgr::IsAccountType(uint32 accountId, uint8 accountType)
     return PlayerbotsDatabase.Query(stmt) != nullptr;
 }
 
+bool RandomPlayerbotMgr::IsRndBotTypeAccount(uint32 accountId) const
+{
+    return std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(), accountId) !=
+           rndBotTypeAccounts.end();
+}
+
 bool RandomPlayerbotMgr::IsAddClassAccount(uint32 accountId) const
 {
     return std::find(addClassTypeAccounts.begin(), addClassTypeAccounts.end(), accountId) !=

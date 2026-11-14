@@ -18,7 +18,7 @@ bool AcceptBgInvitationAction::Execute(Event /*event*/)
 
     WorldPacket packet(CMSG_BATTLEFIELD_PORT, 20);
     packet << type << unk2 << (uint32)bgTypeId_ << unk << action;
-    bot->GetSession()->HandleBattleFieldPortOpcode(packet);
+    bot->GetSession()->QueuePacket(new WorldPacket(packet));
 
     botAI->ResetStrategies();
 

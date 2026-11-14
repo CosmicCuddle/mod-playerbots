@@ -6,56 +6,23 @@
 
 #include "AcceptInvitationAction.h"
 #include "Event.h"
-#include "ObjectAccessor.h"
-#include "PlayerbotAIConfig.h"
-#include "PlayerbotSecurity.h"
-#include "PlayerbotTextMgr.h"
-#include "Playerbots.h"
-#include "WorldPacket.h"
+#include "PlayerbotIdentityGeneration.h"
+#include "PlayerbotOperations.h"
+#include "PlayerbotWorldThreadProcessor.h"
 
 bool AcceptInvitationAction::Execute(Event /*event*/)
 {
     Group* grp = bot->GetGroupInvite();
     if (!grp)
         return false;
-    Player* inviter = ObjectAccessor::FindPlayer(grp->GetLeaderGUID());
-    if (!inviter)
+    PlayerbotIdentityGeneration& epochs = PlayerbotIdentityGeneration::Instance();
+    std::uint64_t botEpoch = epochs.CurrentLogin(bot->GetGUID());
+    std::uint64_t inviterEpoch = epochs.CurrentLogin(grp->GetLeaderGUID());
+    std::uint64_t invitationGeneration = epochs.CurrentInvitation(bot->GetGUID());
+    if (!botEpoch || !inviterEpoch || !invitationGeneration)
         return false;
 
-    if (!botAI->GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, false, inviter))
-    {
-        WorldPacket data(SMSG_GROUP_DECLINE, 10);
-        data << bot->GetName();
-        inviter->SendDirectMessage(&data);
-        bot->UninviteFromGroup();
-        return false;
-    }
-
-    if (bot->isAFK() && !IsSelfBot(bot))
-        bot->ToggleAFK();
-
-    WorldPacket p;
-    uint32 roles_mask = 0;
-    p << roles_mask;
-    bot->GetSession()->HandleGroupAcceptOpcode(p);
-
-    if (!bot->GetGroup() || !bot->GetGroup()->IsMember(inviter->GetGUID()))
-        return false;
-
-    if (sRandomPlayerbotMgr.IsRandomBot(bot))
-        botAI->SetMaster(inviter);
-    // else
-    // PlayerbotRepository::instance().Save(botAI);
-
-    botAI->ResetStrategies();
-    botAI->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
-    botAI->Reset();
-
-    botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
-
-    if (sPlayerbotAIConfig.SummonWhenGroup && bot->GetDistance(inviter) > sPlayerbotAIConfig.SightDistance)
-    {
-        Teleport(inviter, bot, true);
-    }
-    return true;
+    auto operation = std::make_unique<GroupAcceptOperation>(bot->GetGUID(), grp->GetLeaderGUID(), grp->GetGUID(),
+                                                             botEpoch, inviterEpoch, invitationGeneration);
+    return PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(operation));
 }
