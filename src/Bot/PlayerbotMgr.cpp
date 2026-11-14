@@ -15,7 +15,7 @@
 #include "DatabaseEnv.h"
 #include "Define.h"
 #include "Group.h"
-#include "GroupAcceptSessionEpoch.h"
+#include "PlayerbotIdentityGeneration.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -396,7 +396,7 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
     if (Player* bot = GetPlayerBot(guid))
     {
-        GroupAcceptSessionEpoch::Instance().Retire(guid);
+        PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         if (!botAI)
             return;
@@ -461,7 +461,7 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 {
     if (Player* bot = GetPlayerBot(guid))
     {
-        GroupAcceptSessionEpoch::Instance().Retire(guid);
+        PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         if (!botAI)
         {
@@ -527,7 +527,7 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         return;
     }
 
-    GroupAcceptSessionEpoch::Instance().Issue(bot->GetGUID());
+    PlayerbotIdentityGeneration::Instance().IssueLogin(bot->GetGUID());
 
     Player* master = botAI->GetMaster();
 

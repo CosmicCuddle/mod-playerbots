@@ -6,7 +6,7 @@
 
 #include "AcceptInvitationAction.h"
 #include "Event.h"
-#include "GroupAcceptSessionEpoch.h"
+#include "PlayerbotIdentityGeneration.h"
 #include "PlayerbotOperations.h"
 #include "PlayerbotWorldThreadProcessor.h"
 
@@ -15,13 +15,14 @@ bool AcceptInvitationAction::Execute(Event /*event*/)
     Group* grp = bot->GetGroupInvite();
     if (!grp)
         return false;
-    GroupAcceptSessionEpoch& epochs = GroupAcceptSessionEpoch::Instance();
-    std::uint64_t botEpoch = epochs.Current(bot->GetGUID());
-    std::uint64_t inviterEpoch = epochs.Current(grp->GetLeaderGUID());
-    if (!botEpoch || !inviterEpoch)
+    PlayerbotIdentityGeneration& epochs = PlayerbotIdentityGeneration::Instance();
+    std::uint64_t botEpoch = epochs.CurrentLogin(bot->GetGUID());
+    std::uint64_t inviterEpoch = epochs.CurrentLogin(grp->GetLeaderGUID());
+    std::uint64_t invitationGeneration = epochs.CurrentInvitation(bot->GetGUID());
+    if (!botEpoch || !inviterEpoch || !invitationGeneration)
         return false;
 
     auto operation = std::make_unique<GroupAcceptOperation>(bot->GetGUID(), grp->GetLeaderGUID(), grp->GetGUID(),
-                                                             botEpoch, inviterEpoch);
+                                                             botEpoch, inviterEpoch, invitationGeneration);
     return PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(operation));
 }
