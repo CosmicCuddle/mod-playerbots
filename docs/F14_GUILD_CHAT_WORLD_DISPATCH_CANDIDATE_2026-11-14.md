@@ -7,16 +7,24 @@ Core, IP, Playerbots, and guild-policy revisions are not yet verified.
 
 `PlayerbotAI::SayToGuild` previously called `Guild::BroadcastToGuild` from
 bot AI. AI can run on a map worker; Core's guild-recipient policy in Core
-PR #28 v2 (`2b356ff99ea93a1c8da1323aa1a07a6bb96384f0`) belongs on the world-thread send path. The call now queues one
+PR #28 v2 (`2b356ff99ea93a1c8da1323aa1a07a6bb96384f0`) belongs on the
+world-thread send path. The call now queues one
 value-only `GuildChatOperation` with the bot GUID, guild ID, login generation,
 and text. The operation runs in the existing world-script queue after Core
 waits for map workers, resolves the current player/session/guild, and checks
 the same login generation, guild membership, and speaking right. It runs
-Core's `OnPlayerCanUseChat` preflight and then calls `BroadcastToGuild` with
+Core's guild `OnPlayerCanUseChat` policy hook and then calls `BroadcastToGuild` with
 the original `LANG_UNIVERSAL` behavior; Core PR #28 v2 applies its narrow
 per-recipient F14 filter inside that broadcast. No incoming
 `CMSG_MESSAGECHAT` packet is fabricated: the normal client parser rejects
 `LANG_UNIVERSAL` for that opcode. Addon and officer chat are outside scope.
+
+This is world-thread guild policy/broadcast parity, not full client
+`HandleMessagechatOpcode` parity. The normal client handler also has earlier
+language, trial, silence, mute, length, control, command, and flood checks.
+The old bot direct broadcast bypassed those checks too. This candidate does
+not claim they are reproduced; muted and silenced bot speech must be observed
+on a disposable realm as a compatibility case.
 
 `SayToGuild` now returns whether the operation was queued. A later logout,
 guild change, rights change, script veto, empty rewritten text, or full queue
@@ -33,7 +41,7 @@ No native compilation, ThreadSanitizer, or gameplay check has run.
 
 On a disposable realm at the exact installed source tuple, with map workers
 enabled and then disabled, verify normal guild chat from RandomBots and
-personal bots, script vetoes, a bot logging out and back in before drain,
+personal bots, muted and silenced bot behavior, script vetoes, a bot logging out and back in before drain,
 guild removal/rejoin before drain, rank-right removal, queue saturation,
 and Core #28 v2 delivery to eligible and ineligible human recipients. Also
 check BroadcastHelper's channel fallback after a queued guild attempt that
