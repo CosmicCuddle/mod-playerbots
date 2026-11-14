@@ -86,6 +86,8 @@ public:
     uint32 GetMasterAccountId() const { return masterAccountId; }
 };
 
+static std::string PersonalBotAccountRejection(uint32 accountId, ObjectGuid guid);
+
 void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId)
 {
     if (botLoading.find(playerGuid) != botLoading.end())
@@ -99,6 +101,15 @@ void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId
     uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(playerGuid);
     if (!accountId)
         return;
+
+    if (masterAccountId)
+    {
+        if (std::string rejection = PersonalBotAccountRejection(accountId, playerGuid); !rejection.empty())
+        {
+            LOG_DEBUG("playerbots", "Personal bot login refused: {}", rejection);
+            return;
+        }
+    }
 
     WorldSession* masterSession = masterAccountId ? sWorldSessionMgr->FindSession(masterAccountId) : nullptr;
     Player* masterPlayer = masterSession ? masterSession->GetPlayer() : nullptr;
