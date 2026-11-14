@@ -133,6 +133,7 @@ test("group accept captures and rechecks both non-reusing login epochs", () => {
     assert.match(operations, /epochs\.CurrentLogin\(m_botGuid\) == m_botEpoch[\s\S]*epochs\.CurrentLogin\(m_inviterGuid\) == m_inviterEpoch[\s\S]*epochs\.CurrentInvitation\(m_botGuid\) == m_invitationGeneration/);
     assert.match(playerScript, /OnPlayerLogin\(Player\* player\)[\s\S]*?if \(!player->GetSession\(\)->IsHeadless\(\)\)[\s\S]*?IssueLogin\(player->GetGUID\(\)\)/);
     assert.match(playerScript, /OnPlayerBeforeLogout\(Player\* player\)[\s\S]*?RetireLogin\(player->GetGUID\(\)\)/);
+    assert.match(playerScript, /OnDestructPlayer\(Player\* player\) override\s*\{\s*PlayerbotIdentityGeneration::Instance\(\)\.RetireLogin\(player->GetGUID\(\)\)/);
     assert.match(holder, /LogoutPlayerBot\(ObjectGuid guid\)[\s\S]*?RetireLogin\(guid\)/);
     assert.match(holder, /DisablePlayerBot\(ObjectGuid guid\)[\s\S]*?RetireLogin\(guid\)/);
     assert.match(holder, /OnBotLogin\(Player\* const bot\)[\s\S]*?IssueLogin\(bot->GetGUID\(\)\)/);

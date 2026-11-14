@@ -411,6 +411,7 @@ public:
 
     void OnDestructPlayer(Player* player) override
     {
+        PlayerbotIdentityGeneration::Instance().RetireLogin(player->GetGUID());
         PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);
 
         if (botAI != nullptr)

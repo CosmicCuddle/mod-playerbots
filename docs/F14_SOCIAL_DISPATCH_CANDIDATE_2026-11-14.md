@@ -5,6 +5,7 @@ This DRAFT source candidate starts at public Playerbots `405f81196161017eebae3ee
 ## Thread route and exact scope
 
 Bot disable retires its login generation and any invitation generation.
+Player destruction retires both again, so an exceptional path that skips normal logout cannot leave an identity generation current.
 
 The existing `GroupInviteOperation` is also a queued direct add: it can create or convert a group and call `Group::AddMember` without a normal client invite/accept. It now captures bot and target login epochs, rejects stale sessions, and calls the standard `OnPlayerCanGroupInvite` veto after the stock grouped-target check but before group mutation. The IP invite hook is inert when disabled or when ordinary group enforcement is off; when enforced, it checks the target against the inviter and existing members. PB does not infer eligibility from race. This world-thread preflight does not call IP's accept hook, which can write progression state on a later failed direct add. Other special-group direct adds are outside this candidate.
 

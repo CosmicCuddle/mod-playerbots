@@ -5,6 +5,7 @@
 The existing queued `GroupInviteOperation` also receives the standard group-invite veto before its direct group creation/conversion/add. It captures both participant epochs to reject stale queued work. This preserves ordinary IP grouping enforcement for permitted personal/Altbots without classifying them as F14 social RandomBots. Same-session invite-policy changes after preflight and native/gameplay behavior remain unverified.
 
 Lifetime audit: map-worker AI can call `LogoutPlayerBot` directly while a world operation is executing. The generation lock does not span Player/session mutation and teardown; this concurrency risk remains open pending a separate lifetime-serialization design.
+The Player destruction hook retires login and invitation generations as an idempotent fallback if a higher-level logout path was skipped.
 
 - **Owner:** CosmicCuddle. **Owning component:** `mod-playerbots` in its own repository.
 - **Parent/source reference:** public `CosmicCuddle/mod-playerbots` master `405f81196161017eebae3ee7a612d786a3ed2a9d`; branch `feature/codex-pb-f14-social-dispatch-20261114`. Installed Playerbots/Core/IP versions are UNKNOWN.
