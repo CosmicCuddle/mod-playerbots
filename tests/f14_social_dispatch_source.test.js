@@ -123,6 +123,23 @@ test("offline RandomBot account classification comes from assigned type 1", () =
     assert.match(runtime, /currentBots\.contains\(bot\)/, "active identity alone misses offline targets");
 });
 
+test("account pool disable unassigns before rebuilding guarded type lists", () => {
+    const config = read("src/PlayerbotAIConfig.cpp");
+    const factory = read("src/Bot/Factory/RandomPlayerbotFactory.cpp");
+    const manager = read("src/Bot/RandomPlayerbotMgr.cpp");
+    assert.ok(config.indexOf("RandomPlayerbotFactory::CreateRandomBots()") <
+        config.indexOf("sRandomPlayerbotMgr.AssignAccountTypes()"));
+    const calculate = factory.split("uint32 RandomPlayerbotFactory::CalculateTotalAccountCount()")[1]?.split("uint32 RandomPlayerbotFactory::")[0];
+    assert.match(calculate, /MaxRandomBots == 0[\s\S]*?PLAYERBOTS_UPD_ACCOUNT_TYPE_UNASSIGN/);
+    assert.match(calculate, /AddClassAccountPoolSize == 0[\s\S]*?PLAYERBOTS_UPD_ACCOUNT_TYPE_UNASSIGN/);
+    assert.match(manager, /void RandomPlayerbotMgr::AssignAccountTypes\(\)[\s\S]*?rndBotTypeAccounts.clear\(\)[\s\S]*?addClassTypeAccounts.clear\(\)/);
+    const classify = ({managed, type1, type2}) => type1 ? "refuse random" :
+        managed && !type2 ? "refuse unresolved" : "allow";
+    assert.equal(classify({managed: true, type1: false, type2: false}), "refuse unresolved");
+    assert.equal(classify({managed: true, type1: false, type2: true}), "allow");
+    assert.equal(classify({managed: false, type1: false, type2: false}), "allow");
+});
+
 test("group accept captures and rechecks both non-reusing login epochs", () => {
     const action = read("src/Ai/Base/Actions/AcceptInvitationAction.cpp");
     const operations = read("src/Script/WorldThr/PlayerbotOperations.h");
