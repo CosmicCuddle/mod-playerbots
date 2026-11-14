@@ -13,10 +13,12 @@ constexpr std::array<Row, 5> rows = {{
 }};
 
 constexpr std::span<Row const> physicalRows(rows);
-static_assert(Resolve(physicalRows, 100, 0, 0, 14).result == Result::Allowed);
-static_assert(Resolve(physicalRows, 100, 0, 0, 18).result == Result::Allowed);
-static_assert(Resolve(physicalRows, 100, 0, 0, 13).result == Result::BelowMinimum);
-static_assert(Resolve(physicalRows, 100, 0, 0, 19).result == Result::AboveMaximum);
+// Ordinary entrance has no selected LFG dungeon; map and difficulty must still resolve a bracket.
+constexpr std::uint32_t normalEntranceSelection = 0;
+static_assert(Resolve(physicalRows, 100, 0, normalEntranceSelection, 14).result == Result::Allowed);
+static_assert(Resolve(physicalRows, 100, 0, normalEntranceSelection, 18).result == Result::Allowed);
+static_assert(Resolve(physicalRows, 100, 0, normalEntranceSelection, 13).result == Result::BelowMinimum);
+static_assert(Resolve(physicalRows, 100, 0, normalEntranceSelection, 19).result == Result::AboveMaximum);
 static_assert(Resolve(physicalRows, 100, 1, 0, 45).result == Result::Allowed);
 static_assert(Resolve(physicalRows, 100, 0, 5, 1).result == Result::SeasonalException);
 static_assert(Resolve(physicalRows, 100, 0, 0, 1).result == Result::BelowMinimum);
