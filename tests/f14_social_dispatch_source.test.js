@@ -46,6 +46,25 @@ test("group accept is one world-thread operation with guarded post-handler follo
     assert.match(section, /IsValid\(\) const override[\s\S]*invite->GetGUID\(\) == m_inviteGroupGuid/);
 });
 
+test("deferred group accept preserves decline and successful follow-up order", () => {
+    const operations = read("src/Script/WorldThr/PlayerbotOperations.h");
+    const accept = operations.split("class GroupAcceptOperation")[1]?.split("// Group invite operation")[0];
+    assert.ok(accept);
+    const ordered = ["CheckLevelFor(PLAYERBOT_SECURITY_INVITE", "SMSG_GROUP_DECLINE",
+        "inviter->SendDirectMessage(&data)", "bot->UninviteFromGroup()", "bot->ToggleAFK()",
+        "HandleGroupAcceptOpcode(packet)", "group->IsMember(m_inviterGuid)", "botAI->SetMaster(inviter)",
+        "botAI->ResetStrategies()", "botAI->ChangeStrategy(", "botAI->Reset()", "botAI->TellMaster(",
+        "summonAction.Teleport(inviter, bot, true)"];
+    let previous = -1;
+    for (const step of ordered) {
+        const at = accept.indexOf(step);
+        assert.ok(at > previous, `${step} follows previous step`);
+        previous = at;
+    }
+    assert.match(accept, /if \(!botAI->GetSecurity\(\)->CheckLevelFor[\s\S]*?bot->UninviteFromGroup\(\);\s*return false;/);
+    assert.match(accept, /if \(!group \|\| !group->IsMember\(m_inviterGuid\)\)\s*return false;/);
+});
+
 test("personal-bot commands reject authoritative RandomBot account types before login", () => {
     const manager = read("src/Bot/PlayerbotMgr.cpp");
     const helper = manager.split("static std::string PersonalBotAccountRejection").at(-1)?.split("std::string const PlayerbotHolder::ProcessBotCommand")[0];
