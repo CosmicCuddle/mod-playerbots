@@ -15,6 +15,7 @@
 #include "DatabaseEnv.h"
 #include "Define.h"
 #include "Group.h"
+#include "GroupAcceptSessionEpoch.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -395,6 +396,7 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
     if (Player* bot = GetPlayerBot(guid))
     {
+        GroupAcceptSessionEpoch::Instance().Retire(guid);
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         if (!botAI)
             return;
@@ -459,6 +461,7 @@ void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 {
     if (Player* bot = GetPlayerBot(guid))
     {
+        GroupAcceptSessionEpoch::Instance().Retire(guid);
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         if (!botAI)
         {
@@ -523,6 +526,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         LOG_DEBUG("mod-playerbots", "PlayerbotAI is null for bot with GUID: {}", bot->GetGUID().GetRawValue());
         return;
     }
+
+    GroupAcceptSessionEpoch::Instance().Issue(bot->GetGUID());
 
     Player* master = botAI->GetMaster();
 

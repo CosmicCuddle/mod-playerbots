@@ -10,6 +10,7 @@
 #include "ArenaTeamMgr.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "GroupAcceptSessionEpoch.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -31,13 +32,17 @@
 class GroupAcceptOperation : public PlayerbotOperation
 {
 public:
-    GroupAcceptOperation(ObjectGuid botGuid, ObjectGuid inviterGuid, ObjectGuid inviteGroupGuid)
-        : m_botGuid(botGuid), m_inviterGuid(inviterGuid), m_inviteGroupGuid(inviteGroupGuid)
+    GroupAcceptOperation(ObjectGuid botGuid, ObjectGuid inviterGuid, ObjectGuid inviteGroupGuid,
+                         std::uint64_t botEpoch, std::uint64_t inviterEpoch)
+        : m_botGuid(botGuid), m_inviterGuid(inviterGuid), m_inviteGroupGuid(inviteGroupGuid),
+          m_botEpoch(botEpoch), m_inviterEpoch(inviterEpoch)
     {
     }
 
     bool Execute() override
     {
+        if (!EpochsMatch())
+            return false;
         Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
         Player* inviter = ObjectAccessor::FindPlayer(m_inviterGuid);
         if (!bot || !inviter || !bot->GetSession() || bot->GetSession()->GetPlayer() != bot)
@@ -94,15 +99,26 @@ public:
 
     bool IsValid() const override
     {
+        if (!EpochsMatch())
+            return false;
         Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
         Group* invite = bot ? bot->GetGroupInvite() : nullptr;
         return invite && invite->GetGUID() == m_inviteGroupGuid && invite->GetLeaderGUID() == m_inviterGuid;
     }
 
 private:
+    bool EpochsMatch() const
+    {
+        GroupAcceptSessionEpoch& epochs = GroupAcceptSessionEpoch::Instance();
+        return m_botEpoch && m_inviterEpoch && epochs.Current(m_botGuid) == m_botEpoch &&
+               epochs.Current(m_inviterGuid) == m_inviterEpoch;
+    }
+
     ObjectGuid m_botGuid;
     ObjectGuid m_inviterGuid;
     ObjectGuid m_inviteGroupGuid;
+    std::uint64_t m_botEpoch;
+    std::uint64_t m_inviterEpoch;
 };
 
 // Group invite operation
