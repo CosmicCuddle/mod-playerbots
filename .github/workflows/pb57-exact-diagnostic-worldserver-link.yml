@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: CosmicCuddle/mod-playerbots
-          ref: 8ec174c0
+          ref: 8ec174c00f86fbd61c261b2db809df1833c51952
           path: acore/modules/mod-playerbots
           persist-credentials: false
 
@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C acore rev-parse HEAD)" = "21ff1973bc75216f8a0d0f3d7731eb3e8894ff97"
-          test "$(git -C acore/modules/mod-playerbots rev-parse HEAD)" = "$(git -C acore/modules/mod-playerbots rev-parse 8ec174c0)"
+          test "$(git -C acore/modules/mod-playerbots rev-parse HEAD)" = "$(git -C acore/modules/mod-playerbots rev-parse 8ec174c00f86fbd61c261b2db809df1833c51952)"
           test "$(git -C acore/modules/mod-individual-progression rev-parse HEAD)" = "05ff032b625f6e8abb6b2b5be496bb8a3ee65c96"
           test "$(git -C acore/modules/mod-character-services rev-parse HEAD)" = "f43bc2c98aa7a291b673158fd578be304607b5e1"
           test "$(git -C acore/modules/mod-naxxramas-core rev-parse HEAD)" = "80e9de1c39a6dc995188a80c31a5e785d0f2a6f9"
