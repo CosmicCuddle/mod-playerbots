@@ -4,17 +4,20 @@ This DRAFT child change depends on Playerbots social dispatch PR #21 at
 `1cf279183a35721b997033d73270e2d69becad75`. It has no SQL, config,
 DBC, client, or live-server change. F14 and Paid remain OFF. The installed
 Core, IP, Playerbots, and guild-policy revisions are not yet verified.
+For the owner's pre-sync Phase A, the required guild seam is Core DRAFT
+#30 v2 (`8a306898bfa4dd5ee7ef5195e0b539ba05824799`) on Core23.
+Core DRAFT #28 v2 (`2b356ff99ea93a1c8da1323aa1a07a6bb96384f0`)
+is the equivalent upstream-stage seam for the later synchronization.
 
 `PlayerbotAI::SayToGuild` previously called `Guild::BroadcastToGuild` from
-bot AI. AI can run on a map worker; Core's guild-recipient policy in Core
-PR #28 v2 (`2b356ff99ea93a1c8da1323aa1a07a6bb96384f0`) belongs on the
-world-thread send path. The call now queues one
+bot AI. AI can run on a map worker; Core's version-2 guild-recipient policy
+belongs on the world-thread send path. The call now queues one
 value-only `GuildChatOperation` with the bot GUID, guild ID, login generation,
 and text. The operation runs in the existing world-script queue after Core
 waits for map workers, resolves the current player/session/guild, and checks
 the same login generation, guild membership, and speaking right. It runs
 Core's guild `OnPlayerCanUseChat` policy hook and then calls `BroadcastToGuild` with
-the original `LANG_UNIVERSAL` behavior; Core PR #28 v2 applies its narrow
+the original `LANG_UNIVERSAL` behavior; Core's version-2 hook applies its narrow
 per-recipient F14 filter inside that broadcast. No incoming
 `CMSG_MESSAGECHAT` packet is fabricated: the normal client parser rejects
 `LANG_UNIVERSAL` for that opcode. Addon and officer chat are outside scope.
@@ -43,7 +46,7 @@ On a disposable realm at the exact installed source tuple, with map workers
 enabled and then disabled, verify normal guild chat from RandomBots and
 personal bots, muted and silenced bot behavior, script vetoes, a bot logging out and back in before drain,
 guild removal/rejoin before drain, rank-right removal, queue saturation,
-and Core #28 v2 delivery to eligible and ineligible human recipients. Also
+and Core #30 v2 delivery to eligible and ineligible human recipients in Phase A. Also
 check BroadcastHelper's channel fallback after a queued guild attempt that
 later fails. Keep the owner's narrow policy: mixed guilds remain allowed;
 only the restricted BE/Draenei RNDBOT and still-Vanilla human pair is
