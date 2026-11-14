@@ -24,6 +24,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "ScriptMgr.h"
 #include "UseMeetingStoneAction.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
@@ -126,12 +127,16 @@ class GroupInviteOperation : public PlayerbotOperation
 {
 public:
     GroupInviteOperation(ObjectGuid botGuid, ObjectGuid targetGuid)
-        : m_botGuid(botGuid), m_targetGuid(targetGuid)
+        : m_botGuid(botGuid), m_targetGuid(targetGuid),
+          m_botEpoch(GroupAcceptSessionEpoch::Instance().Current(botGuid)),
+          m_targetEpoch(GroupAcceptSessionEpoch::Instance().Current(targetGuid))
     {
     }
 
     bool Execute() override
     {
+        if (!EpochsMatch())
+            return false;
         Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
         Player* target = ObjectAccessor::FindPlayer(m_targetGuid);
 
@@ -147,6 +152,10 @@ public:
             LOG_DEBUG("playerbots", "GroupInviteOperation: Target {} is already in a group", target->GetName());
             return false;
         }
+
+        std::string targetName = target->GetName();
+        if (!sScriptMgr->OnPlayerCanGroupInvite(bot, targetName))
+            return false;
 
         Group* group = bot->GetGroup();
 
@@ -201,6 +210,8 @@ public:
 
     bool IsValid() const override
     {
+        if (!EpochsMatch())
+            return false;
         // Check if bot still exists and is online
         Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
         Player* target = ObjectAccessor::FindPlayer(m_targetGuid);
@@ -208,8 +219,17 @@ public:
     }
 
 private:
+    bool EpochsMatch() const
+    {
+        GroupAcceptSessionEpoch& epochs = GroupAcceptSessionEpoch::Instance();
+        return m_botEpoch && m_targetEpoch && epochs.Current(m_botGuid) == m_botEpoch &&
+               epochs.Current(m_targetGuid) == m_targetEpoch;
+    }
+
     ObjectGuid m_botGuid;
     ObjectGuid m_targetGuid;
+    std::uint64_t m_botEpoch;
+    std::uint64_t m_targetEpoch;
 };
 
 // Remove member from group
