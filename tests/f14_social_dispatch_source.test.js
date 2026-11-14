@@ -48,7 +48,7 @@ test("group accept is one world-thread operation with guarded post-handler follo
 
 test("personal-bot commands reject authoritative RandomBot account types before login", () => {
     const manager = read("src/Bot/PlayerbotMgr.cpp");
-    const helper = manager.split("static std::string PersonalBotAccountRejection")[1]?.split("std::string const PlayerbotHolder::ProcessBotCommand")[0];
+    const helper = manager.split("static std::string PersonalBotAccountRejection").at(-1)?.split("std::string const PlayerbotHolder::ProcessBotCommand")[0];
     assert.ok(helper);
     assert.match(helper, /rndBotTypeAccounts/);
     assert.match(helper, /IsRandomBot\(guid.GetCounter\(\)\)/);
@@ -57,6 +57,10 @@ test("personal-bot commands reject authoritative RandomBot account types before 
     assert.ok(!/getRace\(|GetRace\(/.test(helper));
     const command = manager.split("std::string const PlayerbotHolder::ProcessBotCommand")[1].split("std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand")[0];
     assert.ok(command.indexOf("PersonalBotAccountRejection(accountId, guid)") < command.indexOf("AddPlayerBot(guid, masterAccountId)"));
+    const entry = manager.split("void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId)")[1]?.split("void PlayerbotHolder::AbandonPendingLogin")[0];
+    assert.ok(entry);
+    assert.match(entry, /if \(masterAccountId\)[\s\S]*?PersonalBotAccountRejection\(accountId, playerGuid\)[\s\S]*?return;/);
+    assert.ok(entry.indexOf("PersonalBotAccountRejection(accountId, playerGuid)") < entry.indexOf("new WorldSession("));
     const addAccount = manager.split("if (!strcmp(cmd, \"addaccount\"))")[1];
     assert.ok(addAccount.indexOf("PersonalBotAccountRejection(accountId, ObjectGuid::Empty)") < addAccount.indexOf("SELECT name FROM characters WHERE account"));
 });
