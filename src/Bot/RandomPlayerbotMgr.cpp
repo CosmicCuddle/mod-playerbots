@@ -969,12 +969,12 @@ uint32 RandomPlayerbotMgr::RemoveRandomBots()
     uint32 removed = 0;
     for (ObjectGuid guid : toLogout)
     {
-        if (LogoutPlayerBot(guid, [&]
+        if (TryLogoutPlayerBot(guid, [&]
         {
             uint32 bot = guid.GetCounter();
             SetEventValue(bot, "add", 0, 0);
             currentBots.erase(bot);
-        }))
+        }) == BotRetirementResult::Completed)
             ++removed;
     }
 
@@ -1585,7 +1585,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
             };
             if (player)
             {
-                LogoutPlayerBot(botGUID, [&]
+                TryLogoutPlayerBot(botGUID, [&]
                 {
                     LOG_DEBUG("playerbots", "Bot #{} {}:{} <{}>: log out", bot, IsAlliance(player->getRace()) ? "A" : "H",
                               player->GetLevel(), player->GetName().c_str());
@@ -3720,15 +3720,25 @@ void RandomPlayerbotMgr::Remove(Player* bot)
     if (Player* held = GetPlayerBot(owner))
     {
         if (held == bot)
-            LogoutPlayerBot(owner, clearEvents);
+            TryLogoutPlayerBot(owner, clearEvents);
         return;
     }
 
     // Preserve the existing non-holder event cleanup, but never run it while
     // this live owner's gear transaction or another retirement is in progress.
     auto retirement = bot->TryAcquirePB59Retirement();
-    if (retirement)
+    if (!retirement || !retirement.MarkMutation())
+        return;
+    try
+    {
         clearEvents();
+        if (!retirement.Complete())
+            LOG_ERROR("playerbots", "Bot {} event cleanup incomplete; recovery required", owner.ToString());
+    }
+    catch (...)
+    {
+        LOG_ERROR("playerbots", "Bot {} event cleanup incomplete; recovery required", owner.ToString());
+    }
 }
 
 CreatureData const* RandomPlayerbotMgr::GetCreatureDataByEntry(uint32 entry)
