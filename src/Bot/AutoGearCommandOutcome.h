@@ -27,7 +27,7 @@ namespace PlayerbotsAutoGearCommand
 
     // Planning only. Mutation still needs owner-thread execution and authority
     // held valid through commit; RequestStrip never authorizes deletion itself.
-    constexpr NextStep ResolveNextStep(bool authorityValid, PreparationResult result)
+    constexpr NextStep ResolveNextStep(bool authorityValid, PreparationResult result, bool searchComplete = false)
     {
         if (!authorityValid)
             return NextStep::PreserveGear;
@@ -36,7 +36,7 @@ namespace PlayerbotsAutoGearCommand
             case PreparationResult::SuitableSet:
                 return NextStep::CommitPreparedSet;
             case PreparationResult::NoSuitableSet:
-                return NextStep::RequestStrip;
+                return searchComplete ? NextStep::RequestStrip : NextStep::PreserveGear;
             default:
                 return NextStep::PreserveGear;
         }
