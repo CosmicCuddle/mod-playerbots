@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotFactory.h"
+#include "AutoGearProgressionCap.h"
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
 #include "AiFactory.h"
@@ -582,8 +583,9 @@ bool PlayerbotFactory::LearnProfessionSpecialization(Player* bot,
     return bot->HasSpell(knownSpellId);
 }
 
-PlayerbotFactory::PlayerbotFactory(Player* bot, uint32 level, uint32 itemQuality, uint32 gearScoreLimit)
-    : level(level), itemQuality(itemQuality), gearScoreLimit(gearScoreLimit), bot(bot)
+PlayerbotFactory::PlayerbotFactory(Player* bot, uint32 level, uint32 itemQuality, uint32 gearScoreLimit,
+                                   uint32 maxRawItemLevel)
+    : level(level), itemQuality(itemQuality), gearScoreLimit(gearScoreLimit), maxRawItemLevel(maxRawItemLevel), bot(bot)
 {
     botAI = GET_PLAYERBOT_AI(bot);
     if (!this->itemQuality)
@@ -2361,6 +2363,8 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                 ItemTemplate const* iProto = sObjectMgr->GetItemTemplate(itemId);
                 if (!iProto)
                     continue;
+                if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(iProto->ItemLevel, maxRawItemLevel))
+                    continue;
 
                 // BuyCount by default
                 uint32 count = iProto->BuyCount;
@@ -2406,6 +2410,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         {
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
             if (!proto) continue;
+            if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, maxRawItemLevel)) continue;
             // Respect gear quality limit: trinket must not exceed itemQuality setting
             if (static_cast<int32>(proto->Quality) > static_cast<int32>(itemQuality)) continue;
             if (proto->RequiredLevel > level) continue;
@@ -2545,6 +2550,9 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                             continue;
 
                         if (!proto)
+                            continue;
+
+                        if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, maxRawItemLevel))
                             continue;
 
                         if (shouldCheckGS && gearScoreLimit != 0 &&
@@ -4078,10 +4086,10 @@ void PlayerbotFactory::DestroyEquippedGear(Player* bot)
 }
 
 void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance,
-                                bool applyFinishers)
+                                bool applyFinishers, uint32 maxRawItemLevel)
 {
     uint32 gs = ilvl == 0 ? 0 : CalcMixedGearScore(ilvl, itemQuality);
-    PlayerbotFactory factory(bot, bot->GetLevel(), itemQuality, gs);
+    PlayerbotFactory factory(bot, bot->GetLevel(), itemQuality, gs, maxRawItemLevel);
     factory.InitEquipment(incremental, secondChance);
 
     if (!applyFinishers)

@@ -8,6 +8,7 @@
 #define PLAYERBOTS_CHATCOMMANDTRIGGER_H
 
 #include "Trigger.h"
+#include "ObjectGuid.h"
 
 class Event;
 class Player;
@@ -26,7 +27,7 @@ public:
 private:
     std::string param;
     bool triggered;
-    Player* owner;
+    ObjectGuid ownerGuid;
 };
 
 #endif

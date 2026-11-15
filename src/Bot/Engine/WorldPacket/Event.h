@@ -8,8 +8,8 @@
 #define PLAYERBOTS_EVENT_H
 
 #include "WorldPacket.h"
+#include "ObjectGuid.h"
 
-class ObjectGuid;
 class Player;
 
 class Event
@@ -21,6 +21,10 @@ public:
     Event(std::string const source) : source(source) {}
     Event(std::string const source, std::string const param, Player* owner = nullptr)
         : source(source), param(param), owner(owner)
+    {
+    }
+    Event(std::string const source, std::string const param, Player* owner, ObjectGuid ownerGuid)
+        : source(source), param(param), owner(owner), ownerGuid(ownerGuid)
     {
     }
     Event(std::string const source, WorldPacket& packet, Player* owner = nullptr)
@@ -35,6 +39,7 @@ public:
     WorldPacket& getPacket() { return packet; }
     ObjectGuid getObject();
     Player* getOwner() { return owner; }
+    ObjectGuid GetOwnerGuid() const { return ownerGuid; }
     bool operator!() const { return source.empty(); }
 
 protected:
@@ -42,6 +47,7 @@ protected:
     std::string param;
     WorldPacket packet;
     Player* owner = nullptr;
+    ObjectGuid ownerGuid;
 };
 
 #endif

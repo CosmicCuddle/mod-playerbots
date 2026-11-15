@@ -1,5 +1,18 @@
 # Custom Modifications Register
 
+## PB59-AUTOGEAR-IP-CAP-SEAMS-20261114 — command sender and hard item-level candidate
+
+- **Owner/component:** CosmicCuddle / `mod-playerbots`, with optional Individual Progression read-only authority.
+- **Parent/source reference:** synced PB master `3a9e39f1be9f988ce53f9d4f19636207ff25c4a9`; branch `feature/codex-pb59-autogear-audit-20261114`.
+- **Intended behavior:** preserve a command sender GUID through deferred chat triggers and events; offer a command-only raw item-level ceiling in AutoGear equipment selection, including starter outfits, PvP trinkets, and grey/white fallback candidates. A pure resolver models raw/effective IP stage, entry floor, era ceiling, and configured/requested caps. No production stage table or command activation is wired yet.
+- **Affected files:** `src/Ai/Base/Trigger/ChatCommandTrigger.h/.cpp`, `src/Bot/Engine/WorldPacket/Event.h/.cpp`, `src/Bot/Factory/PlayerbotFactory.h/.cpp`, `src/Bot/AutoGearProgressionCap.h`, `tests/pb59_autogear_cap_policy.cpp`, this Register and `docs/PB59_AUTOGEAR_IP_CAP_AUDIT_2026-11-14.md`.
+- **Dependencies:** future optional IP provider and owner-reviewed stage table/config; no SQL, DBC, client patch or live configuration in this seam commit.
+- **Known risks:** event object size increases by an ObjectGuid, and deferred chat triggers now resolve the player by GUID; other event users still have a raw `getOwner()` pointer after creation. The raw cap is not passed by AutoGear commands yet, and finishers such as ammo/gems need a separate item-level audit before a strict whole-command guarantee. Native and gameplay behavior are unverified.
+- **Tests:** synthetic constexpr policy fixtures cover stage boundaries, paid raw/effective split, cap interactions, invalid/missing values and the raw item-level predicate; they remain uncompiled here. `git diff --check` passed. No native build or gameplay test in this workspace.
+- **Live status:** source candidate only, not merged/deployed/activated. F14/Paid remain off.
+- **Decision:** owner requirement and CS01 source direction in [coordination Issue #59](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/59). Later-era numbers in fixtures are synthetic test inputs, not production defaults.
+- **Rollback:** leave branch unmerged or revert the seam commit before an owner-approved deployment; no data migration.
+
 ## PB-F14-SOCIAL-DISPATCH-20261114 — world-thread social dispatch and RandomBot adoption guard
 
 The existing queued `GroupInviteOperation` also receives the standard group-invite veto before its direct group creation/conversion/add. It captures both participant epochs to reject stale queued work. This preserves ordinary IP grouping enforcement for permitted personal/Altbots without classifying them as F14 social RandomBots. Same-session invite-policy changes after preflight and native/gameplay behavior remain unverified.

@@ -1,6 +1,8 @@
 # PB59 AutoGear progression cap: source audit
 
-**Status:** source audit on PB `3a9e39f1` and IP `05ff032b`. No runtime behavior changed. Tracked in [coordination Issue #59](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/59).
+**Status:** source audit and unmerged seam candidate on PB `3a9e39f1` and IP `05ff032b`. Command gear outcomes are unchanged; chat sender resolution now uses a GUID. Tracked in [coordination Issue #59](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/59).
+
+The branch now contains an unmerged source seam candidate: deferred chat triggers retain a sender GUID, `Event` captures it for later re-resolution, and `PlayerbotFactory::AutoGear` accepts an optional hard raw item-level limit. The command actions do not yet pass that limit or call IP; the feature is not active. Synthetic policy fixtures use candidate later-era values solely to exercise raw/effective stage behavior.
 
 ## Commanding player and IP authority
 
