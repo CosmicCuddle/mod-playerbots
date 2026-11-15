@@ -40,10 +40,42 @@
 #include "SessionScript.h"
 #include "WorldScript.h"
 #include "cmath"
+#include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace
 {
+    using DungeonBracketRows = std::unordered_map<uint64, std::vector<PlayerbotsDungeonBracket::Row>>;
+    DungeonBracketRows dungeonBracketRows;
+
+    uint64 DungeonBracketKey(uint32 mapId, uint32 difficulty)
+    {
+        return (static_cast<uint64>(mapId) << 32) | difficulty;
+    }
+
+    void BuildDungeonBracketRows()
+    {
+        // DBC stores load before OnBeforeWorldInitialized. This index is built
+        // once on the world thread, before map threads can read it.
+        for (uint32 id = 0; id < sLFGDungeonStore.GetNumRows(); ++id)
+        {
+            LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(id);
+            if (!dungeon)
+                continue;
+
+            bool const physical = dungeon->TypeID == lfg::LFG_TYPE_DUNGEON ||
+                dungeon->TypeID == lfg::LFG_TYPE_HEROIC;
+            if (!physical)
+                continue;
+
+            bool const seasonal = (dungeon->Flags & lfg::LFG_FLAG_SEASONAL) != 0;
+            dungeonBracketRows[DungeonBracketKey(dungeon->MapID, dungeon->Difficulty)].push_back(
+                {dungeon->ID, dungeon->MapID, dungeon->Difficulty, dungeon->MinLevel, dungeon->MaxLevel,
+                    true, seasonal, false});
+        }
+    }
+
     bool CanBotEnterDungeon(Player* player, MapEntry const* entry)
     {
         if (!sPlayerbotAIConfig.EnforceDungeonLevelBracket || !player || !player->GetSession() ||
@@ -59,26 +91,17 @@ namespace
         // entrances still work, while seasonal bypasses remain unavailable.
         uint32 const selectedDungeonId = 0;
 
-        std::vector<PlayerbotsDungeonBracket::Row> rows;
-        for (uint32 id = 0; id < sLFGDungeonStore.GetNumRows(); ++id)
-        {
-            LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(id);
-            if (!dungeon || dungeon->MapID != entry->MapID || dungeon->Difficulty != difficulty)
-                continue;
-
-            bool const physical = dungeon->TypeID == lfg::LFG_TYPE_DUNGEON ||
-                dungeon->TypeID == lfg::LFG_TYPE_HEROIC;
-            bool const seasonal = (dungeon->Flags & lfg::LFG_FLAG_SEASONAL) != 0;
-            bool const active = false;
-            rows.push_back({dungeon->ID, dungeon->MapID, dungeon->Difficulty, dungeon->MinLevel,
-                dungeon->MaxLevel, physical, seasonal, active});
-        }
+        DungeonBracketRows const& index = dungeonBracketRows;
+        auto const rows = index.find(DungeonBracketKey(entry->MapID, difficulty));
+        std::span<PlayerbotsDungeonBracket::Row const> const bracketRows = rows == index.end()
+            ? std::span<PlayerbotsDungeonBracket::Row const>()
+            : std::span<PlayerbotsDungeonBracket::Row const>(rows->second);
 
         DungeonProgressionRequirements const* access = sObjectMgr->GetAccessRequirement(entry->MapID, difficulty);
         uint32 const overrideMin = access ? access->levelMin : 0;
         uint32 const overrideMax = access ? access->levelMax : 0;
         auto const decision = PlayerbotsDungeonBracket::Resolve(
-            std::span<PlayerbotsDungeonBracket::Row const>(rows), entry->MapID, difficulty, selectedDungeonId,
+            bracketRows, entry->MapID, difficulty, selectedDungeonId,
             player->GetLevel(), overrideMin, overrideMax);
         if (decision.result == PlayerbotsDungeonBracket::Result::Allowed ||
             decision.result == PlayerbotsDungeonBracket::Result::SeasonalException)
@@ -613,6 +636,7 @@ public:
 
     void OnBeforeWorldInitialized() override
     {
+        BuildDungeonBracketRows();
         // Before modifying the following messages, please make sure it does not violate the GNU GPLv2
         // license especially if you are distributing a repack or hosting a public server
         // e.g. you can replace the URL with your own repository,
