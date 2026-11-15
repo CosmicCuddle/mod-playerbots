@@ -73,13 +73,23 @@ int main()
     catch(std::runtime_error const&) {}
 
     assert(!R::Reserve(Id(replacementHolder,1,22,33),replacementHolder.Observe(),wrong));
-    // Wrong kind, reserved-only, wrong session, and foreign-thread handoff fail.
-    { auto record=J::Reserve(id.guid,id.player,id.holder,J::Kind::Disable);assert(record && record.MarkMutation());assert(!R::TakeForRecovery(id,record));record.MarkStep(J::Step::AIDeleteReturned);assert(record.Complete()); }
-    { auto record=J::Reserve(id.guid,id.player,id.holder,J::Kind::Logout);assert(record);assert(!R::TakeForRecovery(id,record));assert(record.MarkMutation());assert(!R::TakeForRecovery({1,2,id.holder,99},record));std::thread t([&]{assert(!R::TakeForRecovery(id,record));});t.join();
-      assert(R::WithPublished(id,[&](Session& live){
-          assert(&live==exact);assert(!R::TakeForRecovery(id,record));assert(record);
-      }));
-      auto handoff=R::TakeForRecovery(id,record);assert(handoff && !record && R::Inspect(id)==Phase::InCustody);
+    // A callback refuses retirement BEFORE journal mutation; an admitted
+    // retirement excludes new callbacks and competing retirement producers.
+    assert(R::WithPublished(id,[&](Session& live){
+        assert(&live==exact);assert(!R::TryReserveRetirement(id));
+    }));
+    { auto permit=R::TryReserveRetirement(id);assert(permit);
+      assert(!R::TryReserveRetirement(id));
+      assert(!R::WithPublished(id,[](Session&){assert(false);}));
+      auto record=J::Reserve(id.guid,id.player,id.holder,J::Kind::Disable);assert(record && record.MarkMutation());
+      assert(!R::TakeForRecovery(id,permit,record));record.MarkStep(J::Step::AIDeleteReturned);assert(record.Complete()); }
+    assert(R::WithPublished(id,[](Session&){}));
+    { auto permit=R::TryReserveRetirement(id);assert(permit);
+      auto record=J::Reserve(id.guid,id.player,id.holder,J::Kind::Logout);assert(record);
+      assert(!R::TakeForRecovery(id,permit,record));assert(record.MarkMutation());
+      assert(!R::TakeForRecovery({1,2,id.holder,99},permit,record));
+      std::thread t([&]{assert(!R::TryReserveRetirement(id));assert(!R::TakeForRecovery(id,permit,record));});t.join();
+      auto handoff=R::TakeForRecovery(id,permit,record);assert(handoff && !record && R::Inspect(id)==Phase::InCustody);
       assert(!handoff.WithSession([](Session&){assert(false);}));
       assert(!handoff.DeleteDetached());
       // Manager disappears after ownership is accepted, never deletes session.
@@ -93,15 +103,15 @@ int main()
     assert(!J::Inspect(id.guid,id.player));
     // Only completed exact deletion reopens the GUID for another incarnation.
     auto next=Id(replacementHolder,1,22,33);Publish(next,replacementHolder,wrong);assert(R::Inspect(id)==Phase::Missing);
-    { auto record=Start(next);auto handoff=R::TakeForRecovery(next,record);assert(handoff);assert(handoff.Unlink([](R::Identity){return true;}));assert(handoff.WithSession([](Session& s){s.player=nullptr;}));assert(handoff.DeleteDetached()); }
+    { auto permit=R::TryReserveRetirement(next);assert(permit);auto record=Start(next);auto handoff=R::TakeForRecovery(next,permit,record);assert(handoff);assert(handoff.Unlink([](R::Identity){return true;}));assert(handoff.WithSession([](Session& s){s.player=nullptr;}));assert(handoff.DeleteDetached()); }
     // Manager loss prior to handoff leaves a real independent owner. No implicit logout.
     J::HolderLifetime lost;auto orphan=Id(lost,4,5,6);P p3(std::make_unique<Session>(4,5,6));Queue(p3,marker);Publish(orphan,lost,p3);lost.Detach();assert(R::Inspect(orphan)==Phase::Orphaned&&Session::destroyed==2);
-    { auto record=Start(orphan);auto handoff=R::TakeForRecovery(orphan,record);assert(handoff);assert(handoff.Unlink([](R::Identity){return true;}));assert(handoff.WithSession([](Session& s){s.player=nullptr;}));assert(handoff.DeleteDetached()); }
+    { auto permit=R::TryReserveRetirement(orphan);assert(permit);auto record=Start(orphan);auto handoff=R::TakeForRecovery(orphan,permit,record);assert(handoff);assert(handoff.Unlink([](R::Identity){return true;}));assert(handoff.WithSession([](Session& s){s.player=nullptr;}));assert(handoff.DeleteDetached()); }
     // Faults at unlink/after adoption/native veto/throw keep ownership and fence.
     for(unsigned n=0;n<5;++n)
     {
         J::HolderLifetime h;auto old=Id(h,10+n,20+n,30+n);P p(std::make_unique<Session>(old.guid,old.player,old.session));Queue(p,marker);Publish(old,h,p);
-        { auto rec=Start(old);auto handoff=R::TakeForRecovery(old,rec);assert(handoff && !rec);
+        { auto permit=R::TryReserveRetirement(old);assert(permit);auto rec=Start(old);auto handoff=R::TakeForRecovery(old,permit,rec);assert(handoff && !rec);
           if(n==0) { /* lost ticket before unlink */ }
           if(n==1) { assert(!handoff.Unlink([](R::Identity){return false;}));assert(!handoff.WithSession([](Session&){assert(false);})); }
           if(n==2) { try{handoff.Unlink([](R::Identity)->bool{throw std::runtime_error("unlink");});assert(false);}catch(std::runtime_error const&){} assert(!handoff.WithSession([](Session&){assert(false);})); }
