@@ -7,6 +7,7 @@
 #include "PlayerbotFactory.h"
 #include "AutoGearProgressionCap.h"
 #include "AutoGearSlotPolicy.h"
+#include "AutoGearStorageMatching.h"
 #include <algorithm>
 #include <array>
 #include "PlayerbotsDatabase.h"
@@ -4132,10 +4133,12 @@ bool PlayerbotFactory::IsEquipmentAuthorityCurrent(Player const* sender,
 InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves)
 {
     moves.clear();
-    if (!bot || !bot->IsInWorld())
-        return EQUIP_ERR_ITEM_NOT_FOUND;
+    if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+        return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 
-    std::vector<EquipmentStorageMove> prepared;
+    using namespace PlayerbotsAutoGearStorage;
+    std::vector<Domain> domains;
+    std::vector<ObjectGuid> guids;
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
         if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
@@ -4147,45 +4150,43 @@ InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vect
         InventoryResult const unequip = bot->CanUnequipItem(source, false);
         if (unequip != EQUIP_ERR_OK)
             return unequip;
-        if (item->IsInTrade())
+        // The script hook can run arbitrary code. Recheck exact identity.
+        if (bot->GetItemByPos(source) != item || item->IsInTrade() ||
+            item->GetGUID() == bot->GetLootGUID())
             return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 
-        bool reserved = false;
-        auto reserve = [&](uint8 bag, uint8 destinationSlot)
+        Domain domain{item->GetGUID().GetRawValue(), source, {}};
+        auto collect = [&](uint8 bag, uint8 destinationSlot)
         {
             uint16 const destination = (uint16(bag) << 8) | destinationSlot;
-            if (bot->GetItemByPos(bag, destinationSlot) ||
-                std::any_of(prepared.begin(), prepared.end(), [destination](EquipmentStorageMove const& move)
-                    { return move.destination == destination; }))
-                return false;
-
+            if (bot->GetItemByPos(bag, destinationSlot))
+                return;
             ItemPosCountVec destinations;
-            if (bot->CanStoreItem(bag, destinationSlot, destinations, item, false) != EQUIP_ERR_OK ||
-                destinations.size() != 1 || destinations.front().pos != destination ||
-                destinations.front().count != item->GetCount())
-                return false;
-
-            prepared.push_back({item->GetGUID(), source, destination});
-            return true;
+            if (bot->CanStoreItem(bag, destinationSlot, destinations, item, false) == EQUIP_ERR_OK &&
+                destinations.size() == 1 && destinations.front().pos == destination &&
+                destinations.front().count == item->GetCount())
+                domain.destinations.push_back(destination);
         };
-
         for (uint8 destination = INVENTORY_SLOT_ITEM_START; destination < INVENTORY_SLOT_ITEM_END; ++destination)
-            if (reserve(INVENTORY_SLOT_BAG_0, destination))
-            {
-                reserved = true;
-                break;
-            }
-        for (uint8 bag = INVENTORY_SLOT_BAG_START; !reserved && bag < INVENTORY_SLOT_BAG_END; ++bag)
+            collect(INVENTORY_SLOT_BAG_0, destination);
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
             if (Bag* container = bot->GetBagByPos(bag))
                 for (uint32 destination = 0; destination < container->GetBagSize(); ++destination)
-                    if (reserve(bag, static_cast<uint8>(destination)))
-                    {
-                        reserved = true;
-                        break;
-                    }
-        if (!reserved)
-            return EQUIP_ERR_INVENTORY_FULL;
+                    collect(bag, static_cast<uint8>(destination));
+        guids.push_back(item->GetGUID());
+        domains.push_back(std::move(domain));
     }
+
+    // At most 17 items x (16 backpack + 4 x 256 representable bag positions).
+    // This is a structural bound, not a production gear policy.
+    auto result = Match(domains, true, 17 * (16 + 4 * 256));
+    if (result.status == Status::NoSpace)
+        return EQUIP_ERR_INVENTORY_FULL;
+    if (result.status != Status::Ready)
+        return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+    std::vector<EquipmentStorageMove> prepared;
+    for (std::size_t i = 0; i < result.moves.size(); ++i)
+        prepared.push_back({guids[i], result.moves[i].source, result.moves[i].destination});
 
     InventoryResult const validation = ValidateEquipmentStorage(bot, prepared);
     if (validation != EQUIP_ERR_OK)
