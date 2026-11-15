@@ -57,6 +57,15 @@ public:
         _phase = Phase::Released;
         return true;
     }
+    // Transfer actual ownership into a preallocated independent owner slot.
+    // No raw-pointer adoption and no allocation on the transfer boundary.
+    [[nodiscard]] bool TransferPublished(Session const* expected, std::unique_ptr<Session>& destination) noexcept
+    {
+        if (destination || !CanPublish(expected)) return false;
+        destination = std::move(_session);
+        _phase = Phase::Released;
+        return true;
+    }
     // No blind retry after an exception or a logout veto. The pending owner
     // retains the session and marks recovery required until a future reconciler.
     template<class Logout>
