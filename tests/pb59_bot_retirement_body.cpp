@@ -1,5 +1,6 @@
 // Exact PlayerbotHolder retirement methods, with synthetic native dependencies.
 #include "PB59TransactionAdmission.h"
+#include "AutoGearRecoveryRegistry.h"
 #include <cassert>
 #include <functional>
 #include <memory>
@@ -7,9 +8,12 @@
 #include <vector>
 #include <stdexcept>
 using A = PB59::TransactionAdmission;
-using ObjectGuid = unsigned;
+using Journal = PB59::RecoveryRegistry;
+struct ObjectGuid { unsigned value; ObjectGuid(unsigned v=0):value(v){} bool operator==(ObjectGuid const&) const=default;
+    unsigned GetRawValue() const{return value;} std::string ToString() const{return std::to_string(value);} };
 static std::vector<std::string> trace;
-static std::function<void()> duringSave;
+static std::function<void()> duringSave, duringLogout, afterLogout;
+static bool vetoLogout=false;
 #define LOG_DEBUG(...) ((void)0)
 #define LOG_ERROR(...) ((void)0)
 struct Group {};
@@ -35,6 +39,7 @@ struct Player
     Group group;
     Motion motion;
     Player(){connected=this;}
+    std::uint64_t GetPB59OwnerIncarnation(){return admission.OwnerIncarnation();}
     auto TryAcquirePB59Retirement(){ return admission.TryAcquireRetirement(); }
     bool PB59RetirementRecoveryRequired(){return admission.RetirementRecoveryRequired();}
     bool OwnsPB59Retirement(A::RetirementLease const& l){return admission.OwnsRetirement(l);}
@@ -56,7 +61,7 @@ struct WorldSession
     bool loggingOut=false;
     Player* GetPlayer(){return player;}
     bool IsLoggingOut(){return loggingOut;}
-    void LogoutPlayer(bool){trace.push_back("logout");delete player;player=nullptr;}
+    void LogoutPlayer(bool){trace.push_back("logout");if(duringLogout)duringLogout();if(vetoLogout)return;delete player;player=nullptr;if(afterLogout)afterLogout();}
     ~WorldSession(){assert(!player);trace.push_back("delete-session");}
 };
 #define GET_PLAYERBOT_AI(p) ((p)->ai)
@@ -85,6 +90,7 @@ struct PlayerbotRepository
 struct PlayerbotHolder
 {
     Player* bot=nullptr;
+    Journal::HolderLifetime _pb59HolderLifetime;
     Player* GetPlayerBot(ObjectGuid g){return g==1?bot:nullptr;}
     bool IsRealPlayer(Player*){return true;}
     bool LogoutPlayerBot(ObjectGuid);
@@ -142,6 +148,7 @@ int main()
     for(int failure=0;failure<4;++failure)
     {
         auto* p=new Player;auto* session=new WorldSession{p};p->session=session;holder.bot=p;
+        auto owner=p->GetPB59OwnerIncarnation();
         trace.clear();
         if(failure==0)
         {
@@ -174,5 +181,35 @@ int main()
         assert(trace.size()==count&&holder.bot==p&&session->player==p);
         // Test teardown only: native recovery/release is deliberately not supplied.
         holder.bot=nullptr;session->LogoutPlayer(true);delete session;
+        auto record=Journal::Inspect(1,owner);assert(record&&record->phase==Journal::Phase::RecoveryRequired);
+        assert(record->step==(failure==0?Journal::Step::BeforeBookkeeping:Journal::Step::BeforeSave));
+    }
+    // Faults after the holder map was erased: record remains even if native
+    // logout already destroyed the Player. No claim of live session custody.
+    for(int failure=0;failure<3;++failure)
+    {
+        auto* p=new Player;auto* session=new WorldSession{p};p->session=session;holder.bot=p;
+        auto owner=p->GetPB59OwnerIncarnation();trace.clear();
+        if(failure==0)duringLogout=[] {throw std::runtime_error("before player deletion");};
+        if(failure==1)afterLogout=[] {throw std::runtime_error("after player deletion");};
+        if(failure==2)vetoLogout=true;
+        assert(holder.TryLogoutPlayerBot(1)==BotRetirementResult::RecoveryRequired);
+        assert(!holder.bot);
+        auto record=Journal::Inspect(1,owner);assert(record&&record->phase==Journal::Phase::RecoveryRequired);
+        assert(record->step==(failure==2?Journal::Step::NativeLogoutReturned:Journal::Step::BeforeNativeLogout));
+        duringLogout={};afterLogout={};vetoLogout=false;
+        if(session->player)session->LogoutPlayer(true);
+        delete session;
+        assert(Journal::Inspect(1,owner)->identity==record->identity);
+    }
+    // Holder can disappear inside a callback; observer prevents subsequent
+    // dereference of the dead holder, but does not own the surviving session.
+    {
+        auto dying=std::make_unique<PlayerbotHolder>();auto* p=new Player;auto* session=new WorldSession{p};p->session=session;dying->bot=p;
+        auto owner=p->GetPB59OwnerIncarnation();duringSave=[&]{dying.reset();};
+        auto* original=dying.get();assert(original->TryLogoutPlayerBot(1)==BotRetirementResult::RecoveryRequired);
+        duringSave={};assert(!dying&&Journal::Inspect(1,owner)->step==Journal::Step::BeforeSave);
+        session->LogoutPlayer(true);delete session;
+        assert(Journal::Inspect(1,owner)->phase==Journal::Phase::RecoveryRequired);
     }
 }
