@@ -403,100 +403,88 @@ void PlayerbotMgr::CancelLogout()
     }
 }
 
-void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
+bool PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
-    if (Player* bot = GetPlayerBot(guid))
-    {
-        PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!botAI)
-            return;
-
-        // Queue group cleanup operation for world thread
-        auto cleanupOp = std::make_unique<BotLogoutGroupCleanupOperation>(guid);
-        PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(cleanupOp));
-
-        LOG_DEBUG("playerbots", "Bot {} logging out", bot->GetName().c_str());
-
-        // Remove taxi cheat flag on alts.
-        if (!sRandomPlayerbotMgr.IsRandomBot(bot) && bot->isTaxiCheater())
-            bot->SetTaxiCheater(false);
-
-        bot->SaveToDB(false, false);
-
-        WorldSession* botWorldSessionPtr = bot->GetSession();
-        [[maybe_unused]] WorldSession* masterWorldSessionPtr = nullptr;     // Remove [[maybe_unused]] tag if timed logout implemented.
-
-        if (botWorldSessionPtr->IsLoggingOut())
-            return;
-
-        Player* master = botAI->GetMaster();
-        if (master)
-            masterWorldSessionPtr = master->GetSession();
-
-        // TODO: Review whether or not to implement timed logout.
-        // Unused block. Useful only for timed logout.
-/*
-        // check for instant logout
-        bool logout = botWorldSessionPtr->ShouldLogOut(time(nullptr));
-
-        if (masterWorldSessionPtr && masterWorldSessionPtr->ShouldLogOut(time(nullptr)))
-            logout = true;
-
-        if (masterWorldSessionPtr && !masterWorldSessionPtr->GetPlayer())
-            logout = true;
-
-        if (bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || bot->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
-            botWorldSessionPtr->GetSecurity() >= (AccountTypes)sWorld->getIntConfig(CONFIG_INSTANT_LOGOUT))
-            logout = true;
-
-        if (master &&
-            (master->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || master->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
-             (masterWorldSessionPtr &&
-              masterWorldSessionPtr->GetSecurity() >= (AccountTypes)sWorld->getIntConfig(CONFIG_INSTANT_LOGOUT))))
-            logout = true;
-*/
-        // Instant logout (the only option right now)
-        {
-            std::string message = PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "goodbye", "Goodbye!", {});
-            botAI->TellMaster(message);
-            RemoveFromPlayerbotsMap(guid);              // deletes bot player ptr inside this WorldSession PlayerBotMap
-            botWorldSessionPtr->LogoutPlayer(true);     // this will delete the bot Player object and PlayerbotAI object
-            delete botWorldSessionPtr;                  // finally delete the bot's WorldSession
-        }
-    }
+    return LogoutPlayerBot(guid, {});
 }
 
-void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
+bool PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement)
 {
-    if (Player* bot = GetPlayerBot(guid))
+    Player* bot = GetPlayerBot(guid);
+    if (!bot)
+        return false;
+
+    // Keep the lease through the native logout and session deletion. It owns
+    // only the admission token, not a reference to the deleted Player.
+    auto retirement = bot->TryAcquirePB59Retirement();
+    if (!retirement)
+        return false;
+
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    WorldSession* botWorldSessionPtr = bot->GetSession();
+    if (!botAI || !botWorldSessionPtr || botWorldSessionPtr->GetPlayer() != bot || botWorldSessionPtr->IsLoggingOut())
+        return false;
+
+    // Scheduler bookkeeping belongs inside admission, before the same
+    // retirement steps as before. A denied lease changes none of it.
+    if (beforeRetirement)
+        beforeRetirement();
+
+    PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
+    auto cleanupOp = std::make_unique<BotLogoutGroupCleanupOperation>(guid);
+    PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(cleanupOp));
+
+    LOG_DEBUG("playerbots", "Bot {} logging out", bot->GetName().c_str());
+
+    // Remove taxi cheat flag on alts.
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot) && bot->isTaxiCheater())
+        bot->SetTaxiCheater(false);
+
+    bot->SaveToDB(false, false);
+    if (botWorldSessionPtr->IsLoggingOut())
+        return false;
+
+    // Instant logout (the only option right now).
+    std::string message = PlayerbotTextMgr::instance().GetBotTextOrDefault(
+        "goodbye", "Goodbye!", {});
+    botAI->TellMaster(message);
+    RemoveFromPlayerbotsMap(guid);
+    botWorldSessionPtr->LogoutPlayer(true);
+    delete botWorldSessionPtr;
+    return true;
+}
+
+bool PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
+{
+    Player* bot = GetPlayerBot(guid);
+    if (!bot)
+        return false;
+
+    auto retirement = bot->TryAcquirePB59Retirement();
+    if (!retirement)
+        return false;
+
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI)
+        return false;
+
+    PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
+    botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+        "goodbye", "Goodbye!", {}));
+    bot->StopMoving();
+    bot->GetMotionMaster()->Clear();
+
+    Group* group = bot->GetGroup();
+    if (group && !bot->InBattleground() && !bot->InBattlegroundQueue() && IsRealPlayer(botAI->GetMaster()))
     {
-        PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!botAI)
-        {
-            return;
-        }
-        botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-            "goodbye", "Goodbye!", {}));
-        bot->StopMoving();
-        bot->GetMotionMaster()->Clear();
-
-        Group* group = bot->GetGroup();
-        if (group && !bot->InBattleground() && !bot->InBattlegroundQueue() && IsRealPlayer(botAI->GetMaster()))
-        {
-            PlayerbotRepository::instance().Save(botAI);
-        }
-
-        LOG_DEBUG("playerbots", "Bot {} logged out", bot->GetName().c_str());
-
-        bot->SaveToDB(false, false);
-
-        RemoveFromPlayerbotsMap(guid);  // deletes bot player ptr inside this WorldSession PlayerBotMap
-
-        delete botAI;
+        PlayerbotRepository::instance().Save(botAI);
     }
+
+    LOG_DEBUG("playerbots", "Bot {} logged out", bot->GetName().c_str());
+    bot->SaveToDB(false, false);
+    RemoveFromPlayerbotsMap(guid);
+    delete botAI;
+    return true;
 }
 
 void PlayerbotHolder::RemoveFromPlayerbotsMap(ObjectGuid guid)
@@ -795,7 +783,8 @@ std::string const PlayerbotHolder::ProcessBotCommand(std::string const cmd, Obje
         if (!GetPlayerBot(guid))
             return "not your bot";
 
-        LogoutPlayerBot(guid);
+        if (!LogoutPlayerBot(guid))
+            return "bot logout not completed; busy or unavailable, please retry";
         return "ok";
     }
 
