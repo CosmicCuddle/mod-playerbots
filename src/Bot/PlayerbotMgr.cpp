@@ -560,30 +560,76 @@ bool PlayerbotHolder::CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sess
 
 void PlayerbotHolder::UpdateSessions()
 {
-    for (PlayerBotMap::const_iterator itr = GetPlayerBotsBegin(); itr != GetPlayerBotsEnd(); ++itr)
+    // Owner-context only. Never retain a holder iterator across native callbacks.
+    auto holderLife = _pb59HolderLifetime.Observe();
+    struct Identity { ObjectGuid guid; std::uint64_t player; std::uint64_t session; };
+    std::vector<Identity> bots;
+    bots.reserve(playerBots.size());
+    for (auto const& [guid, bot] : playerBots)
     {
-        Player* const bot = itr->second;
-        // Nothing else drives a headless session's async query, transaction and holder callbacks
-        bot->GetSession()->ProcessQueryCallbacks();
+        Player* live = ObjectAccessor::FindConnectedPlayer(guid);
+        if (live && live == bot && live->GetSession() && live->GetPB59OwnerIncarnation() &&
+            live->GetSession()->GetPB59SessionIncarnation())
+            bots.push_back({guid, live->GetPB59OwnerIncarnation(), live->GetSession()->GetPB59SessionIncarnation()});
+    }
+    for (auto const& id : bots)
+    {
+        auto resolve = [&]() -> Player*
+        {
+            if (!holderLife->Alive())
+                return nullptr;
+            Player* live = ObjectAccessor::FindConnectedPlayer(id.guid);
+            if (!live || live != GetPlayerBot(id.guid) || live->GetPB59OwnerIncarnation() != id.player)
+                return nullptr;
+            WorldSession* session = live->GetSession();
+            return session && session->GetPlayer() == live &&
+                session->GetPB59SessionIncarnation() == id.session ? live : nullptr;
+        };
+        Player* bot = resolve();
+        if (!bot)
+            continue;
+        {
+            auto scope = bot->AcquirePB59CallbackScope();
+            if (!scope.Admitted())
+                continue;
+            bot->GetSession()->ProcessQueryCallbacks();
+        }
+        bot = resolve();
+        if (!bot)
+            continue;
         if (bot->IsBeingTeleported())
         {
-            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-            if (botAI)
-            {
-                botAI->HandleTeleportAck();
-            }
+            auto scope = bot->AcquirePB59CallbackScope();
+            if (scope.Admitted())
+                if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot))
+                    ai->HandleTeleportAck();
         }
         else if (bot->IsInWorld())
-        {
             HandleBotPackets(bot->GetSession());
-        }
     }
 }
 
 void PlayerbotHolder::HandleBotPackets(WorldSession* session)
 {
-    while (std::unique_ptr<WorldPacket> packet = session->NextQueuedPacket())
+    if (!session || !session->GetPlayer())
+        return;
+    auto holderLife = _pb59HolderLifetime.Observe();
+    ObjectGuid const guid = session->GetPlayer()->GetGUID();
+    auto const playerId = session->GetPlayer()->GetPB59OwnerIncarnation();
+    auto const sessionId = session->GetPB59SessionIncarnation();
+    while (holderLife->Alive())
     {
+        Player* live = ObjectAccessor::FindConnectedPlayer(guid);
+        if (!live || live != GetPlayerBot(guid) || live->GetPB59OwnerIncarnation() != playerId ||
+            live->GetSession() != session || session->GetPlayer() != live ||
+            session->GetPB59SessionIncarnation() != sessionId)
+            return;
+        auto scope = live->AcquirePB59CallbackScope();
+        if (!scope.Admitted())
+            return;
+        std::unique_ptr<WorldPacket> packet = session->NextQueuedPacket();
+        if (!packet)
+            return;
         OpcodeClient opcode = static_cast<OpcodeClient>(packet->GetOpcode());
         ClientOpcodeHandler const* opHandle = opcodeTable[opcode];
         if (!opHandle)
