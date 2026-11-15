@@ -10,6 +10,7 @@
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAIBase.h"
+#include "AutoGearRecoveryRegistry.h"
 #include <functional>
 
 class ChatHandler;
@@ -34,7 +35,7 @@ class PlayerbotHolder : public PlayerbotAIBase
 {
 public:
     PlayerbotHolder();
-    virtual ~PlayerbotHolder(){};
+    virtual ~PlayerbotHolder(){ _pb59HolderLifetime.Detach(); };
 
     void AddPlayerBot(ObjectGuid guid, uint32 masterAccountId);
     bool IsAccountLinked(uint32 accountId, uint32 masterAccountId);
@@ -75,6 +76,7 @@ protected:
     BotRetirementResult TryDisablePlayerBot(ObjectGuid guid);
     virtual void OnBotLoginInternal(Player* const bot) = 0;
 
+    PB59::RecoveryRegistry::HolderLifetime _pb59HolderLifetime;
     PlayerBotMap playerBots;
     static void AbandonPendingLogin(ObjectGuid guid);
     static std::unordered_map<ObjectGuid, PendingBotLogin> botLoading;
