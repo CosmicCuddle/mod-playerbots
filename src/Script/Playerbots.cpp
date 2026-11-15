@@ -570,6 +570,7 @@ public:
     void OnShutdown() override
     {
         LOG_INFO("playerbots", "Logging out all bots...");
+        PlayerbotHolder::StopPendingLogins();
         sRandomPlayerbotMgr.LogoutAllBots();
         PlayerbotHolder::ClearPendingLogins();
     }
