@@ -23,6 +23,8 @@ struct Candidate
     std::uint32_t limitCategory = 0, categoryLimit = 0;
     Kind kind = Kind::Count;
     bool uniqueEquipped = false, metadataKnown = false, eligible = false;
+    // Core staff/polearm/fishing-pole subtype restriction (including Titan Grip).
+    bool exclusiveMainhand = false;
 };
 struct Domain
 {
@@ -85,14 +87,15 @@ inline Result Solve(std::array<Domain, Slots> const& domains, Policy const& poli
             if (!candidate.metadataKnown || !candidate.id || candidate.id <= previous ||
                 !candidate.itemLevel || (candidate.limitCategory == 0) != (candidate.categoryLimit == 0) ||
                 ((slot == Main || slot == Off || slot == Ranged) && candidate.kind >= Kind::Count) ||
-                ((slot != Main && slot != Off && slot != Ranged) && candidate.kind != Kind::Count))
+                ((slot != Main && slot != Off && slot != Ranged) && candidate.kind != Kind::Count) ||
+                (candidate.exclusiveMainhand && candidate.kind != Kind::OneHand && candidate.kind != Kind::TwoHand))
                 return {};
             previous = candidate.id;
             auto [meta, inserted] = metadata.emplace(candidate.id, candidate);
             auto const& old = meta->second;
             if (!inserted && (old.itemLevel != candidate.itemLevel || old.uniqueEquipped != candidate.uniqueEquipped ||
                 old.limitCategory != candidate.limitCategory || old.categoryLimit != candidate.categoryLimit ||
-                old.kind != candidate.kind))
+                old.kind != candidate.kind || old.exclusiveMainhand != candidate.exclusiveMainhand))
                 return {};
             if (candidate.limitCategory)
             {
@@ -164,7 +167,13 @@ inline Result Solve(std::array<Domain, Slots> const& domains, Policy const& poli
             else
             {
                 auto const planned = picked[Main] ? picked[Main]->kind : Kind::Count;
-                auto const weaponDomains = Build(policy.weapons, planned);
+                auto capabilities = policy.weapons;
+                if (picked[Main] && picked[Main]->exclusiveMainhand)
+                {
+                    capabilities.offhand = 0;
+                    capabilities.offhandRequired = false;
+                }
+                auto const weaponDomains = Build(capabilities, planned);
                 if (!weaponDomains.valid)
                     return;
                 weapons = slot == Off ? weaponDomains.offhand : weaponDomains.ranged;
@@ -179,7 +188,8 @@ inline Result Solve(std::array<Domain, Slots> const& domains, Policy const& poli
                 return;
             }
             ++result.visited;
-            if (candidate && ((weaponSlot && !weapons.Accepts(true, candidate->kind)) || !compatible(*candidate)))
+            if (candidate && ((weaponSlot && !weapons.Accepts(true, candidate->kind)) ||
+                (slot == Off && candidate->exclusiveMainhand) || !compatible(*candidate)))
                 return;
             picked[slot] = candidate;
             self(self, depth + 1, score + (candidate ? candidate->score : 0));

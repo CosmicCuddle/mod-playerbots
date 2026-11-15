@@ -42,6 +42,14 @@ int main()
     policy.weapons.offhand = Bit(Kind::TwoHand);
     result = Solve(domains, policy, 100, 1000);
     assert(result.status == Status::SuitableSet && result.items[Main] == 11 && result.items[Off] == 12);
+    main[1].exclusiveMainhand = true;
+    result = Solve(domains, policy, 100, 1000);
+    assert(result.status == Status::SuitableSet && result.items[Main] == 10 && result.items[Off] == 12);
+    main[1].exclusiveMainhand = false;
+    off[0].exclusiveMainhand = true;
+    result = Solve(domains, policy, 100, 1000);
+    assert(result.status == Status::SuitableSet && result.items[Main] == 11 && result.items[Off] == 0);
+    off[0].exclusiveMainhand = false;
     rings1[0].limitCategory = rings1[1].limitCategory = rings2[0].limitCategory = rings2[1].limitCategory = 7;
     rings1[0].categoryLimit = rings1[1].categoryLimit = rings2[0].categoryLimit = rings2[1].categoryLimit = 1;
     assert(Solve(domains, policy, 100, 1000).status == Status::NoSet);
