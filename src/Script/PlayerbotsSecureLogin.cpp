@@ -30,7 +30,14 @@ public:
 
         Player* existing = ObjectAccessor::FindConnectedPlayer(loginGuid);
         WorldSession* existingSession = existing ? existing->GetSession() : nullptr;
-        if (!existingSession || !existingSession->IsHeadless())
+        if (!existing)
+            return true;
+        if (!existingSession)
+        {
+            session->SendCharLoginFailed(LoginFailureReason::DuplicateCharacter);
+            return false; // registered but unknown ownership is not safe to replace
+        }
+        if (!existingSession->IsHeadless())
             return true; // ordinary client login/reconnect is unchanged
 
         // This hook runs BEFORE Core's login opcode admission checks. Verify
