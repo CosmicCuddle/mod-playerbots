@@ -31,14 +31,15 @@ def main():
                      "bool RandomPlayerbotMgr::ProcessBot(Player* bot)")
     direct = between(random, "void RandomPlayerbotMgr::Remove(Player* bot)",
                      "CreatureData const* RandomPlayerbotMgr::GetCreatureDataByEntry")
-    assert population.index("if (LogoutPlayerBot(guid, [&]") < population.index('SetEventValue(bot, "add", 0, 0)') < population.index("++removed;")
+    assert population.index("if (TryLogoutPlayerBot(guid, [&]") < population.index('SetEventValue(bot, "add", 0, 0)') < population.index("++removed;")
     assert population.count("currentBots.erase(bot)") == 1 and "return removed;" in population
     assert "return toLogout.size();" not in population
-    assert expiry.index("LogoutPlayerBot(botGUID, [&]") < expiry.index("clearSchedule();")
+    assert expiry.index("TryLogoutPlayerBot(botGUID, [&]") < expiry.index("clearSchedule();")
     assert expiry.count('SetEventValue(bot, "add", 0, 0)') == 1
-    assert direct.index("auto clearEvents =") < direct.index("LogoutPlayerBot(owner, clearEvents)")
-    assert "if (retirement)\n        clearEvents();" in direct
-    assert 'if (!LogoutPlayerBot(guid))\n            return "bot logout not completed;' in mgr
+    assert direct.index("auto clearEvents =") < direct.index("TryLogoutPlayerBot(owner, clearEvents)")
+    assert direct.index("retirement.MarkMutation()") < direct.index("clearEvents();") < direct.index("retirement.Complete()")
+    assert "BotRetirementResult::RecoveryRequired" in mgr and "bot retirement incomplete; recovery required, do not retry" in mgr
+    assert "}) == BotRetirementResult::Completed)" in population
     core = args.core.resolve() / "src/server/game/Entities/Player"
     fixture = Path(__file__).with_name("pb59_bot_retirement_body.cpp")
     with tempfile.TemporaryDirectory(prefix="pb59-retirement-") as tmp:
