@@ -14,7 +14,15 @@ int main()
     facts.slots[0] = {101, 1001, 80, 3, 1, 4, 4, 0, 0};
     facts.slots[1] = {102, 1002, 20, 3, 2, 4, 0, 0, 0};
     auto sample = Capture(facts, 1, 7, true, 7);
-    assert(sample && sample->average.average == 33 && sample->average.countedSlots == 3);
+    assert(sample && sample->average.average == 33 && sample->average.countedSlots == 3 && sample->rawSum == 100);
+    auto remainder = facts;
+    remainder.slots[0].itemLevel++;
+    auto remainderSample = Capture(remainder, 1, 7, true, 7);
+    assert(remainderSample && remainderSample->average.average == 33 && remainderSample->rawSum == 101);
+    assert(!Current(*sample, remainder, 1, 7, true, 7));
+    auto forged = *sample;
+    forged.rawSum = 99;
+    assert(!Current(forged, facts, 1, 7, true, 7));
     assert(Current(*sample, facts, 1, 7, true, 7));
     assert(!Current(*sample, facts, 2, 7, true, 7));
     assert(!Current(*sample, facts, 1, 3, true, 7));

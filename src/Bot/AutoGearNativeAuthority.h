@@ -15,6 +15,7 @@ struct Sample
     PB59::EquipmentFacts facts;
     std::uint64_t policyRevision = 0;
     std::uint32_t countedMask = 0;
+    std::uint64_t rawSum = 0;
     PlayerbotsAutoGearSample::Result average;
 };
 
@@ -30,6 +31,7 @@ inline std::optional<Sample> Capture(PB59::EquipmentFacts const& facts,
         return std::nullopt;
 
     std::array<PlayerbotsAutoGearSample::Slot, 19> slots{};
+    std::uint64_t rawSum = 0;
     for (std::size_t i = 0; i < slots.size(); ++i)
     {
         auto const& fact = facts.slots[i];
@@ -37,6 +39,8 @@ inline std::optional<Sample> Capture(PB59::EquipmentFacts const& facts,
         bool const counted = (countedMask & (1u << i)) != 0;
         if (counted && !occupied && fact != PB59::SlotFacts{})
             return std::nullopt;
+        if (counted && occupied)
+            rawSum += fact.itemLevel;
         slots[i] = {occupied, counted, occupied && fact.entry != 0,
             occupied && (fact.quality == heirloomQuality || fact.scalingDistribution || fact.scalingValue),
             fact.itemLevel};
@@ -44,7 +48,7 @@ inline std::optional<Sample> Capture(PB59::EquipmentFacts const& facts,
     auto average = PlayerbotsAutoGearSample::Average(slots, eligibilityKnown);
     if (!average.known)
         return std::nullopt;
-    return Sample{facts, policyRevision, countedMask, average};
+    return Sample{facts, policyRevision, countedMask, rawSum, average};
 }
 
 // Compare the complete current raw facts, not only their numeric average.
@@ -55,7 +59,7 @@ inline bool Current(Sample const& sample, PB59::EquipmentFacts const& current,
 {
     auto fresh = Capture(current, policyRevision, countedMask, eligibilityKnown, heirloomQuality);
     return fresh && sample.facts == fresh->facts && sample.policyRevision == fresh->policyRevision &&
-        sample.countedMask == fresh->countedMask && sample.average.known &&
+        sample.countedMask == fresh->countedMask && sample.rawSum == fresh->rawSum && sample.average.known &&
         sample.average.average == fresh->average.average &&
         sample.average.occupiedSlots == fresh->average.occupiedSlots &&
         sample.average.countedSlots == fresh->average.countedSlots;
