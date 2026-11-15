@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotMgr.h"
+#include "AutoGearTimedRetirementMailbox.h"
 #include "PlayerbotsDatabase.h"
 #include "BroadcastHelper.h"
 #include "ChannelMgr.h"
@@ -77,6 +78,125 @@ std::unordered_map<ObjectGuid, PendingBotLogin>& PlayerbotHolder::botLoading =
 bool PlayerbotHolder::_pendingLoginsStopping = false;
 
 PlayerbotHolder::PlayerbotHolder() : PlayerbotAIBase(false) {}
+
+PlayerbotHolder::~PlayerbotHolder()
+{
+    auto tag = _pb59HolderLifetime.Observe();
+    _pb59HolderLifetime.Detach();
+    PB59::TimedRetirementMailbox::Instance().ForgetHolder(tag->identity);
+}
+
+bool PlayerbotHolder::RegisterTimedBot(Player* bot)
+{
+    auto tag = _pb59HolderLifetime.Observe();
+    auto* session = bot ? bot->GetSession() : nullptr;
+    if (!tag->Alive() || !session || !session->IsHeadless() || session->GetPlayer() != bot)
+        return false;
+    PB59::TimedRetirementMailbox::Identity id{bot->GetGUID().GetRawValue(),
+        bot->GetPB59OwnerIncarnation(), session->GetPB59SessionIncarnation(), tag->identity, 0, 0, 0};
+    if (this != &sRandomPlayerbotMgr)
+    {
+        auto* mgr = dynamic_cast<PlayerbotMgr*>(this);
+        auto* master = mgr ? mgr->GetMaster() : nullptr;
+        auto* masterSession = master ? master->GetSession() : nullptr;
+        if (!masterSession || masterSession->GetPlayer() != master ||
+            ObjectAccessor::FindConnectedPlayer(master->GetGUID()) != master)
+            return false;
+        id.masterGuid = master->GetGUID().GetRawValue();
+        id.masterPlayer = master->GetPB59OwnerIncarnation();
+        id.masterSession = masterSession->GetPB59SessionIncarnation();
+    }
+    return PB59::TimedRetirementMailbox::Instance().Register(id);
+}
+
+void PlayerbotHolder::ForgetTimedBot(ObjectGuid guid, std::uint64_t player, std::uint64_t session)
+{
+    PB59::TimedRetirementMailbox::Instance().Forget(guid.GetRawValue(), player, session,
+        _pb59HolderLifetime.Observe()->identity);
+}
+
+void PlayerbotHolder::RequestTimedBotLogout(Player* bot)
+{
+    auto* session = bot ? bot->GetSession() : nullptr;
+    if (!session || !session->IsHeadless() || session->GetPlayer() != bot ||
+        session->PlayerLogout() || !session->IsLoggingOut())
+        return;
+    // Only the bot's own values leave this producer. No holder/master pointer,
+    // no native callback and no allocation in the registered mailbox slot.
+    auto result = PB59::TimedRetirementMailbox::Instance().Request(bot->GetGUID().GetRawValue(),
+        bot->GetPB59OwnerIncarnation(), session->GetPB59SessionIncarnation());
+    if (result == PB59::TimedRetirementMailbox::Submit::Exhausted)
+        LOG_ERROR("playerbots", "Timed bot logout ticket space exhausted");
+}
+
+void PlayerbotHolder::ProcessTimedBotLogouts()
+{
+    using Mailbox = PB59::TimedRetirementMailbox;
+    auto& mailbox = Mailbox::Instance();
+    // Bounded work per world tick; the remaining accepted requests stay pending.
+    for (unsigned n = 0; n < 128; ++n)
+    {
+        auto work = mailbox.Take();
+        if (!work)
+            break;
+        struct Finish
+        {
+            Mailbox& mailbox;
+            Mailbox::Work work;
+            bool recovery = false;
+            ~Finish() { (void)mailbox.Finish(work, recovery); }
+        } finish{mailbox, *work};
+        auto const& id = work->identity;
+        try
+        {
+            ObjectGuid guid(id.guid);
+            Player* bot = ObjectAccessor::FindConnectedPlayer(guid);
+            WorldSession* session = bot ? bot->GetSession() : nullptr;
+            if (!bot || bot->GetPB59OwnerIncarnation() != id.player || !session ||
+                !session->IsHeadless() || session->GetPlayer() != bot ||
+                session->GetPB59SessionIncarnation() != id.session)
+                continue;
+            PlayerbotHolder* holder = &sRandomPlayerbotMgr;
+            if (id.masterGuid)
+            {
+                Player* master = ObjectAccessor::FindConnectedPlayer(ObjectGuid(id.masterGuid));
+                WorldSession* masterSession = master ? master->GetSession() : nullptr;
+                if (!master || master->GetPB59OwnerIncarnation() != id.masterPlayer ||
+                    !masterSession || masterSession->GetPlayer() != master ||
+                    masterSession->GetPB59SessionIncarnation() != id.masterSession)
+                    continue;
+                holder = GET_PLAYERBOT_MGR(master);
+            }
+            if (!holder)
+                continue;
+            auto tag = holder->_pb59HolderLifetime.Observe();
+            if (!tag->Alive() || tag->identity != id.holder || holder->GetPlayerBot(guid) != bot)
+                continue;
+            auto* ai = GET_PLAYERBOT_AI(bot);
+            if (!ai || !ai->IsTimedLogoutReady())
+                continue;
+            auto result = holder->TryLogoutPlayerBot(guid, {}, true);
+            finish.recovery = result == BotRetirementResult::RecoveryRequired;
+            if (finish.recovery)
+                LOG_ERROR("playerbots", "Timed logout of {} requires recovery; no automatic retry", guid.ToString());
+        }
+        catch (...)
+        {
+            // Unknown outcome must not authorize another attempt.
+            finish.recovery = true;
+            LOG_ERROR("playerbots", "Timed logout dispatch interrupted for GUID {}", id.guid);
+        }
+    }
+}
+
+void PlayerbotHolder::StopTimedBotLogouts()
+{
+    auto& mailbox = PB59::TimedRetirementMailbox::Instance();
+    mailbox.Stop();
+    auto unresolved = mailbox.Outstanding();
+    if (unresolved)
+        LOG_ERROR("playerbots", "{} timed logout requests pending/blocked at shutdown; native drain not yet implemented", unresolved);
+}
 class PlayerbotLoginQueryHolder : public LoginQueryHolder
 {
 private:
@@ -509,7 +629,8 @@ bool PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
     return TryLogoutPlayerBot(guid) == BotRetirementResult::Completed;
 }
 
-BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement)
+BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement,
+    bool timedLogout)
 {
     using Result = BotRetirementResult;
     using Journal = PB59::RecoveryRegistry;
@@ -526,7 +647,8 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
 
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     WorldSession* botWorldSessionPtr = bot->GetSession();
-    if (!botAI || !botWorldSessionPtr || botWorldSessionPtr->GetPlayer() != bot || botWorldSessionPtr->IsLoggingOut())
+    if (!botAI || !botWorldSessionPtr || botWorldSessionPtr->GetPlayer() != bot || botWorldSessionPtr->PlayerLogout() ||
+        (timedLogout ? !botAI->IsTimedLogoutReady() : botWorldSessionPtr->IsLoggingOut()))
         return Result::Refused;
 
     auto const ownerIncarnation = bot->GetPB59OwnerIncarnation();
@@ -550,7 +672,8 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
             GetPlayerBot(guid) == live &&
             live->OwnsPB59Retirement(retirement) && live->GetSession() == botWorldSessionPtr &&
             GET_PLAYERBOT_AI(live) == botAI && botWorldSessionPtr->GetPlayer() == live &&
-            !botWorldSessionPtr->IsLoggingOut();
+            !botWorldSessionPtr->PlayerLogout() &&
+            (timedLogout ? botWorldSessionPtr->IsLoggingOut() : !botWorldSessionPtr->IsLoggingOut());
     };
     auto partial = [&]()
     {
@@ -596,6 +719,7 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
         if (!current())
             return partial();
         record.MarkStep(Journal::Step::BeforeHolderErase);
+        ForgetTimedBot(guid, ownerIncarnation, botWorldSessionPtr->GetPB59SessionIncarnation());
         RemoveFromPlayerbotsMap(guid);
         record.MarkStep(Journal::Step::HolderErased);
         record.MarkStep(Journal::Step::BeforeNativeLogout);
@@ -700,6 +824,7 @@ BotRetirementResult PlayerbotHolder::TryDisablePlayerBot(ObjectGuid guid)
         if (!current())
             return partial();
         record.MarkStep(Journal::Step::BeforeHolderErase);
+        ForgetTimedBot(guid, ownerIncarnation, session->GetPB59SessionIncarnation());
         RemoveFromPlayerbotsMap(guid);
         record.MarkStep(Journal::Step::HolderErased);
         record.MarkStep(Journal::Step::BeforeAIDelete);
@@ -749,10 +874,16 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
     auto [position, inserted] = playerBots.emplace(guid, bot);
     if (!inserted)
         return;
-    // No callback between map insertion and release: the existing holder
-    // now owns the session under its legacy retirement contract.
+    // Preallocate the exact value-only timer slot before releasing the pending
+    // session owner. No native callback between insertion, registration and release.
+    if (!RegisterTimedBot(bot))
+    {
+        playerBots.erase(position);
+        return;
+    }
     if (!pendingOwner.ReleasePublished(bot->GetSession()))
     {
+        ForgetTimedBot(guid, playerId, pendingOwner.Identity());
         playerBots.erase(position);
         return;
     }
