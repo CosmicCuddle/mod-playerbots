@@ -10,6 +10,7 @@
 #include "DBCEnums.h"
 #include "SharedDefines.h"
 #include <algorithm>
+#include <array>
 #include <map>
 #include <mutex>
 #include <set>
@@ -455,6 +456,10 @@ public:
             AltMaintenanceGemsEnchants;
     int32 AutoGearCommand, AutoGearCommandAltBots, AutoGearQualityLimit, AutoGearScoreLimit;
     int32 AutoGearBisCommand;
+    bool AutoGearIPCapEnable;
+    std::array<uint32, 19> AutoGearIPCompletionCaps;
+    std::array<uint32, 3> AutoGearIPEraEntryFloors;
+    std::array<uint32, 3> AutoGearIPEraCeilings;
 
     uint32 UseGroundMountAtMinLevel;
     uint32 UseFastGroundMountAtMinLevel;

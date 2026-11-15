@@ -638,6 +638,19 @@ Playerbots.AutoGearQualityLimit = 3
 # Default: 0 (no limit)
 Playerbots.AutoGearScoreLimit = 0
 
+# Optional Individual Progression cap for human-commanded autogear and BiS.
+# Disabled by default. Enabling requires mod-individual-progression and a reviewed
+# cap for the command sender's raw completion stage and effective expansion era.
+# Missing/zero stage caps or era ceilings refuse the command before changing gear.
+# CompletionCaps has 19 entries for raw stages 0..18. Only stages 0 and 1 have
+# provisional candidate values (66, 78); all values await owner review.
+# EraEntryFloors and EraCeilings have Vanilla,TBC,Wrath entries in that order.
+# The existing AutoGearScoreLimit and lower requested ilvl remain restrictive.
+Playerbots.AutoGearIPCap.Enable = 0
+Playerbots.AutoGearIPCap.CompletionCaps = 66,78,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Playerbots.AutoGearIPCap.EraEntryFloors = 0,0,0
+Playerbots.AutoGearIPCap.EraCeilings = 78,0,0
+
 # Enable/Disable cheats for bots
 # "food" (bots eat or drink without using food or drinks from their inventory)
 # "gold" (bots have infinite gold)

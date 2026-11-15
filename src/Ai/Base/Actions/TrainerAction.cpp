@@ -6,14 +6,54 @@
 
 #include "TrainerAction.h"
 #include "AiFactory.h"
+#include "AutoGearProgressionCap.h"
 #include "BisListMgr.h"
 #include "BudgetValues.h"
 #include "Event.h"
+#include "ObjectAccessor.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
 #include "Trainer.h"
+#include <limits>
+
+#if __has_include("IndividualProgression.h")
+#include "IndividualProgression.h"
+#define PLAYERBOTS_AUTOGEAR_HAS_IP 1
+#else
+#define PLAYERBOTS_AUTOGEAR_HAS_IP 0
+#endif
+
+namespace
+{
+    bool ResolveCommandSenderAutoGearCap(Event const& event, uint32& hardCap)
+    {
+        hardCap = 0;
+        if (!sPlayerbotAIConfig.AutoGearIPCapEnable)
+            return true;
+
+        Player* sender = ObjectAccessor::FindPlayer(event.GetOwnerGuid());
+        if (!sender || !sender->IsInWorld() || !sender->GetSession() || sender->GetSession()->IsHeadless())
+            return false;
+
+#if PLAYERBOTS_AUTOGEAR_HAS_IP
+        PlayerbotsAutoGearCap::Policy const policy{sPlayerbotAIConfig.AutoGearIPCompletionCaps,
+            sPlayerbotAIConfig.AutoGearIPEraEntryFloors, sPlayerbotAIConfig.AutoGearIPEraCeilings};
+        auto const decision = PlayerbotsAutoGearCap::Resolve(
+            sIndividualProgression->GetPlayerProgressionFromQuests(sender),
+            sIndividualProgression->GetEffectiveProgression(sender), policy,
+            sPlayerbotAIConfig.AutoGearScoreLimit > 0
+                ? static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit) : 0);
+        if (!decision.valid)
+            return false;
+        hardCap = decision.itemLevelCap;
+        return true;
+#else
+        return false;
+#endif
+    }
+}
 
 bool TrainerAction::Execute(Event event)
 {
@@ -286,7 +326,7 @@ bool MaintenanceAction::Execute(Event /*event*/)
     return true;
 }
 
-bool BisGearAction::RunAutogearFallback(uint16 effectiveIlvl)
+bool BisGearAction::RunAutogearFallback(uint16 effectiveIlvl, uint32 hardCap)
 {
     if (!sPlayerbotAIConfig.AutoGearCommand)
     {
@@ -305,7 +345,7 @@ bool BisGearAction::RunAutogearFallback(uint16 effectiveIlvl)
     PlayerbotFactory::DestroyEquippedGear(bot);
 
     PlayerbotFactory::AutoGear(bot, sPlayerbotAIConfig.AutoGearQualityLimit, effectiveIlvl, /*incremental*/ false,
-                               sPlayerbotAIConfig.TwoRoundsGearInit);
+                               sPlayerbotAIConfig.TwoRoundsGearInit, /*applyFinishers*/ true, hardCap);
     return true;
 }
 
@@ -341,7 +381,16 @@ bool BisGearAction::Execute(Event event)
         return false;
     }
 
-    uint16 ilvl = static_cast<uint16>(sPlayerbotAIConfig.AutoGearScoreLimit);
+    uint32 hardCap = 0;
+    if (!ResolveCommandSenderAutoGearCap(event, hardCap))
+    {
+        botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "bis_command_unavailable_error", "bis command is not allowed, please check the configuration.", {}));
+        return false;
+    }
+    uint16 ilvl = hardCap
+        ? static_cast<uint16>(std::min<uint32>(hardCap, std::numeric_limits<uint16>::max()))
+        : static_cast<uint16>(sPlayerbotAIConfig.AutoGearScoreLimit);
 
     // Optional explicit ilvl override: `/p autogear bis 55`.
     // Garbage or out-of-range args are hard-rejected: no autogear fallback, no gear change.
@@ -370,11 +419,11 @@ bool BisGearAction::Execute(Event event)
                 "Invalid BiS ilvl argument '%param'. Use a positive integer.", phs));
             return false;
         }
-        if (parsed > static_cast<unsigned long>(sPlayerbotAIConfig.AutoGearScoreLimit))
+        if (hardCap ? parsed > ilvl : parsed > static_cast<unsigned long>(sPlayerbotAIConfig.AutoGearScoreLimit))
         {
             std::map<std::string, std::string> phs;
             phs["%requested"] = std::to_string(parsed);
-            phs["%limit"] = std::to_string(sPlayerbotAIConfig.AutoGearScoreLimit);
+            phs["%limit"] = std::to_string(hardCap ? ilvl : sPlayerbotAIConfig.AutoGearScoreLimit);
             botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
                 "bis_arg_above_limit_error",
                 "BiS ilvl %requested exceeds AutoGearScoreLimit %limit, refusing", phs));
@@ -382,6 +431,7 @@ bool BisGearAction::Execute(Event event)
         }
         ilvl = static_cast<uint16>(parsed);
     }
+    uint32 const itemCap = hardCap ? ilvl : 0;
     uint8 cls = bot->getClass();
     uint8 tab = AiFactory::GetPlayerSpecTab(bot);
     uint8 faction = bot->GetTeamId() == TEAM_ALLIANCE ? 1 : 2;
@@ -405,7 +455,23 @@ bool BisGearAction::Execute(Event event)
         botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
             "bis_no_rows_autogear_msg",
             "No BiS at ilvl %ilvl, using Autogear %ilvl instead", phs));
-        return RunAutogearFallback(ilvl);
+        return RunAutogearFallback(ilvl, itemCap);
+    }
+
+    // BiS row level is not an item-level guarantee. Filter raw item templates
+    // before any equipped or bag item is destroyed.
+    if (hardCap)
+    {
+        for (auto it = bisMap.begin(); it != bisMap.end();)
+        {
+            ItemTemplate const* item = sObjectMgr->GetItemTemplate(it->second);
+            if (!item || !PlayerbotsAutoGearCap::AllowsRawItemLevel(item->ItemLevel, itemCap))
+                it = bisMap.erase(it);
+            else
+                ++it;
+        }
+        if (bisMap.empty())
+            return RunAutogearFallback(ilvl, itemCap);
     }
 
     if (resolvedIlvl != ilvl)
@@ -452,7 +518,7 @@ bool BisGearAction::Execute(Event event)
     //    Uncovered slots will keep the autogear pick; BiS overwrites the rest below.
     if (sPlayerbotAIConfig.AutoGearCommand)
         PlayerbotFactory::AutoGear(bot, sPlayerbotAIConfig.AutoGearQualityLimit, ilvl, /*incremental*/ false,
-                                   sPlayerbotAIConfig.TwoRoundsGearInit, /*applyFinishers*/ false);
+                                   sPlayerbotAIConfig.TwoRoundsGearInit, /*applyFinishers*/ false, itemCap);
 
     // Autogear may have placed the exact item BiS wants into trinket2/finger2 (or vice versa);
     // unique-equipped enforcement would then make BiS's equip silently drop one copy.
@@ -525,7 +591,7 @@ bool BisGearAction::Execute(Event event)
         }
     }
 
-    PlayerbotFactory factory(bot, bot->GetLevel(), ITEM_QUALITY_EPIC, 0);
+    PlayerbotFactory factory(bot, bot->GetLevel(), ITEM_QUALITY_EPIC, 0, itemCap);
     factory.InitAmmo();
     if (bot->GetLevel() >= sPlayerbotAIConfig.MinEnchantingBotLevel)
         factory.ApplyEnchantAndGemsNew();
@@ -584,7 +650,14 @@ bool AutoGearAction::Execute(Event event)
     }
 
     uint32 const qualityCap = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
-    uint32 const ilvlCap = static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);  // 0 == no limit
+    uint32 hardCap = 0;
+    if (!ResolveCommandSenderAutoGearCap(event, hardCap))
+    {
+        botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "autogear_command_disabled_error", "autogear command is not allowed, please check the configuration.", {}));
+        return false;
+    }
+    uint32 const ilvlCap = hardCap ? hardCap : static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);
 
     uint32 quality = qualityCap;
     uint32 ilvl = ilvlCap;
@@ -723,10 +796,13 @@ bool AutoGearAction::Execute(Event event)
         // Wipe everything equipped first so old high-tier items can't survive; then gear every
         // slot from scratch instead of only upgrading past the incremental threshold.
         PlayerbotFactory::DestroyEquippedGear(bot);
-        PlayerbotFactory::AutoGear(bot, quality, ilvl, /*incremental*/ false, sPlayerbotAIConfig.TwoRoundsGearInit);
+        PlayerbotFactory::AutoGear(bot, quality, ilvl, /*incremental*/ false,
+                                   sPlayerbotAIConfig.TwoRoundsGearInit, /*applyFinishers*/ true,
+                                   hardCap ? ilvl : 0);
     }
     else
-        PlayerbotFactory::AutoGear(bot, quality, ilvl, /*incremental*/ true);
+        PlayerbotFactory::AutoGear(bot, quality, ilvl, /*incremental*/ true,
+                                   /*twoRounds*/ false, /*applyFinishers*/ true, hardCap ? ilvl : 0);
 
     return true;
 }

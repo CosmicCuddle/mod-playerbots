@@ -61,7 +61,7 @@ public:
     bool Execute(Event event) override;
 
 private:
-    bool RunAutogearFallback(uint16 effectiveIlvl);
+    bool RunAutogearFallback(uint16 effectiveIlvl, uint32 hardCap);
 };
 
 #endif

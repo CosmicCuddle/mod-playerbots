@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -76,6 +77,54 @@ static void ParseLevelMgrExcludeNames(std::string const& csv, std::vector<std::s
         if (!s.empty())
             out.push_back(s);
     }
+}
+
+template <std::size_t N>
+static std::array<uint32, N> ParseAutoGearCapTable(char const* key, std::string const& csv)
+{
+    std::array<uint32, N> values{};
+    std::istringstream input(csv);
+    std::string token;
+    std::size_t index = 0;
+    if (csv.empty() || csv.back() == ',')
+    {
+        LOG_ERROR("server.loading", "{} must contain exactly {} unsigned integers", key, N);
+        return {};
+    }
+
+    while (std::getline(input, token, ','))
+    {
+        token.erase(std::remove_if(token.begin(), token.end(),
+                        [](unsigned char c) { return std::isspace(c); }), token.end());
+        if (index >= N || token.empty() || token.find_first_not_of("0123456789") != std::string::npos)
+        {
+            LOG_ERROR("server.loading", "{} must contain exactly {} unsigned integers", key, N);
+            return {};
+        }
+
+        try
+        {
+            unsigned long long const value = std::stoull(token);
+            if (value > std::numeric_limits<uint32>::max())
+            {
+                LOG_ERROR("server.loading", "{} contains an out-of-range unsigned integer", key);
+                return {};
+            }
+            values[index++] = static_cast<uint32>(value);
+        }
+        catch (...)
+        {
+            LOG_ERROR("server.loading", "{} contains an invalid unsigned integer", key);
+            return {};
+        }
+    }
+
+    if (index != N)
+    {
+        LOG_ERROR("server.loading", "{} must contain exactly {} unsigned integers", key, N);
+        return {};
+    }
+    return values;
 }
 
 bool PlayerbotAIConfig::Initialize()
@@ -696,6 +745,14 @@ bool PlayerbotAIConfig::Initialize()
     AutoGearCommand = sConfigMgr->GetOption<int32>("Playerbots.AutoGearCommand", 1);
     AutoGearCommandAltBots = sConfigMgr->GetOption<int32>("Playerbots.AutoGearCommandAltBots", 1);
     AutoGearBisCommand = sConfigMgr->GetOption<int32>("Playerbots.AutoGearBisCommand", 0);
+    AutoGearIPCapEnable = sConfigMgr->GetOption<bool>("Playerbots.AutoGearIPCap.Enable", false);
+    AutoGearIPCompletionCaps = ParseAutoGearCapTable<19>("Playerbots.AutoGearIPCap.CompletionCaps",
+        sConfigMgr->GetOption<std::string>("Playerbots.AutoGearIPCap.CompletionCaps",
+            "66,78,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"));
+    AutoGearIPEraEntryFloors = ParseAutoGearCapTable<3>("Playerbots.AutoGearIPCap.EraEntryFloors",
+        sConfigMgr->GetOption<std::string>("Playerbots.AutoGearIPCap.EraEntryFloors", "0,0,0"));
+    AutoGearIPEraCeilings = ParseAutoGearCapTable<3>("Playerbots.AutoGearIPCap.EraCeilings",
+        sConfigMgr->GetOption<std::string>("Playerbots.AutoGearIPCap.EraCeilings", "78,0,0"));
     AutoGearQualityLimit = sConfigMgr->GetOption<int32>("Playerbots.AutoGearQualityLimit", 3);
     AutoGearScoreLimit = sConfigMgr->GetOption<int32>("Playerbots.AutoGearScoreLimit", 0);
 

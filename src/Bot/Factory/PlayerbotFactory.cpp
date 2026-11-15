@@ -4046,7 +4046,7 @@ void PlayerbotFactory::InitAmmo()
         return;
 
     ItemTemplate const* ammoProto = sObjectMgr->GetItemTemplate(entry);
-    if (!ammoProto)
+    if (!ammoProto || !PlayerbotsAutoGearCap::AllowsRawItemLevel(ammoProto->ItemLevel, maxRawItemLevel))
         return;
 
     DestroyObsoleteAmmo(bot, ammoProto);
@@ -5277,7 +5277,7 @@ void PlayerbotFactory::ApplyEnchantAndGemsNew(bool /*destroyOld*/)
     for (uint32 const& enchantGem : enchantGemIdCache)
     {
         ItemTemplate const* gemTemplate = sObjectMgr->GetItemTemplate(enchantGem);
-        if (!gemTemplate)
+        if (!gemTemplate || !PlayerbotsAutoGearCap::AllowsRawItemLevel(gemTemplate->ItemLevel, maxRawItemLevel))
             continue;
 
         GemPropertiesEntry const* gemProperties = sGemPropertiesStore.LookupEntry(gemTemplate->GemProperties);
