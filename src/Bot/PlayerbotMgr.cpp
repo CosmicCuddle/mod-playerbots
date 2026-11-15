@@ -588,12 +588,12 @@ void PlayerbotHolder::UpdateSessions()
         Player* bot = resolve();
         if (!bot)
             continue;
-        {
-            auto scope = bot->AcquirePB59CallbackScope();
-            if (!scope.Admitted())
-                continue;
-            bot->GetSession()->ProcessQueryCallbacks();
-        }
+        // Preserve the existing mixed query/transaction completion pump.
+        // It is not an ordinary packet callback: blocking it on pending
+        // save/logout or recovery can prevent the very work needed to drain.
+        // Exact identity is revalidated afterwards; this is not a lifetime
+        // pin. A typed completion adapter is required before gating this pump.
+        bot->GetSession()->ProcessQueryCallbacks();
         bot = resolve();
         if (!bot)
             continue;
