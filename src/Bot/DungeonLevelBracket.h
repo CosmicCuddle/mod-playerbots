@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_DUNGEON_LEVEL_BRACKET_H
 #define PLAYERBOTS_DUNGEON_LEVEL_BRACKET_H
 
+#include <algorithm>
 #include <cstdint>
 #include <span>
 
@@ -45,8 +46,9 @@ namespace PlayerbotsDungeonBracket
     constexpr Decision Evaluate(Row const& row, std::uint32_t level, std::uint32_t overrideMin,
         std::uint32_t overrideMax)
     {
-        std::uint32_t const minimum = overrideMin ? overrideMin : row.minLevel;
-        std::uint32_t const maximum = overrideMax ? overrideMax : row.maxLevel;
+        std::uint32_t const minimum = std::max(row.minLevel, overrideMin);
+        std::uint32_t const maximum = row.maxLevel && overrideMax ? std::min(row.maxLevel, overrideMax)
+            : row.maxLevel ? row.maxLevel : overrideMax;
         if (!minimum || !maximum || minimum > maximum)
             return {Result::MissingBracket};
         if (level < minimum)
@@ -60,21 +62,24 @@ namespace PlayerbotsDungeonBracket
         std::uint32_t selectedDungeonId, std::uint32_t level, std::uint32_t overrideMin = 0,
         std::uint32_t overrideMax = 0)
     {
-        // An exact selected physical dungeon is authoritative, including a live seasonal run.
+        // An exact selected physical dungeon is authoritative only when its rows agree.
+        Row const* selected = nullptr;
         for (Row const& row : rows)
         {
             if (!row.physicalDungeon || row.mapId != mapId || row.difficulty != difficulty ||
                 row.id != selectedDungeonId || !selectedDungeonId)
                 continue;
 
-            if (row.seasonal)
-            {
-                if (row.seasonActive)
-                    return {Result::SeasonalException};
-                return {Result::SeasonalInactive};
-            }
-
-            return Evaluate(row, level, overrideMin, overrideMax);
+            if (selected && (row.minLevel != selected->minLevel || row.maxLevel != selected->maxLevel ||
+                row.seasonal != selected->seasonal || row.seasonActive != selected->seasonActive))
+                return {Result::AmbiguousBracket};
+            selected = &row;
+        }
+        if (selected)
+        {
+            if (selected->seasonal)
+                return {selected->seasonActive ? Result::SeasonalException : Result::SeasonalInactive};
+            return Evaluate(*selected, level, overrideMin, overrideMax);
         }
 
         // Without a physical identity, all nonseasonal rows must agree on one bracket.
@@ -86,24 +91,18 @@ namespace PlayerbotsDungeonBracket
             if (!row.physicalDungeon || row.seasonal || row.mapId != mapId || row.difficulty != difficulty)
                 continue;
 
-            std::uint32_t const candidateMin = overrideMin ? overrideMin : row.minLevel;
-            std::uint32_t const candidateMax = overrideMax ? overrideMax : row.maxLevel;
-            if (!candidateMin || !candidateMax || candidateMin > candidateMax)
+            Decision const candidate = Evaluate(row, level, overrideMin, overrideMax);
+            if (candidate.result == Result::MissingBracket)
                 return {Result::MissingBracket};
-            if (found && (candidateMin != minimum || candidateMax != maximum))
+            if (found && (candidate.minLevel != minimum || candidate.maxLevel != maximum))
                 return {Result::AmbiguousBracket};
-            minimum = candidateMin;
-            maximum = candidateMax;
+            minimum = candidate.minLevel;
+            maximum = candidate.maxLevel;
             found = true;
         }
 
         if (!found)
-        {
-            if (!overrideMin || !overrideMax || overrideMin > overrideMax)
-                return {Result::MissingBracket};
-            minimum = overrideMin;
-            maximum = overrideMax;
-        }
+            return {Result::MissingBracket};
         if (level < minimum)
             return {Result::BelowMinimum, minimum, maximum};
         if (level > maximum)
