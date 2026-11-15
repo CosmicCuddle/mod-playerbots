@@ -91,6 +91,7 @@ public:
     };
     // Call on the bot-owning thread. Does not move items; output is empty on failure.
     static InventoryResult PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves);
+    static InventoryResult ValidateEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove> const& moves);
     static void AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance = false,
                         bool applyFinishers = true, uint32 maxRawItemLevel = 0);
     void InitPetTalents();

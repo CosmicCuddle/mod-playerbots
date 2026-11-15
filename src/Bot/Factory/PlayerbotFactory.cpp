@@ -4074,6 +4074,8 @@ InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vect
     std::vector<EquipmentStorageMove> prepared;
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
+        if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+            continue;
         Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
         if (!item)
             continue;
@@ -4121,7 +4123,67 @@ InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vect
             return EQUIP_ERR_INVENTORY_FULL;
     }
 
+    InventoryResult const validation = ValidateEquipmentStorage(bot, prepared);
+    if (validation != EQUIP_ERR_OK)
+        return validation;
     moves = std::move(prepared);
+    return EQUIP_ERR_OK;
+}
+
+InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
+    std::vector<EquipmentStorageMove> const& moves)
+{
+    if (!bot || !bot->IsInWorld() || !bot->IsAlive() || moves.size() > EQUIPMENT_SLOT_END)
+        return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+
+    std::size_t equippedCount = 0;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD &&
+            bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            ++equippedCount;
+    if (equippedCount != moves.size())
+        return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+
+    for (std::size_t index = 0; index < moves.size(); ++index)
+    {
+        EquipmentStorageMove const& move = moves[index];
+        uint8 const slot = move.source & 255;
+        uint8 const bag = move.destination >> 8;
+        uint8 const destinationSlot = move.destination & 255;
+        if ((move.source >> 8) != INVENTORY_SLOT_BAG_0 || slot >= EQUIPMENT_SLOT_END ||
+            slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        bool const backpack = bag == INVENTORY_SLOT_BAG_0 && destinationSlot >= INVENTORY_SLOT_ITEM_START &&
+            destinationSlot < INVENTORY_SLOT_ITEM_END;
+        bool const equippedBag = bag >= INVENTORY_SLOT_BAG_START && bag < INVENTORY_SLOT_BAG_END;
+        if (!backpack && !equippedBag)
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        if (equippedBag)
+        {
+            Bag* container = bot->GetBagByPos(bag);
+            if (!container || destinationSlot >= container->GetBagSize())
+                return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        }
+        for (std::size_t previous = 0; previous < index; ++previous)
+            if (moves[previous].source == move.source || moves[previous].destination == move.destination ||
+                moves[previous].itemGuid == move.itemGuid)
+                return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item || item->GetGUID() != move.itemGuid || item->IsInTrade() ||
+            item->GetGUID() == bot->GetLootGUID() || bot->GetItemByPos(bag, destinationSlot))
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        InventoryResult const unequip = bot->CanUnequipItem(move.source, false);
+        if (unequip != EQUIP_ERR_OK)
+            return unequip;
+        ItemPosCountVec destinations;
+        InventoryResult const storage = bot->CanStoreItem(bag, destinationSlot, destinations, item, false);
+        if (storage != EQUIP_ERR_OK)
+            return storage;
+        if (destinations.size() != 1 || destinations.front().pos != move.destination ||
+            destinations.front().count != item->GetCount())
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+    }
     return EQUIP_ERR_OK;
 }
 
