@@ -51,6 +51,9 @@ struct PlayerbotHolder
     static void UpdatePendingLogins(); static void StopPendingLogins(); static void ClearPendingLogins();
     void HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder const&,WorldSession*);
     static bool CompleteQueuedBotLogin(ObjectGuid,std::uint64_t);
+    bool timedRegistrationAllowed=true;
+    bool RegisterTimedBot(Player*){return timedRegistrationAllowed;}
+    void ForgetTimedBot(ObjectGuid,std::uint64_t,std::uint64_t){}
     void OnBotLogin(Player*,PendingBotLogin::Owner&);
     void OnBotLoginInternal(Player* p){if(onPublish)onPublish(p);}
 };
@@ -73,6 +76,8 @@ int main()
     auto& queue=PlayerbotWorldThreadProcessor::instance();auto& random=sRandomPlayerbotMgr;
     // Queued owner stays alive and transfers exactly once at publication.
     auto* first=Add({1},11);H::UpdatePendingLogins();assert(H::botLoading.at({1}).owner.State()==Phase::Queued);assert(H::botLoading.at({1}).owner.Get()==first&&queue.queue.size()==1);assert(queue.Run());assert(H::botLoading.empty()&&random.playerBots.at({1})->session==first);assert(!H::CompleteQueuedBotLogin({1},11));DeleteLegacy(random,{1});
+    // A failed timer-slot registration cannot release the pending owner.
+    random.timedRegistrationAllowed=false;Add({8},22);H::UpdatePendingLogins();assert(!queue.Run());assert(H::botLoading.at({8}).owner.State()==Phase::Failed&&random.playerBots.empty());H::UpdatePendingLogins();assert(H::botLoading.empty());random.timedRegistrationAllowed=true;
     // Queue refusal and dropped operation clean outside callback and no stale publish.
     queue.accept=false;int destroyed=WorldSession::destroyed;Add({2},12);H::UpdatePendingLogins();assert(H::botLoading.empty()&&WorldSession::destroyed==destroyed+1);queue.accept=true;
     Add({2},13);H::UpdatePendingLogins();queue.queue.clear();H::UpdatePendingLogins();assert(H::botLoading.empty());Add({2},14);assert(!H::CompleteQueuedBotLogin({2},13));H::UpdatePendingLogins();assert(queue.Run());DeleteLegacy(random,{2});
