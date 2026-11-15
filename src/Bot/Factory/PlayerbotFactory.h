@@ -9,6 +9,9 @@
 
 #include "InventoryAction.h"
 #include "AutoGearEquipmentSample.h"
+#if __has_include("EquipmentCaptureState.h")
+#include "AutoGearNativeAuthority.h"
+#endif
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include <string>
@@ -96,6 +99,14 @@ public:
     // Sender-owning thread only; publication/freshness must be supplied separately.
     static PlayerbotsAutoGearSample::Result CaptureEquipmentSample(Player* sender,
         std::span<uint8 const> countedSlots, bool eligibilityKnown);
+#if __has_include("EquipmentCaptureState.h")
+    // Owner-context only. Never pass a live sender to a bot worker.
+    static std::optional<PlayerbotsAutoGearNativeAuthority::Sample> CaptureEquipmentAuthority(Player const* sender,
+        uint64 policyRevision, uint32 countedMask, bool eligibilityKnown);
+    static bool IsEquipmentAuthorityCurrent(Player const* sender,
+        PlayerbotsAutoGearNativeAuthority::Sample const& expected,
+        uint64 policyRevision, uint32 countedMask, bool eligibilityKnown);
+#endif
     static void AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance = false,
                         bool applyFinishers = true, uint32 maxRawItemLevel = 0);
     void InitPetTalents();

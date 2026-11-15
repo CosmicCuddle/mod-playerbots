@@ -4069,27 +4069,54 @@ void PlayerbotFactory::DestroyEquippedGear(Player* bot)
 PlayerbotsAutoGearSample::Result PlayerbotFactory::CaptureEquipmentSample(Player* sender,
     std::span<uint8 const> countedSlots, bool eligibilityKnown)
 {
-    if (!eligibilityKnown || !sender || !sender->IsInWorld() || !sender->GetSession() ||
-        sender->GetSession()->IsHeadless())
+#if __has_include("EquipmentCaptureState.h")
+    if (!sender || !eligibilityKnown)
         return {};
-
-    std::array<PlayerbotsAutoGearSample::Slot, EQUIPMENT_SLOT_END> slots{};
+    uint32 mask = 0;
     for (uint8 slot : countedSlots)
     {
         if (slot >= EQUIPMENT_SLOT_END || slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD ||
-            slots[slot].countedByPolicy)
+            (mask & (1u << slot)))
             return {};
-        slots[slot].countedByPolicy = true;
-        Item* item = sender->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item)
-            continue;
-        ItemTemplate const* itemTemplate = item->GetTemplate();
-        slots[slot] = {true, true, itemTemplate != nullptr,
-            itemTemplate && itemTemplate->Quality == ITEM_QUALITY_HEIRLOOM,
-            itemTemplate ? itemTemplate->ItemLevel : 0};
+        mask |= 1u << slot;
     }
-    return PlayerbotsAutoGearSample::Average(slots, eligibilityKnown);
+    // Legacy arithmetic-only entry point. Its local revision is not an
+    // authorization and must never be used as the command's final policy stamp.
+    auto sample = CaptureEquipmentAuthority(sender, 1, mask, eligibilityKnown);
+    return sample ? sample->average : PlayerbotsAutoGearSample::Result{};
+#else
+    // No native capture seam: no unsafe live-Player fallback.
+    (void)sender;
+    (void)countedSlots;
+    (void)eligibilityKnown;
+    return {};
+#endif
 }
+
+#if __has_include("EquipmentCaptureState.h")
+std::optional<PlayerbotsAutoGearNativeAuthority::Sample> PlayerbotFactory::CaptureEquipmentAuthority(
+    Player const* sender, uint64 policyRevision, uint32 countedMask, bool eligibilityKnown)
+{
+    if (!sender || !eligibilityKnown)
+        return std::nullopt;
+    auto facts = sender->CapturePB59Equipment();
+    if (!facts)
+        return std::nullopt;
+    return PlayerbotsAutoGearNativeAuthority::Capture(*facts, policyRevision, countedMask,
+        eligibilityKnown, ITEM_QUALITY_HEIRLOOM);
+}
+
+bool PlayerbotFactory::IsEquipmentAuthorityCurrent(Player const* sender,
+    PlayerbotsAutoGearNativeAuthority::Sample const& expected, uint64 policyRevision,
+    uint32 countedMask, bool eligibilityKnown)
+{
+    if (!sender || !sender->IsPB59EquipmentCurrent(expected.facts.stamp))
+        return false;
+    auto facts = sender->CapturePB59Equipment();
+    return facts && PlayerbotsAutoGearNativeAuthority::Current(expected, *facts, policyRevision,
+        countedMask, eligibilityKnown, ITEM_QUALITY_HEIRLOOM);
+}
+#endif
 
 InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves)
 {
