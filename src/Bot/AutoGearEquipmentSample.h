@@ -15,7 +15,7 @@ namespace PlayerbotsAutoGearSample
     struct Slot
     {
         bool occupied;
-        bool combatEquipment;
+        bool countedByPolicy;
         bool templateKnown;
         bool scalingUnresolved;
         std::uint32_t rawItemLevel;
@@ -26,29 +26,36 @@ namespace PlayerbotsAutoGearSample
         bool known = false;
         std::uint32_t average = 0;
         std::uint32_t occupiedSlots = 0;
+        std::uint32_t countedSlots = 0;
     };
 
     // Caller captures slots on the sender-owning thread. This value alone has
     // no session/revision/freshness proof and cannot authorize a command.
-    constexpr Result Average(std::span<Slot const> slots)
+    // Counted slots depend on level/capability policy, never occupancy. Empty
+    // counted slots contribute zero without shrinking the denominator.
+    constexpr Result Average(std::span<Slot const> slots, bool eligibilityKnown)
     {
         std::uint64_t sum = 0;
         std::uint32_t count = 0;
+        std::uint32_t occupied = 0;
         // Core has 19 equipment positions, of which 17 are combat slots.
-        if (slots.size() > 19)
+        if (!eligibilityKnown || slots.size() > 19)
             return {};
         for (Slot const& slot : slots)
         {
-            if (!slot.occupied || !slot.combatEquipment)
+            if (!slot.countedByPolicy)
+                continue;
+            ++count;
+            if (!slot.occupied)
                 continue;
             if (!slot.templateKnown || slot.scalingUnresolved || !slot.rawItemLevel)
                 return {};
             sum += slot.rawItemLevel;
-            ++count;
+            ++occupied;
         }
         if (!count || sum / count == 0)
             return {};
-        return {true, static_cast<std::uint32_t>(sum / count), count};
+        return {true, static_cast<std::uint32_t>(sum / count), occupied, count};
     }
 }
 

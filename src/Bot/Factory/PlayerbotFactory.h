@@ -94,7 +94,8 @@ public:
     static InventoryResult PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves);
     static InventoryResult ValidateEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove> const& moves);
     // Sender-owning thread only; publication/freshness must be supplied separately.
-    static PlayerbotsAutoGearSample::Result CaptureEquipmentSample(Player* sender);
+    static PlayerbotsAutoGearSample::Result CaptureEquipmentSample(Player* sender,
+        std::span<uint8 const> countedSlots, bool eligibilityKnown);
     static void AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance = false,
                         bool applyFinishers = true, uint32 maxRawItemLevel = 0);
     void InitPetTalents();

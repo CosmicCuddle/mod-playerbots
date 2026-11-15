@@ -4066,16 +4066,20 @@ void PlayerbotFactory::DestroyEquippedGear(Player* bot)
     }
 }
 
-PlayerbotsAutoGearSample::Result PlayerbotFactory::CaptureEquipmentSample(Player* sender)
+PlayerbotsAutoGearSample::Result PlayerbotFactory::CaptureEquipmentSample(Player* sender,
+    std::span<uint8 const> countedSlots, bool eligibilityKnown)
 {
-    if (!sender || !sender->IsInWorld() || !sender->GetSession() || sender->GetSession()->IsHeadless())
+    if (!eligibilityKnown || !sender || !sender->IsInWorld() || !sender->GetSession() ||
+        sender->GetSession()->IsHeadless())
         return {};
 
     std::array<PlayerbotsAutoGearSample::Slot, EQUIPMENT_SLOT_END> slots{};
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    for (uint8 slot : countedSlots)
     {
-        if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
-            continue;
+        if (slot >= EQUIPMENT_SLOT_END || slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD ||
+            slots[slot].countedByPolicy)
+            return {};
+        slots[slot].countedByPolicy = true;
         Item* item = sender->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
         if (!item)
             continue;
@@ -4084,7 +4088,7 @@ PlayerbotsAutoGearSample::Result PlayerbotFactory::CaptureEquipmentSample(Player
             itemTemplate && itemTemplate->Quality == ITEM_QUALITY_HEIRLOOM,
             itemTemplate ? itemTemplate->ItemLevel : 0};
     }
-    return PlayerbotsAutoGearSample::Average(slots);
+    return PlayerbotsAutoGearSample::Average(slots, eligibilityKnown);
 }
 
 InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves)

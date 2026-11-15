@@ -26,6 +26,14 @@ The factory's `ilvl` argument is converted to a mixed gear-score limit using the
 
 ## Equipment planning dependency
 
+### Current sample rule: fixed eligibility denominator
+
+The owner requirement that removing gear cannot raise the cap supersedes the occupied-only averaging prototype described in earlier audit entries below. `Average` now requires known eligibility and counts every policy-selected slot in its denominator, including empty slots (zero contribution). Occupied zero-level/missing-template/unresolved-scaling slots still return unknown. The result separately reports occupied and counted slots. For a fixed policy and valid item data, removing an item can only lower the sum and cannot change the denominator; all-empty/zero stays unknown, never unlimited or a no-set reason.
+
+`CaptureEquipmentSample` now requires explicit counted slot IDs and an eligibility-known flag. It rejects duplicates, cosmetics and invalid positions, marks empty selected slots counted, and remains sender-owner-thread-only with no command caller. Policy-selected slots must depend on level/class capability, never current occupancy. Unknown capability must not shrink the denominator. No production thresholds, automatic class mapping or new era boundaries are selected in this change. Claude's suggested level20/30 thresholds and double-counted two-hand treatment remain proposals; the current prototype does not implement that weighting. A future weighting must satisfy removal monotonicity across valid two-hand/offhand/Titan-Grip states, not merely fixed-policy arithmetic. Publication/invalidation and coherent final-B authorization remain required.
+
+The updated native fixture covers all occupancy patterns of four fixed eligible slots with every single-slot removal, unchanged denominator, unknown eligibility and the 17-slot worked example (7x76 + 10x40 gives54; removing the ten low items gives31). These are written fixtures, not a local compiled PASS. Earlier independent compile evidence predates this signature/rule change and does not validate this HEAD.
+
 ### Core constraints for the coupled solver (source review only)
 
 Pinned Core `21ff1973`, `PlayerStorage.cpp::CanEquipItem` and `Player.cpp::CanEquipUniqueItem` establish requirements beyond broad weapon domains:
