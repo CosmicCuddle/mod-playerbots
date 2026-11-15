@@ -9,47 +9,7 @@
 #include "Player.h"
 #include "Playerbots.h"
 #include "ScriptMgr.h"
-
-namespace
-{
-    static Player* FindOnlineAltbotByGuid(ObjectGuid guid)
-    {
-        if (!guid)
-            return nullptr;
-
-        Player* p = ObjectAccessor::FindPlayer(guid);
-        if (!p)
-            return nullptr;
-
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(p);
-        if (!botAI || IsSelfBot(p))
-            return nullptr;
-
-        return p;
-    }
-
-    static void ForceLogoutViaPlayerbotHolder(Player* target)
-    {
-        if (!target)
-            return;
-
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(target);
-
-        if (!botAI)
-            return;
-
-        if (Player* master = botAI->GetMaster())
-        {
-            if (PlayerbotMgr* mgr = GET_PLAYERBOT_MGR(master))
-            {
-                mgr->LogoutPlayerBot(target->GetGUID());
-                return;
-            }
-        }
-
-        sRandomPlayerbotMgr.LogoutPlayerBot(target->GetGUID());
-    }
-}
+#include "WorldSession.h"
 
 class PlayerbotsSecureLoginServerScript : public ServerScript
 {
@@ -57,22 +17,49 @@ public:
     PlayerbotsSecureLoginServerScript()
         : ServerScript("PlayerbotsSecureLoginServerScript", { SERVERHOOK_CAN_PACKET_RECEIVE }) {}
 
-    bool CanPacketReceive(WorldSession* /*session*/, WorldPacket const& packet) override
+    bool CanPacketReceive(WorldSession* session, WorldPacket const& packet) override
     {
-        if (packet.GetOpcode() != CMSG_PLAYER_LOGIN)
+        if (packet.GetOpcode() != CMSG_PLAYER_LOGIN || !session)
             return true;
 
         WorldPacket pkt(packet);
         ObjectGuid loginGuid;
         pkt >> loginGuid;
+        if (!loginGuid.IsPlayer())
+            return true; // Core performs its normal packet validation.
 
-        if (!loginGuid)
+        Player* existing = ObjectAccessor::FindConnectedPlayer(loginGuid);
+        WorldSession* existingSession = existing ? existing->GetSession() : nullptr;
+        if (!existing)
             return true;
+        if (!existingSession)
+        {
+            session->SendCharLoginFailed(LoginFailureReason::DuplicateCharacter);
+            return false; // registered but unknown ownership is not safe to replace
+        }
+        if (!existingSession->IsHeadless())
+            return true; // ordinary client login/reconnect is unchanged
 
-        Player* existingAltbot = FindOnlineAltbotByGuid(loginGuid);
-        if (existingAltbot)
-            ForceLogoutViaPlayerbotHolder(existingAltbot);
-
+        // This hook runs BEFORE Core's login opcode admission checks. Verify
+        // the enumerated character and the actual account before any effect.
+        bool completed = false;
+        if (session->CanPB59RetireBotForClientLogin(loginGuid) &&
+            session->GetAccountId() == existingSession->GetAccountId())
+        {
+            try
+            {
+                completed = PlayerbotHolder::RetireBotForClientLogin(existing);
+            }
+            catch (...)
+            {
+                // An uncertain retirement is not permission to replace it.
+            }
+        }
+        if (!completed)
+        {
+            session->SendCharLoginFailed(LoginFailureReason::DuplicateCharacter);
+            return false;
+        }
         return true;
     }
 };

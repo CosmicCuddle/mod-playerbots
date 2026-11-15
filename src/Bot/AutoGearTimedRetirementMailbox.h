@@ -67,6 +67,16 @@ public:
         for (auto it = _entries.begin(); it != _entries.end();)
             if (it->second.identity.holder == holder) it = _entries.erase(it); else ++it;
     }
+    // Value snapshot only; no native object lifetime or retirement authority.
+    std::optional<Identity> Lookup(Id guid, Id player, Id session) noexcept
+    {
+        std::lock_guard guard(_lock);
+        auto it = _entries.find(guid);
+        if (it == _entries.end() || it->second.identity.player != player ||
+            it->second.identity.session != session || it->second.phase == Phase::Blocked)
+            return std::nullopt;
+        return it->second.identity;
+    }
     Submit Request(Id guid, Id player, Id session) noexcept
     {
         std::lock_guard guard(_lock);

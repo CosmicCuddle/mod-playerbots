@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 using uint32 = unsigned;
-struct ObjectGuid { unsigned value; bool operator==(ObjectGuid const&) const = default; auto operator<=>(ObjectGuid const&) const = default; std::string ToString() const {return std::to_string(value);} };
+struct ObjectGuid { unsigned value; unsigned GetCounter()const{return value;} bool operator==(ObjectGuid const&) const = default; auto operator<=>(ObjectGuid const&) const = default; std::string ToString() const {return std::to_string(value);} };
 namespace std { template<> struct hash<ObjectGuid> { size_t operator()(ObjectGuid g) const noexcept { return g.value; } }; }
 #define LOG_ERROR(...) ((void)0)
 struct WorldSession;
@@ -18,7 +18,7 @@ struct ObjectAccessor { static Player* FindConnectedPlayer(ObjectGuid guid){auto
 struct PlayerbotLoginQueryHolder { ObjectGuid guid; ObjectGuid GetGuid() const {return guid;} };
 struct WorldSession
 {
-    static inline int destroyed=0, logoutCalls=0;
+    static inline int destroyed=0, logoutCalls=0, loadCalls=0;
     std::uint64_t id;
     std::unique_ptr<Player> player;
     std::function<void()> callback;
@@ -26,7 +26,7 @@ struct WorldSession
     explicit WorldSession(std::uint64_t i):id(i){}
     std::uint64_t GetPB59SessionIncarnation() const noexcept {return id;}
     Player* GetPlayer() const noexcept {return player.get();}
-    void HandlePlayerLoginFromDB(PlayerbotLoginQueryHolder const& holder){player=std::make_unique<Player>(Player{holder.guid,id+100,this});registered[holder.guid]=player.get();}
+    void HandlePlayerLoginFromDB(PlayerbotLoginQueryHolder const& holder){++loadCalls;player=std::make_unique<Player>(Player{holder.guid,id+100,this});registered[holder.guid]=player.get();}
     void ProcessQueryCallbacks(){inCallback=true; struct Reset {bool& b;~Reset(){b=false;}} reset{inCallback};if(callback){auto fn=std::move(callback);fn();}}
     void LogoutPlayer(bool){assert(!inCallback);++logoutCalls;if(veto)return;if(player){auto it=registered.find(player->guid);if(it!=registered.end()&&it->second==player.get())registered.erase(it);player.reset();}if(fault)throw std::runtime_error("logout");}
     ~WorldSession(){assert(!inCallback);assert(!player);++destroyed;}
@@ -59,7 +59,7 @@ struct PlayerbotHolder
 };
 struct RandomPlayerbotMgr:PlayerbotHolder {std::function<void(Player*)> loginHook; static RandomPlayerbotMgr& instance(){static RandomPlayerbotMgr m;return m;}void OnPlayerLogin(Player* p){if(loginHook)loginHook(p);}};
 #define sRandomPlayerbotMgr RandomPlayerbotMgr::instance()
-struct WorldSessionMgr {std::map<uint32,WorldSession*> masters; WorldSession* FindSession(uint32 a){auto it=masters.find(a);return it==masters.end()?nullptr:it->second;}};
+struct WorldSessionMgr {std::map<uint32,WorldSession*> masters, offline; WorldSession* FindOfflineSessionForCharacterGUID(unsigned g){auto it=offline.find(g);return it==offline.end()?nullptr:it->second;} WorldSession* FindSession(uint32 a){auto it=masters.find(a);return it==masters.end()?nullptr:it->second;}};
 static WorldSessionMgr sessions;
 static WorldSessionMgr* sWorldSessionMgr=&sessions;
 struct PlayerbotsMgr { PlayerbotHolder* personal=nullptr;std::function<void()> beforePublish;static PlayerbotsMgr& instance(){static PlayerbotsMgr m;return m;} PlayerbotHolder* GetPlayerbotMgr(Player*){return personal;}void AddPlayerbotData(Player*,bool){if(beforePublish)beforePublish();}};
@@ -76,6 +76,12 @@ int main()
     auto& queue=PlayerbotWorldThreadProcessor::instance();auto& random=sRandomPlayerbotMgr;
     // Queued owner stays alive and transfers exactly once at publication.
     auto* first=Add({1},11);H::UpdatePendingLogins();assert(H::botLoading.at({1}).owner.State()==Phase::Queued);assert(H::botLoading.at({1}).owner.Get()==first&&queue.queue.size()==1);assert(queue.Run());assert(H::botLoading.empty()&&random.playerBots.at({1})->session==first);assert(!H::CompleteQueuedBotLogin({1},11));DeleteLegacy(random,{1});
+    // Another client/bot finishes login while the pending query is in flight.
+    Add({9},23);WorldSession connected(900);connected.HandlePlayerLoginFromDB({{9}});
+    int loads=WorldSession::loadCalls;H::UpdatePendingLogins();assert(H::botLoading.empty()&&registered.at({9})==connected.GetPlayer()&&WorldSession::loadCalls==loads&&queue.queue.empty());connected.LogoutPlayer(true);
+    // The offline session map can own the character even when not registered.
+    Add({10},24);WorldSession offline(901);offline.HandlePlayerLoginFromDB({{10}});registered.erase({10});sessions.offline[10]=&offline;
+    loads=WorldSession::loadCalls;H::UpdatePendingLogins();assert(H::botLoading.empty()&&WorldSession::loadCalls==loads&&queue.queue.empty()&&offline.GetPlayer());sessions.offline.clear();offline.LogoutPlayer(true);
     // A failed timer-slot registration cannot release the pending owner.
     random.timedRegistrationAllowed=false;Add({8},22);H::UpdatePendingLogins();assert(!queue.Run());assert(H::botLoading.at({8}).owner.State()==Phase::Failed&&random.playerBots.empty());H::UpdatePendingLogins();assert(H::botLoading.empty());random.timedRegistrationAllowed=true;
     // Queue refusal and dropped operation clean outside callback and no stale publish.

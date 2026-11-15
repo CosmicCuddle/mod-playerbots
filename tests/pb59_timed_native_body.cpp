@@ -9,10 +9,15 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <set>
+#include <initializer_list>
+using uint32=unsigned;
 
 struct ObjectGuid
 {
-    std::uint64_t value;
+    std::uint64_t value=0;
+    bool IsPlayer()const{return value!=0;}
+    std::uint64_t GetCounter()const{return value;}
     std::uint64_t GetRawValue() const { return value; }
     auto operator<=>(ObjectGuid const&) const = default;
     std::string ToString() const { return std::to_string(value); }
@@ -21,11 +26,22 @@ struct ObjectGuid
 constexpr int PLAYER_FLAGS=1, PLAYER_FLAGS_RESTING=2, UNIT_STATE_IN_FLIGHT=3;
 namespace rbac { constexpr int RBAC_PERM_INSTANT_LOGOUT=4; }
 struct Player;
+struct LoginQueryHolder{ObjectGuid guid;ObjectGuid GetGuid()const{return guid;}};
+enum class LoginFailureReason {DuplicateCharacter};
 struct WorldSession
 {
     std::uint64_t id;
     Player* player=nullptr;
     bool headless=true, active=false, timer=false, ready=false, permission=false;
+    bool m_playerLoading=false;unsigned account=1, failures=0, loads=0;
+    std::set<ObjectGuid> legit;
+    explicit WorldSession(std::uint64_t id):id(id){}
+    bool PlayerLoading()const{return m_playerLoading;}
+    unsigned GetAccountId()const{return account;}
+    bool IsLegitCharacterForAccount(ObjectGuid g){return legit.contains(g);}
+    void SendCharLoginFailed(LoginFailureReason r){assert(r==LoginFailureReason::DuplicateCharacter);++failures;}
+    bool CanPB59RetireBotForClientLogin(ObjectGuid);
+    void HandlePlayerLoginFromDB(LoginQueryHolder const&);
     bool IsHeadless()const{return headless;} Player* GetPlayer()const{return player;}
     bool PlayerLogout()const{return active;} bool IsLoggingOut()const{return active||timer;}
     bool ShouldLogOut(std::time_t)const{return timer&&ready;}
@@ -35,12 +51,13 @@ struct WorldSession
 struct Player
 {
     ObjectGuid guid; std::uint64_t incarnation; WorldSession* session;
-    bool inWorld=true, resting=false, flight=false;
+    bool inWorld=true, resting=false, flight=false, teleport=false, removing=false;
+    bool IsBeingTeleported()const{return teleport;} bool IsDuringRemoveFromWorld()const{return removing;}
     ObjectGuid GetGUID()const{return guid;} std::uint64_t GetPB59OwnerIncarnation()const{return incarnation;}
     WorldSession* GetSession()const{return session;} bool IsInWorld()const{return inWorld;}
     bool HasFlag(int,int)const{return resting;} bool HasUnitState(int)const{return flight;}
 };
-struct PlayerbotAI { Player* bot; Player* master=nullptr; bool IsTimedLogoutReady(); };
+struct PlayerbotAI { Player* bot; Player* master=nullptr; bool IsTimedLogoutReady(); unsigned nextAICheckDelay=0, normalTicks=0; void UpdateAI(uint32,bool); };
 static std::map<ObjectGuid,Player*> players;
 static std::map<Player*,PlayerbotAI*> ais;
 struct ObjectAccessor { static Player* FindConnectedPlayer(ObjectGuid g){auto i=players.find(g);return i==players.end()?nullptr:i->second;} };
@@ -55,17 +72,18 @@ struct PlayerbotHolder
     std::map<ObjectGuid,Player*> bots;
     unsigned calls=0;
     BotRetirementResult next=BotRetirementResult::Completed;
-    bool throws=false;
+    bool throws=false, retainRegistration=false;
     virtual ~PlayerbotHolder();
     bool RegisterTimedBot(Player*);
     void ForgetTimedBot(ObjectGuid,std::uint64_t,std::uint64_t);
+    static bool RetireBotForClientLogin(Player*);
     static void RequestTimedBotLogout(Player*); static void ProcessTimedBotLogouts(); static void StopTimedBotLogouts();
     Player* GetPlayerBot(ObjectGuid g){auto i=bots.find(g);return i==bots.end()?nullptr:i->second;}
-    BotRetirementResult TryLogoutPlayerBot(ObjectGuid g,std::function<void()> const& callback,bool timed)
+    BotRetirementResult TryLogoutPlayerBot(ObjectGuid g,std::function<void()> const& callback={},bool timed=false)
     {
-        assert(timed&&!callback); auto* p=GetPlayerBot(g); assert(p&&GET_PLAYERBOT_AI(p)->IsTimedLogoutReady());++calls;
+        assert(!callback); auto* p=GetPlayerBot(g); assert(p&&(!timed||GET_PLAYERBOT_AI(p)->IsTimedLogoutReady()));++calls;
         if(throws)throw std::runtime_error("retirement fault");
-        if(next==BotRetirementResult::Completed){ForgetTimedBot(g,p->incarnation,p->session->id);bots.erase(g);}
+        if(next==BotRetirementResult::Completed){ForgetTimedBot(g,p->incarnation,p->session->id);bots.erase(g);if(!retainRegistration)players.erase(g);}
         return next;
     }
 };
@@ -74,6 +92,24 @@ struct RandomPlayerbotMgr:PlayerbotHolder { static RandomPlayerbotMgr& instance(
 #define sRandomPlayerbotMgr RandomPlayerbotMgr::instance()
 #include "ready_native.inc"
 #include "timed_native.inc"
+#include "outer_native.inc"
+    (void)minimal; ++normalTicks;
+}
+constexpr int CONFIG_REALM_LOGIN_ENABLED=1;
+struct World {bool enabled=true;bool getBoolConfig(int)const{return enabled;}} world;
+static World* sWorld=&world;
+struct Sidecar {bool cluster=false;bool ClusterModeEnabled()const{return cluster;}} sidecar;
+static Sidecar* sToCloud9Sidecar=&sidecar;
+struct OfflineMgr {std::map<std::uint64_t,WorldSession*> offline;WorldSession* FindOfflineSessionForCharacterGUID(std::uint64_t g){auto i=offline.find(g);return i==offline.end()?nullptr:i->second;}} offlineMgr;
+static OfflineMgr* sWorldSessionMgr=&offlineMgr;
+#include "admission_native.inc"
+#include "load_native.inc"
+    ++loads; m_playerLoading=false; // synthetic continuation, no native Player allocation
+}
+constexpr int CMSG_PLAYER_LOGIN=1, SERVERHOOK_CAN_PACKET_RECEIVE=2;
+struct WorldPacket {int opcode;ObjectGuid guid;int GetOpcode()const{return opcode;}WorldPacket& operator>>(ObjectGuid& g){g=guid;return *this;}};
+struct ServerScript {ServerScript(char const*,std::initializer_list<int>){}virtual ~ServerScript()=default;virtual bool CanPacketReceive(WorldSession*,WorldPacket const&)=0;};
+#include "secure_native.inc"
 
 struct Bot
 {
@@ -105,6 +141,11 @@ int main()
     master.player.inWorld=false;assert(bot.ai.IsTimedLogoutReady());master.player.inWorld=true;
     bot.ai.master=nullptr;assert(bot.ai.IsTimedLogoutReady());bot.ai.master=&master.player;
     bot.session.player=nullptr;assert(!bot.ai.IsTimedLogoutReady());bot.session.player=&bot.player;
+    // The actual outer AI entry must submit before its early return. Normal AI stays blocked.
+    bot.ai.nextAICheckDelay=20;bot.ai.UpdateAI(5,false);assert(bot.ai.normalTicks==0&&bot.ai.nextAICheckDelay==15&&mailbox.Outstanding()==1);
+    bot.session.timer=false;H::ProcessTimedBotLogouts();assert(random.calls==0&&mailbox.Outstanding()==0);
+    bot.ai.UpdateAI(5,false);assert(bot.ai.normalTicks==1);
+    bot.session.timer=true;bot.session.active=true;bot.ai.UpdateAI(5,false);assert(mailbox.Outstanding()==0&&bot.ai.normalTicks==1);bot.session.active=false;
     // Cancellation after submission, then a fresh countdown; one native call.
     bot.session.ready=true;bot.Request();bot.Request();assert(mailbox.Outstanding()==1);
     bot.session.timer=false;H::ProcessTimedBotLogouts();assert(random.calls==0&&mailbox.Outstanding()==0);
@@ -131,6 +172,34 @@ int main()
     for(unsigned n=0;n<130;++n){auto b=std::make_unique<Bot>(1000+n,2000+n,3000+n);b->Register(random);b->Request();bots.push_back(std::move(b));}
     H::ProcessTimedBotLogouts();assert(random.calls==132&&mailbox.Outstanding()==4);
     H::ProcessTimedBotLogouts();assert(random.calls==134&&mailbox.Outstanding()==2);
-    Bot stopped(6,7,8);stopped.Register(random);H::StopTimedBotLogouts();stopped.Request();H::ProcessTimedBotLogouts();assert(random.calls==134&&mailbox.Outstanding()==2);
+    // Secure-login hook + Core admission, exact holder helper and DB-load boundary.
+    PlayerbotsSecureLoginServerScript secure;WorldSession client(9999);client.headless=false;
+    Bot candidate(3000,4000,5000);candidate.session.timer=false;candidate.Register(random);
+    WorldPacket packet{CMSG_PLAYER_LOGIN,candidate.player.guid};auto before=random.calls;
+    auto deny=[&]{unsigned failures=client.failures;assert(!secure.CanPacketReceive(&client,packet)&&client.failures==failures+1);};
+    deny();assert(random.calls==before);client.legit.insert(packet.guid);
+    client.account=2;deny();assert(random.calls==before);client.account=1;
+    world.enabled=false;deny();world.enabled=true;sidecar.cluster=true;deny();sidecar.cluster=false;
+    client.m_playerLoading=true;deny();client.m_playerLoading=false;client.player=&master.player;deny();client.player=nullptr;
+    assert(random.calls==before);random.next=BotRetirementResult::Refused;deny();assert(random.calls==++before);
+    random.next=BotRetirementResult::RecoveryRequired;deny();assert(random.calls==++before);
+    random.throws=true;deny();assert(random.calls==++before);random.throws=false;
+    random.next=BotRetirementResult::Completed;assert(secure.CanPacketReceive(&client,packet)&&random.calls==++before&&!ObjectAccessor::FindConnectedPlayer(packet.guid));
+    // Pending/unpublished headless Player is not a retireable holder entry.
+    Bot unpublished(3001,4001,5001);packet.guid=unpublished.player.guid;client.legit.insert(packet.guid);deny();assert(random.calls==before);
+    // Native load catches both directions of a client/bot login race.
+    client.HandlePlayerLoginFromDB({unpublished.player.guid});assert(client.loads==0&&!client.PlayerLoading());
+    WorldSession headless(8888);headless.HandlePlayerLoginFromDB({master.player.guid});assert(headless.loads==0&&!headless.PlayerLoading());
+    offlineMgr.offline[7000]=&master.session;headless.HandlePlayerLoginFromDB({{7000}});assert(headless.loads==0);offlineMgr.offline.clear();
+    headless.HandlePlayerLoginFromDB({{7000}});assert(headless.loads==1);client.HandlePlayerLoginFromDB({{7000}});assert(client.loads==1);
+    // Registered character with missing session is not safe to replace.
+    unpublished.player.session=nullptr;packet.guid=unpublished.player.guid;deny();assert(random.calls==before);
+    client.HandlePlayerLoginFromDB({unpublished.player.guid});assert(client.loads==1&&!client.PlayerLoading());unpublished.player.session=&unpublished.session;
+    // A purported Completed result is insufficient if the character is still registered.
+    Bot lingering(3002,4002,5002);lingering.session.timer=false;lingering.Register(random);packet.guid=lingering.player.guid;client.legit.insert(packet.guid);
+    random.retainRegistration=true;deny();assert(random.calls==++before&&ObjectAccessor::FindConnectedPlayer(packet.guid)==&lingering.player);random.retainRegistration=false;
+    // Existing real client is left to normal Core admission; no bot retirement.
+    packet.guid=master.player.guid;assert(secure.CanPacketReceive(&client,packet)&&random.calls==before);
+    Bot stopped(6,7,8);stopped.Register(random);H::StopTimedBotLogouts();stopped.Request();H::ProcessTimedBotLogouts();assert(random.calls==before&&mailbox.Outstanding()==2);
     managers.clear();
 }

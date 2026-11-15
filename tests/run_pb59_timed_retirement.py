@@ -16,14 +16,25 @@ def between(source, start, end):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
+    parser.add_argument("--core", type=Path, required=True, help="Paired Core checkout with PB59 login admission guards")
     parser.add_argument("--sanitizers", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     mgr = (root / "src/Bot/PlayerbotMgr.cpp").read_text(encoding="utf-8")
     ai = (root / "src/Bot/PlayerbotAI.cpp").read_text(encoding="utf-8")
     script = (root / "src/Script/Playerbots.cpp").read_text(encoding="utf-8")
+    secure = (root / "src/Script/PlayerbotsSecureLogin.cpp").read_text(encoding="utf-8")
+    core = (args.core / "src/server/game/Handlers/CharacterHandler.cpp").read_text(encoding="utf-8")
     native = between(mgr, "PlayerbotHolder::~PlayerbotHolder()", "class PlayerbotLoginQueryHolder")
     ready = between(ai, "bool PlayerbotAI::IsTimedLogoutReady()", "void PlayerbotAI::UpdateAIInternal(")
+    outer = between(ai, "void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)", "    // Bots send no movement opcodes")
+    secure_body = between(secure, "class PlayerbotsSecureLoginServerScript", "void AddPlayerbotsSecureLoginScripts()")
+    admission = between(core, "bool WorldSession::CanPB59RetireBotForClientLogin", "void WorldSession::HandlePlayerLoginOpcode")
+    load = between(core, "void WorldSession::HandlePlayerLoginFromDB(LoginQueryHolder const& holder)", "    Player* pCurrChar = new Player(this);")
+    assert outer.index("IsLoggingOut()") < outer.index("RequestTimedBotLogout(bot)") < outer.index("IsInWorld()")
+    assert "CanPB59RetireBotForClientLogin(loginGuid)" in secure_body and "RetireBotForClientLogin(existing)" in secure_body
+    assert "IsLegitCharacterForAccount(guid)" in admission and "!sToCloud9Sidecar->ClusterModeEnabled()" in admission
+    assert "FindConnectedPlayer(playerGuid)" in load and "FindOfflineSessionForCharacterGUID" in load
     timer = between(ai, "    // Never destroy a headless session", "    botOutgoingPacketHandlers.Handle(helper);")
     assert "RequestTimedBotLogout(bot)" in timer and "LogoutPlayerBot(" not in timer
     logout = between(mgr, "BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(", "bool PlayerbotHolder::DisablePlayerBot(")
@@ -42,6 +53,8 @@ def main():
         work = Path(tmp)
         (work / "timed_native.inc").write_text(native, encoding="utf-8")
         (work / "ready_native.inc").write_text(ready, encoding="utf-8")
+        for name, body in (("outer", outer), ("secure", secure_body), ("admission", admission), ("load", load)):
+            (work / (name + "_native.inc")).write_text(body, encoding="utf-8")
         for name in ("pb59_timed_retirement_mailbox.cpp", "pb59_timed_native_body.cpp"):
             binary = work / Path(name).stem
             command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
@@ -51,7 +64,7 @@ def main():
                 command.append("-fsanitize=address,undefined")
             subprocess.run(command, check=True)
             subprocess.run([str(binary)], check=True)
-    print("PASS: mailbox concurrency, exact synthetic timer dispatch/readiness, source contracts")
+    print("PASS: mailbox, exact synthetic timer entry/dispatch, secure-login and paired Core admission/load guards, source contracts")
 
 
 if __name__ == "__main__":

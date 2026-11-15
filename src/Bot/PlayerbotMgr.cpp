@@ -115,6 +115,40 @@ void PlayerbotHolder::ForgetTimedBot(ObjectGuid guid, std::uint64_t player, std:
         _pb59HolderLifetime.Observe()->identity);
 }
 
+bool PlayerbotHolder::RetireBotForClientLogin(Player* bot)
+{
+    auto* session = bot ? bot->GetSession() : nullptr;
+    if (!session || !session->IsHeadless() || session->GetPlayer() != bot ||
+        ObjectAccessor::FindConnectedPlayer(bot->GetGUID()) != bot)
+        return false;
+    auto const guid = bot->GetGUID();
+    auto const id = PB59::TimedRetirementMailbox::Instance().Lookup(guid.GetRawValue(),
+        bot->GetPB59OwnerIncarnation(), session->GetPB59SessionIncarnation());
+    if (!id)
+        return false; // not published, stale or recovery-blocked
+    PlayerbotHolder* holder = &sRandomPlayerbotMgr;
+    if (id->masterGuid)
+    {
+        Player* master = ObjectAccessor::FindConnectedPlayer(ObjectGuid(id->masterGuid));
+        WorldSession* masterSession = master ? master->GetSession() : nullptr;
+        if (!master || master->GetPB59OwnerIncarnation() != id->masterPlayer ||
+            !masterSession || masterSession->GetPlayer() != master ||
+            masterSession->GetPB59SessionIncarnation() != id->masterSession)
+            return false;
+        holder = GET_PLAYERBOT_MGR(master);
+    }
+    if (!holder)
+        return false;
+    auto tag = holder->_pb59HolderLifetime.Observe();
+    if (!tag->Alive() || tag->identity != id->holder || holder->GetPlayerBot(guid) != bot)
+        return false;
+    // The packet hook must not continue merely because logout was requested.
+    // No dereference of bot/session/holder after native retirement may delete it.
+    if (holder->TryLogoutPlayerBot(guid) != BotRetirementResult::Completed)
+        return false;
+    return ObjectAccessor::FindConnectedPlayer(guid) == nullptr;
+}
+
 void PlayerbotHolder::RequestTimedBotLogout(Player* bot)
 {
     auto* session = bot ? bot->GetSession() : nullptr;
@@ -217,9 +251,10 @@ void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId
     if (_pendingLoginsStopping || botLoading.find(playerGuid) != botLoading.end())
         return;
 
-    // has bot already been added?
-    Player* bot = ObjectAccessor::FindConnectedPlayer(playerGuid);
-    if (bot && bot->IsInWorld())
+    // Connected includes a Player outside the world/map during transfer.
+    // Never initiate a second bot login while another exact character is live.
+    if (ObjectAccessor::FindConnectedPlayer(playerGuid) ||
+        sWorldSessionMgr->FindOfflineSessionForCharacterGUID(playerGuid.GetCounter()))
         return;
 
     uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(playerGuid);
@@ -432,6 +467,14 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder con
         return;
     auto& pending = it->second;
     auto const sessionId = pending.owner.Identity();
+    // The character could have logged in after the DB query was submitted.
+    // Refuse before Player allocation/registration, not merely after loading.
+    if (botSession->GetPlayer() || ObjectAccessor::FindConnectedPlayer(guid) ||
+        sWorldSessionMgr->FindOfflineSessionForCharacterGUID(guid.GetCounter()))
+    {
+        pending.owner.Fail();
+        return;
+    }
     botSession->HandlePlayerLoginFromDB(holder);
     Player* bot = botSession->GetPlayer();
     if (!bot || bot->GetGUID() != guid || !bot->GetPB59OwnerIncarnation() ||

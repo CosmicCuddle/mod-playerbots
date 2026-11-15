@@ -1,0 +1,27 @@
+# PB59 lifecycle takeover: login and retirement admission (2026-11-15)
+
+## Scope and pins
+Owner: CosmicCuddle. Maintenance CS01 took over the outstanding lifecycle audit from Codex on the owner's instruction (coordination #51, comment 6899692127). Isolated child of Playerbots #35 at 67b23b9c868939b426812f53594574d5125ab8ef; requires Core child of #38 at 1e12bf841fe1415294940255ac98a8bfdb28f754, branch feature/cs01-pb59-client-login-admission-20261115, code head 5d7819e7372d8fcd20141d6f73fabb69b5171cb1. Parent drafts and #37/#29 remain unchanged.
+
+## Findings and changes
+- PlayerbotAI::UpdateAI had IsLoggingOut in the early invalid-state guard, so the #35 deeper timer path could not be reached. Submit the exact timer request before the normal AI early return; do not run normal AI. Deeper path likewise submits only. World dispatch owns readiness and native retirement. Existing 128/tick round-robin bound and duplicate coalescing retained.
+- Core opcode script dispatch precedes HandlePlayerLoginOpcode's character admission. Original PlayerbotsSecureLogin hook attempted bot logout and unconditionally allowed login. New Core WorldSession::CanPB59RetireBotForClientLogin requires a non-headless, unloaded client session, realm login enabled, a non-cluster context, player GUID and enumerated legitimate character. Secure hook also checks actual account against headless session; no authorization for unknown ownership. Local-only conservative behavior; cluster gateway authorization not available at this hook, so existing headless character takeover refuses in cluster mode. Valid normal client reconnect and non-login opcode stay unchanged.
+- PlayerbotHolder::RetireBotForClientLogin uses the mailbox's exact value identity (GUID/player/session/holder/master GUID/player/session), validates current registered bot, master and actual holder, then calls existing TryLogoutPlayerBot. Requires Completed and no connected character after retirement. No raw bot/session pointer dereference after retirement. Unknown/pending/blocked identity, refusal, exception, or still-registered character -> duplicate-character failure response and no opcode continuation. Mailbox lookup is not ownership/restore authority.
+- AddPlayerBot and HandlePlayerBotLoginCallback reject connected character (including out-of-world) and offline session collisions before native allocation/loading. Core HandlePlayerLoginFromDB rechecks at actual DB-load boundary, including headless-to-client and client-to-headless race and registered unknown session; clears loading state, client gets login failure. Headless offline collision rejected; normal client-to-client reconnect behavior not changed.
+- Current retirement still uses legacy native raw deletion, not #34 published-owner custody. This is a guard and partial lifecycle audit, not full retirement/transaction integration. Normal client has to retry if a headless bot is pending, blocked, or a legitimate logout has not completed. No changes to existing owner-approved gameplay policy, no feature activation.
+
+## Verification
+Changed native exact source extracts compiled with synthetic game dependencies; native TryLogoutPlayerBot remains a stub and normal AI / DB allocation continuations are synthetic. Source lengths and FNV-1a 64 (remote and local match):
+outer 637 ad0709d03cac03ac; timed 6890 bfec294920803889; secure 1913 a590654b0b60b0df; admission 531 c0532ba2b5dd42b6; load 990 406ff0f23fe1d026; pending 7870 45cd51afd04b4e5a.
+Test source Git blob hashes verified against local: pending 6df646c69e5ad51c26beef7f8e611824df0b8cf1, timed 89b6aec092d407d9f6db985e1d6c4f7cc0c8b056, mailbox header 0ed19d550bde1916b9b2f391a80bda86e6dedf03. Core CharacterHandler blob ad74da1ff22c238795ec93537f2ee0018c0eb752; secure script 6ae73fcba5a918bb0d20204330de54f335dca6a3.
+Updated pending/timed suites GCC, Clang, Clang ASan+UBSan: 6/6 final pass. Combined seven suites x three compiler configurations, 21/21 binaries exit successfully. Tests include outer entry suppression, pending connected/offline collisions, unauthorized/unlisted/mismatched account, disabled realm/cluster/already loading, refusal/recovery/exception, actual retirement completed versus still registered, unpublished headless, unknown session, both directions of native DB-load collision, unchanged normal client routing. No full server compile/link or gameplay test of child drafts yet.
+
+Reproduce from paired checkout (C++20):
+```sh
+python3 tests/run_pb59_pending_login.py --cxx g++
+python3 tests/run_pb59_timed_retirement.py --core /path/to/paired-core --cxx g++
+# repeat with --cxx clang++ and --cxx clang++ --sanitizers
+```
+
+## Remaining gates / rollback
+Native actual-holder custody adoption, all raw deletion routes (explicit chat, scheduler/master, disable and direct lifecycle), shutdown drain, recovery durability and actual equipment transaction backend/command wiring remain pending. Audit hook dispatch/world-thread/barrier and full compilation on exact pair; test login/retirement during asynchronous login, teleport, active countdown, recovery and ordinary client reconnect, including different accounts, invalid GUID, disconnected/pending/actual master replacement; preserve inventory and state. No live, DB, schema, DBC, config, merge, deployment or hosted CI. Rollback candidate by dropping these isolated child drafts; parent #38/#35 unchanged. No production rollback needed.

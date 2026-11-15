@@ -39,6 +39,8 @@ def main():
     callback = between(mgr, "void PlayerbotHolder::HandlePlayerBotLoginCallback", "bool PlayerbotHolder::CompleteQueuedBotLogin")
     assert "QueueOperation(std::move(op))" in callback and "pending.owner.Fail()" in callback
     assert "botLoading.erase" not in callback
+    assert callback.index("FindConnectedPlayer(guid)") < callback.index("HandlePlayerLoginFromDB(holder)")
+    assert "FindOfflineSessionForCharacterGUID(guid.GetCounter())" in callback
     assert native.index("playerBots.emplace(guid, bot)") < native.index("pendingOwner.ReleasePublished") < native.index("OnBotLoginInternal(bot)")
     shutdown = between(script, "    void OnShutdown() override", "class PlayerBotsBGScript")
     assert shutdown.index("StopPendingLogins") < shutdown.index("LogoutAllBots") < shutdown.index("ClearPendingLogins")

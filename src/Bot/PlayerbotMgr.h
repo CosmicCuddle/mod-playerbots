@@ -63,6 +63,7 @@ public:
     void UpdateAIInternal([[maybe_unused]] uint32 elapsed, [[maybe_unused]] bool minimal = false) override{};
     void UpdateSessions();
     void HandleBotPackets(WorldSession* session);
+    static bool RetireBotForClientLogin(Player* bot); // world packet path; true only after completed retirement
     static void RequestTimedBotLogout(Player* bot); // value-only producer from bot owner context
     static void ProcessTimedBotLogouts(); // world thread after map-worker barrier
     static void StopTimedBotLogouts();

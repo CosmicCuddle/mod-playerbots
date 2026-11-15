@@ -260,9 +260,16 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     else
         nextAICheckDelay = 0;
 
-    // Early return if bot is in invalid state
-    if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
-        bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
+    // A countdown must reach the world retirement mailbox BEFORE the
+    // ordinary AI gate returns. Do not run normal AI or destroy a session here.
+    if (!bot || !bot->GetSession())
+        return;
+    if (bot->GetSession()->IsLoggingOut())
+    {
+        PlayerbotHolder::RequestTimedBotLogout(bot);
+        return;
+    }
+    if (!bot->IsInWorld() || bot->IsBeingTeleported() || bot->IsDuringRemoveFromWorld())
         return;
 
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
@@ -610,8 +617,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     // re-evaluates the countdown/instant conditions before retirement.
     if (bot->GetSession()->IsLoggingOut())
     {
-        if (IsTimedLogoutReady())
-            PlayerbotHolder::RequestTimedBotLogout(bot);
+        PlayerbotHolder::RequestTimedBotLogout(bot);
         SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
         return;
     }
