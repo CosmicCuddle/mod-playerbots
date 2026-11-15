@@ -38,10 +38,17 @@ namespace
             return false;
 
 #if PLAYERBOTS_AUTOGEAR_HAS_IP
+        uint8 const rawStage = sIndividualProgression->GetPlayerProgressionFromQuests(sender);
+        // Paid effective-stage resolution can hit the Auth DB on an account-cache
+        // miss at Wrath entry. Keep map-thread commands closed until IP exposes
+        // a cache-only effective-stage read for this boundary.
+        if (rawStage >= PlayerbotsAutoGearCap::WrathEntryStage && sIndividualProgression->IsPaidExpansionActive())
+            return false;
+
         PlayerbotsAutoGearCap::Policy const policy{sPlayerbotAIConfig.AutoGearIPCompletionCaps,
             sPlayerbotAIConfig.AutoGearIPEraEntryFloors, sPlayerbotAIConfig.AutoGearIPEraCeilings};
         auto const decision = PlayerbotsAutoGearCap::Resolve(
-            sIndividualProgression->GetPlayerProgressionFromQuests(sender),
+            rawStage,
             sIndividualProgression->GetEffectiveProgression(sender), policy,
             sPlayerbotAIConfig.AutoGearScoreLimit > 0
                 ? static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit) : 0);

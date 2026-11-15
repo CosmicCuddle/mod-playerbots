@@ -10,6 +10,8 @@ The branch now contains an unmerged source candidate: deferred chat triggers ret
 
 IP exposes `GetPlayerProgressionFromQuests(Player*)` and `GetEffectiveProgression(Player*)`. Both are needed: raw progression records completed content, while effective progression enforces paid expansion access. A raw-13/effective-12 player has completed Kil'jaeden but lacks Wrath access; raw-13/effective-13 has the same completion plus Wrath access. IP's raw getter returns stage 0 for an absent or out-of-world player, so the command checks sender lifetime first. The optional IP include makes an enabled command fail closed when IP is absent; native linking still needs verification.
 
+Map-thread safety: current IP `GetEffectiveProgression` can reach `GetAccountMatch` on a Paid-active raw-stage-13+ cache miss, which performs blocking Auth DB reads. The command refuses that boundary before calling it. A cache-only effective-stage API is required for the paid split before enabling later-era caps.
+
 ## Cap propagation audit
 
 | Command route | Current behavior | Required cap point |
