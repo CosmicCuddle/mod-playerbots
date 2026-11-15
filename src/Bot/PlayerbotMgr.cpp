@@ -652,6 +652,9 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
         return Result::Refused;
 
     auto const ownerIncarnation = bot->GetPB59OwnerIncarnation();
+    auto const sessionIncarnation = botWorldSessionPtr->GetPB59SessionIncarnation();
+    if (!sessionIncarnation)
+        return Result::Refused;
     auto record = Journal::Reserve(guid.GetRawValue(), ownerIncarnation, holderLife->identity, Journal::Kind::Logout);
     if (!record)
     {
@@ -672,6 +675,7 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
             GetPlayerBot(guid) == live &&
             live->OwnsPB59Retirement(retirement) && live->GetSession() == botWorldSessionPtr &&
             GET_PLAYERBOT_AI(live) == botAI && botWorldSessionPtr->GetPlayer() == live &&
+            botWorldSessionPtr->GetPB59SessionIncarnation() == sessionIncarnation &&
             !botWorldSessionPtr->PlayerLogout() &&
             (timedLogout ? botWorldSessionPtr->IsLoggingOut() : !botWorldSessionPtr->IsLoggingOut());
     };
@@ -719,7 +723,7 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
         if (!current())
             return partial();
         record.MarkStep(Journal::Step::BeforeHolderErase);
-        ForgetTimedBot(guid, ownerIncarnation, botWorldSessionPtr->GetPB59SessionIncarnation());
+        ForgetTimedBot(guid, ownerIncarnation, sessionIncarnation);
         RemoveFromPlayerbotsMap(guid);
         record.MarkStep(Journal::Step::HolderErased);
         record.MarkStep(Journal::Step::BeforeNativeLogout);
@@ -767,6 +771,9 @@ BotRetirementResult PlayerbotHolder::TryDisablePlayerBot(ObjectGuid guid)
         return Result::Refused;
 
     auto const ownerIncarnation = bot->GetPB59OwnerIncarnation();
+    auto const sessionIncarnation = session->GetPB59SessionIncarnation();
+    if (!sessionIncarnation)
+        return Result::Refused;
     auto record = Journal::Reserve(guid.GetRawValue(), ownerIncarnation, holderLife->identity, Journal::Kind::Disable);
     if (!record)
     {
@@ -783,7 +790,8 @@ BotRetirementResult PlayerbotHolder::TryDisablePlayerBot(ObjectGuid guid)
         return live && live == bot && live->GetPB59OwnerIncarnation() == ownerIncarnation &&
             GetPlayerBot(guid) == live &&
             live->OwnsPB59Retirement(retirement) && live->GetSession() == session &&
-            GET_PLAYERBOT_AI(live) == botAI && session->GetPlayer() == live;
+            GET_PLAYERBOT_AI(live) == botAI && session->GetPlayer() == live &&
+            session->GetPB59SessionIncarnation() == sessionIncarnation;
     };
     auto partial = [&]()
     {
@@ -824,7 +832,7 @@ BotRetirementResult PlayerbotHolder::TryDisablePlayerBot(ObjectGuid guid)
         if (!current())
             return partial();
         record.MarkStep(Journal::Step::BeforeHolderErase);
-        ForgetTimedBot(guid, ownerIncarnation, session->GetPB59SessionIncarnation());
+        ForgetTimedBot(guid, ownerIncarnation, sessionIncarnation);
         RemoveFromPlayerbotsMap(guid);
         record.MarkStep(Journal::Step::HolderErased);
         record.MarkStep(Journal::Step::BeforeAIDelete);
