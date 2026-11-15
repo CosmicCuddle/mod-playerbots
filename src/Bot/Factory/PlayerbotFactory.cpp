@@ -6,6 +6,7 @@
 
 #include "PlayerbotFactory.h"
 #include "AutoGearProgressionCap.h"
+#include "AutoGearSlotPolicy.h"
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
 #include "AiFactory.h"
@@ -50,6 +51,12 @@
 
 namespace
 {
+    constexpr PlayerbotsAutoGearSlots::Layout autoGearSlotLayout = {
+        EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_NECK, EQUIPMENT_SLOT_BODY, EQUIPMENT_SLOT_CHEST,
+        EQUIPMENT_SLOT_LEGS, EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_FINGER1, EQUIPMENT_SLOT_FINGER2,
+        EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2, EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND,
+        EQUIPMENT_SLOT_RANGED, EQUIPMENT_SLOT_TABARD
+    };
     // WotLK Eternal Belt Buckle mechanics
     constexpr uint32 ITEM_ETERNAL_BELT_BUCKLE = 41611;  // Eternal Belt Buckle (consumable)
     constexpr uint32 ENCHANT_SOCKET_BELT = 3729;        // "Socket Belt" -> adds 1 prismatic socket
@@ -2424,21 +2431,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
 
     for (int32 slot : initSlotsOrder)
     {
-        if (slot == EQUIPMENT_SLOT_TABARD || slot == EQUIPMENT_SLOT_BODY)
-            continue;
-
-        if (level < 50 && (slot == EQUIPMENT_SLOT_TRINKET1 || slot == EQUIPMENT_SLOT_TRINKET2))
-            continue;
-
-        if (level < 30 && (slot == EQUIPMENT_SLOT_NECK || slot == EQUIPMENT_SLOT_HEAD))
-            continue;
-
-        if (level < 20 && (slot == EQUIPMENT_SLOT_FINGER1 || slot == EQUIPMENT_SLOT_FINGER2))
-            continue;
-
-        if (level < 5 && (slot != EQUIPMENT_SLOT_MAINHAND) && (slot != EQUIPMENT_SLOT_OFFHAND) &&
-            (slot != EQUIPMENT_SLOT_FEET) && (slot != EQUIPMENT_SLOT_LEGS) && (slot != EQUIPMENT_SLOT_CHEST) &&
-            (slot != EQUIPMENT_SLOT_RANGED))
+        if (!PlayerbotsAutoGearSlots::SearchAtLevel(level, slot, autoGearSlotLayout))
             continue;
 
         // Exclude resilience weighting for trinkets
@@ -2686,21 +2679,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
     {
         for (int32 slot : initSlotsOrder)
         {
-            if (slot == EQUIPMENT_SLOT_TABARD || slot == EQUIPMENT_SLOT_BODY)
-                continue;
-
-            if (level < 50 && (slot == EQUIPMENT_SLOT_TRINKET1 || slot == EQUIPMENT_SLOT_TRINKET2))
-                continue;
-
-            if (level < 30 && (slot == EQUIPMENT_SLOT_NECK || slot == EQUIPMENT_SLOT_HEAD))
-                continue;
-
-            if (level < 20 && (slot == EQUIPMENT_SLOT_FINGER1 || slot == EQUIPMENT_SLOT_FINGER2))
-                continue;
-
-            if (level < 5 && (slot != EQUIPMENT_SLOT_MAINHAND) && (slot != EQUIPMENT_SLOT_OFFHAND) &&
-                (slot != EQUIPMENT_SLOT_FEET) && (slot != EQUIPMENT_SLOT_LEGS) && (slot != EQUIPMENT_SLOT_CHEST) &&
-                (slot != EQUIPMENT_SLOT_RANGED))
+            if (!PlayerbotsAutoGearSlots::SearchAtLevel(level, slot, autoGearSlotLayout))
                 continue;
 
             // CC-break trinket was force-equipped in the main pass; leave it alone.
