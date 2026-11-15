@@ -17,6 +17,7 @@
 #include "AiObjectContext.h"
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
+#include "Bag.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "GuildMgr.h"
@@ -4196,13 +4197,21 @@ InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vect
         for (uint8 destination = INVENTORY_SLOT_ITEM_START; destination < INVENTORY_SLOT_ITEM_END; ++destination)
             collect(INVENTORY_SLOT_BAG_0, destination);
         for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
-            if (Bag* container = bot->GetBagByPos(bag))
+        {
+            Bag* container = bot->GetBagByPos(bag);
+            if (!container)
             {
-                if (container->GetBagSize() > MAX_BAG_SIZE)
+                // A non-bag object in an equipped bag slot is not a known
+                // empty bag slot. Refuse inconsistent inventory structure.
+                if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag))
                     return EQUIP_ERR_CANT_DO_RIGHT_NOW;
-                for (uint32 destination = 0; destination < container->GetBagSize(); ++destination)
-                    collect(bag, static_cast<uint8>(destination));
+                continue;
             }
+            if (!container->GetBagSize() || container->GetBagSize() > MAX_BAG_SIZE)
+                return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+            for (uint32 destination = 0; destination < container->GetBagSize(); ++destination)
+                collect(bag, static_cast<uint8>(destination));
+        }
         if (unknownDestination)
             return EQUIP_ERR_CANT_DO_RIGHT_NOW;
         current = bot->CapturePB59InventorySlot(source);
