@@ -16,6 +16,15 @@ constexpr std::array<Slot, 1> zero = {{{true, true, true, false, 0}}};
 constexpr std::array<Slot, 1> missing = {{{true, true, false, false, 78}}};
 constexpr std::array<Slot, 1> heirloom = {{{true, true, true, true, 1}}};
 static_assert(!Average(zero).known);
+constexpr std::array<Slot, 2> mixedZero = {{
+    {true, true, true, false, 0}, {true, true, true, false, 70}
+}};
+static_assert(!Average(mixedZero).known);
+static_assert(Average(mixedZero).average == 0);
+constexpr std::array<Slot, 2> excludedZero = {{
+    {true, false, true, false, 0}, {true, true, true, false, 70}
+}};
+static_assert(Average(excludedZero).known && Average(excludedZero).average == 70);
 static_assert(!Average(missing).known);
 static_assert(!Average(heirloom).known);
 constexpr std::uint32_t maximum = std::numeric_limits<std::uint32_t>::max();

@@ -41,7 +41,7 @@ namespace PlayerbotsAutoGearSample
         {
             if (!slot.occupied || !slot.combatEquipment)
                 continue;
-            if (!slot.templateKnown || slot.scalingUnresolved)
+            if (!slot.templateKnown || slot.scalingUnresolved || !slot.rawItemLevel)
                 return {};
             sum += slot.rawItemLevel;
             ++count;
