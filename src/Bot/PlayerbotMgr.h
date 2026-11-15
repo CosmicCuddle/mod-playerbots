@@ -64,6 +64,7 @@ public:
     void UpdateSessions();
     void HandleBotPackets(WorldSession* session);
     static void UpdatePendingLogins();  // world thread, once per tick
+    static void StopPendingLogins();    // fence new producers before shutdown logout
     static void ClearPendingLogins();   // shutdown, outside any callback
 
     void LogoutAllBots();
