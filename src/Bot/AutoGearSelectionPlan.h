@@ -11,6 +11,7 @@
 #include "AutoGearConstraintFill.h"
 #include "AutoGearSelectionCap.h"
 #include "AutoGearSelectionOutcome.h"
+#include "AutoGearSlotEnumeration.h"
 #include "AutoGearVariantSource.h"
 #include <array>
 #include <new>
@@ -44,6 +45,10 @@ namespace PlayerbotsAutoGearSelection
         };
         std::array<SlotListState, PlayerbotsAutoGearSet::Slots> slotLists{};
         std::span<RetainedCount const> retained{};
+        // When set, a NoSet may strip only if every eligible slot is a proven
+        // empty list and every set bonus on that list is proven absent.
+        bool enforceSlotProof = false;
+        std::array<ListAssessment, PlayerbotsAutoGearSet::Slots> slotProofs{};
         // Fixture hook. Production callers leave this at None.
         enum class AllocationPoint : std::uint8_t
         {
@@ -292,6 +297,23 @@ namespace PlayerbotsAutoGearSelection
         if (plan.solved.status == PlayerbotsAutoGearSet::Status::Incomplete ||
             plan.solved.status == PlayerbotsAutoGearSet::Status::Invalid)
             searchComplete = false;
+        if (in.enforceSlotProof)
+        {
+            for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+            {
+                if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
+                    continue;
+                ListAssessment const& proof = in.slotProofs[slot];
+                bool const provenEmpty = proof.verdict == ListVerdict::ProvenEmpty && proof.setBonusProvenAbsent;
+                bool const provenSet = proof.verdict == ListVerdict::ProvenCandidates;
+                if (proof.verdict == ListVerdict::Incomplete || proof.verdict == ListVerdict::Invalid)
+                    searchComplete = false;
+                if (plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet && !provenEmpty)
+                    searchComplete = false;
+                if (plan.solved.status == PlayerbotsAutoGearSet::Status::SuitableSet && !provenSet)
+                    searchComplete = false;
+            }
+        }
         bool const finished = plan.solved.status == PlayerbotsAutoGearSet::Status::SuitableSet ||
                               plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet;
         plan.sourceComplete = searchComplete && finished;

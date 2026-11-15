@@ -41,7 +41,7 @@ File: `src/Bot/AutoGearNativeAuthority.h`. Coordinate-first. The IP snapshot is 
 
 Fill `CapInput` from the sender-thread snapshot and the equipment capture. The bot thread reads the copy, not the human. Final B compares the IP epoch and `IsPB59EquipmentCurrent` before any move. Unknown, stale, or a zero cap preserves.
 
-The fact-source matrix in `doc/PB59_CS02_NATIVE_FACT_SOURCE_MATRIX_2026-11-15.md` is the list of which copy each input uses.
+The fact-source matrix in `doc/PB59_CS02_NATIVE_FACT_SOURCE_MATRIX_2026-11-15.md` is the list of which copy each input uses. The read-only field and revision contract is `doc/PB59_CS02_NATIVE_ADAPTER_CONTRACT_2026-11-15.md`. It does not attach this plan to CS01's callback or retirement branches.
 
 ## Still not decided
 
