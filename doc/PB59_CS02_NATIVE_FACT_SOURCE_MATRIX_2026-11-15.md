@@ -1,7 +1,18 @@
 # PB59 CS02 native fact-source matrix
 
-Owner: CosmicCuddle. Coordination #59 review `6898131567`, at PB #30 `7021354829c92d9e61cc64dc12eb49ce7ea47f90`.
-This is a plan. It does not wire a command, read a live player, or change a shared file.
+Owner: CosmicCuddle. Coordination #59. This is a plan. It does not wire a command or change a shared file.
+
+## v2
+
+A loaded item template is not an eligible source. `sourceEligible` is a separate fact (possession, availability, and a real variant). `CopyBoundedSource` refuses to copy when the native row count exceeds the budget, before it builds the copied vector. Two random-property variants of one entry are both retained, and `sourceComplete` stays false so a short list is not treated as the whole universe. The shared solver is not changed to store those variants.
+
+Static capability (class, level, armour skill, weapon kind, and a known equip result) is not the final-set check. A `CanEquip` failure caused only by gear that a strip would remove stays a candidate. Unique, category, and weapon pairing stay on the existing solver.
+
+Final B compares an immutable `OwnerThreadCopy`: sender epoch, bot epoch, and equipment revision. It does not call `IsPB59EquipmentCurrent` or any other live `Player` from another thread. Quality and BiS gates stay on the command parse. A genuine no-set still requires `BagSpace::Enough`. Full or unknown bags stay a technical preserve.
+
+Explicit `match` defaults to the master's occupied combat-slot average, capped by config. `MatchSource::CommandingSender` and `MatchDenominator::FixedCountedSlots` are opt-in and await owner confirmation. Feature off does not call `ComposeCap`.
+
+## v1 rows
 
 Selection code only accepts facts the caller has already copied. A missing fact is `Unknown` and preserves. It is not an unavailable item and it is not a genuine no-set. Nothing here is allowed to dereference a human `Player` from the bot's map thread.
 

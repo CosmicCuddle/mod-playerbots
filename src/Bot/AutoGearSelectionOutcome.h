@@ -32,7 +32,11 @@ namespace PlayerbotsAutoGearSelection
 
     struct RecoveryRequest
     {
+        // The plan noticed a failure after a mutation. Not permission to undo it.
+        bool needed = false;
         RecoveryReason reason = RecoveryReason::None;
+        // Only the native transaction owner may set this. Selection never does.
+        bool restorePermitted = false;
     };
 
     static_assert(std::is_trivially_copyable_v<RecoveryRequest>);
@@ -61,23 +65,12 @@ namespace PlayerbotsAutoGearSelection
         RecoveryRequest recovery{};
     };
 
-    // StripToBags moves combat gear into empty storage. Body and tabard stay
-    // equipped. There is no deletion action. Full or unknown bags are a
-    // technical failure and preserve. A recovery reason is recorded only
-    // after a mutation has already started. Pure selection passes false.
+    // Planning only. restorePermitted stays false. StripToBags moves combat
+    // gear into empty storage. Body and tabard stay. Nothing is deleted.
     constexpr Outcome MapOutcome(bool authorityValid, PlayerbotsAutoGearCommand::PreparationResult prepared,
-        bool searchComplete, BagSpace bags, RecoveryReason technical, bool mutationStarted)
+        bool searchComplete, BagSpace bags)
     {
         using PlayerbotsAutoGearCommand::ResolveNextStep;
-        if (technical != RecoveryReason::None)
-        {
-            bool const moved = technical == RecoveryReason::MoveFailed || technical == RecoveryReason::ContextLost;
-            bool const mayRestore = mutationStarted && moved;
-            if (!mayRestore)
-                return {Disposition::TechnicalFailure, GearAction::Preserve, {}};
-            return {Disposition::TechnicalFailure, GearAction::Restore, RecoveryRequest{technical}};
-        }
-
         auto const step = ResolveNextStep(authorityValid, prepared, searchComplete);
         if (step == PlayerbotsAutoGearCommand::NextStep::CommitPreparedSet)
         {
@@ -92,6 +85,24 @@ namespace PlayerbotsAutoGearSelection
             return {Disposition::TechnicalFailure, GearAction::Preserve, {}};
         }
         return {};
+    }
+
+    // Records that recovery is needed. It does not permit restore.
+    constexpr RecoveryRequest NoteRecoveryNeeded(RecoveryReason reason)
+    {
+        if (reason == RecoveryReason::None)
+            return {};
+        return {true, reason, false};
+    }
+
+    // The native transaction owner is the only caller that may permit restore.
+    constexpr RecoveryRequest PermitRestore(RecoveryRequest const& needed)
+    {
+        if (!needed.needed || needed.reason == RecoveryReason::None)
+            return needed;
+        RecoveryRequest granted = needed;
+        granted.restorePermitted = true;
+        return granted;
     }
 }
 

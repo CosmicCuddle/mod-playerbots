@@ -371,30 +371,48 @@ int main()
             "missing authority preserves") &&
          ok;
 
-    PlanInput failed = Chest(66, tier0, 60);
-    failed.technical = RecoveryReason::MoveFailed;
-    Plan const moved = SelectFromFacts(failed, ScoreOf);
-    ok = Check(moved.outcome.disposition == Disposition::TechnicalFailure &&
-               moved.outcome.action == GearAction::Preserve &&
-               moved.outcome.recovery.reason == RecoveryReason::None,
+    Plan const moved = SelectFromFacts(Chest(66, tier0, 60), ScoreOf);
+    ok = Check(!moved.outcome.recovery.needed && !moved.outcome.recovery.restorePermitted,
             "pure selection does not authorize recovery") &&
          ok;
-    Outcome const afterMutation = MapOutcome(true, PlayerbotsAutoGearCommand::PreparationResult::NotPrepared, false,
-        BagSpace::Enough, RecoveryReason::MoveFailed, true);
-    ok = Check(afterMutation.action == GearAction::Restore &&
-               afterMutation.recovery.reason == RecoveryReason::MoveFailed,
-            "restore is recorded only after a mutation") &&
+    RecoveryRequest const needed = NoteRecoveryNeeded(RecoveryReason::MoveFailed);
+    ok = Check(needed.needed && !needed.restorePermitted, "recovery needed is not restore") && ok;
+    RecoveryRequest const granted = PermitRestore(needed);
+    ok = Check(granted.restorePermitted, "only an explicit grant permits restore") && ok;
+    int throws = 0;
+    auto throwing = [&](std::uint32_t, std::int32_t, std::uint32_t) -> std::uint32_t
+    {
+        ++throws;
+        throw 1;
+    };
+    Plan const threw = SelectFromFacts(Chest(66, tier0, 60), throwing);
+    ok = Check(threw.outcome.disposition == Disposition::Preserve && !threw.sourceComplete && throws > 0,
+            "a throwing scorer preserves") &&
          ok;
-    failed.technical = RecoveryReason::ContextLost;
-    ok = Check(SelectFromFacts(failed, ScoreOf).outcome.action == GearAction::Preserve &&
-               SelectFromFacts(failed, ScoreOf).outcome.recovery.reason == RecoveryReason::None,
-            "context loss does not authorize recovery") &&
+    throws = 0;
+    ItemFact malformed = Fact(66, 60, 4);
+    malformed.kind = Kind::OneHand;
+    std::vector<ItemFact> badFacts{malformed};
+    PlanInput badIn = Chest(66, badFacts, 60);
+    Plan const badPlan = SelectFromFacts(badIn, throwing);
+    ok = Check(badPlan.outcome.disposition == Disposition::Preserve && throws == 0, "malformed facts are not scored") &&
          ok;
-    failed.technical = RecoveryReason::InspectUnknown;
-    Plan const unknown = SelectFromFacts(failed, ScoreOf);
-    ok = Check(unknown.outcome.disposition == Disposition::TechnicalFailure &&
-               unknown.outcome.action == GearAction::Preserve,
-            "unknown inspect preserves") &&
+
+    PlanInput illegal = Chest(66, tier0, 60);
+    illegal.bot.weapons.mainhand = Bit(Kind::OneHand) | Bit(Kind::Shield);
+    illegal.bot.weaponsKnown = true;
+    ItemFact hand = Fact(66, 60, 15);
+    hand.kind = Kind::OneHand;
+    hand.armorSubtype = 0;
+    std::vector<ItemFact> hands{hand};
+    illegal.facts = hands;
+    illegal.eligibleMask = 1u << 15;
+    illegal.requiredMask = 1u << 15;
+    illegal.completeMask = 1u << 15;
+    Plan const invalid = SelectFromFacts(illegal, ScoreOf);
+    ok = Check(invalid.solved.status == PlayerbotsAutoGearSet::Status::Invalid && !invalid.sourceComplete &&
+               invalid.outcome.disposition == Disposition::Preserve,
+            "an invalid solver result is not a complete source") &&
          ok;
 
     PlanInput budget = Chest(66, tier0, 60);

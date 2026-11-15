@@ -48,9 +48,32 @@ namespace PlayerbotsAutoGearSelection
         return false;
     }
 
+    constexpr bool KnownCapMode(CapMode mode)
+    {
+        switch (mode)
+        {
+            case CapMode::Leveling:
+            case CapMode::Endgame:
+            case CapMode::Match:
+                return true;
+        }
+        return false;
+    }
+
+    // Match, including reset+match, is only CapMode::Match. Every other
+    // known form is Leveling or Endgame. An unknown mode preserves.
+    constexpr bool FormAllowsMode(CommandForm form, CapMode mode)
+    {
+        if (!KnownCommandForm(form) || !KnownCapMode(mode))
+            return false;
+        if (form == CommandForm::Match)
+            return mode == CapMode::Match;
+        return mode == CapMode::Leveling || mode == CapMode::Endgame;
+    }
+
     constexpr CapResult ResolveCommandEligibility(CommandForm form, CapInput const& in)
     {
-        if (!KnownCommandForm(form))
+        if (!FormAllowsMode(form, in.mode))
             return {};
         return ComposeCap(in);
     }

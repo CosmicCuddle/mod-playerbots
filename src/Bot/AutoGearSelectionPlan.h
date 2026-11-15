@@ -28,9 +28,6 @@ namespace PlayerbotsAutoGearSelection
         bool authorityValid = false;
         // Unknown until a real storage preflight says otherwise.
         BagSpace bags = BagSpace::Unknown;
-        RecoveryReason technical = RecoveryReason::None;
-        // Pure selection never sets this. Recovery stays unauthorized.
-        bool mutationStarted = false;
     };
 
     struct Plan
@@ -49,44 +46,53 @@ namespace PlayerbotsAutoGearSelection
         using PlayerbotsAutoGearCommand::PreparationResult;
         Plan plan;
         plan.factsSupplied = in.facts.size();
-        auto finish = [&](bool authority, PreparationResult prepared, bool searchComplete, RecoveryReason technical)
+        auto finish = [&](bool authority, PreparationResult prepared, bool searchComplete)
         {
-            plan.outcome = MapOutcome(authority, prepared, searchComplete, in.bags, technical, in.mutationStarted);
+            plan.sourceComplete = false;
+            plan.outcome = MapOutcome(authority, prepared, searchComplete, in.bags);
+            plan.outcome.recovery.restorePermitted = false;
             return plan;
         };
-        if (in.technical != RecoveryReason::None)
-            return finish(false, PreparationResult::NotPrepared, false, in.technical);
         if (!in.authorityValid || in.cap.preserve || in.cap.cap == 0)
-            return finish(false, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
+            return finish(false, PreparationResult::InvalidPolicy, false);
         if (!in.bot.levelKnown || !in.bot.classKnown || !in.bot.specKnown || !in.bot.roleKnown)
-            return finish(true, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
+            return finish(true, PreparationResult::InvalidPolicy, false);
         if ((in.eligibleMask & PlayerbotsAutoGearSet::WeaponMask) != 0 && !in.bot.weaponsKnown)
-            return finish(true, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
+            return finish(true, PreparationResult::InvalidPolicy, false);
+        if ((in.eligibleMask & ~PlayerbotsAutoGearSet::CombatMask) != 0 || (in.completeMask & ~in.eligibleMask) != 0)
+            return finish(true, PreparationResult::InvalidPolicy, false);
         // Bound before any candidate allocation or scoring.
         if (in.facts.size() > in.candidateBudget)
-            return finish(true, PreparationResult::NotPrepared, false, RecoveryReason::None);
+            return finish(true, PreparationResult::NotPrepared, false);
         for (ItemFact const& fact : in.facts)
         {
             FactDecision const decision = Classify(fact, in.bot, in.cap.cap);
             if (decision == FactDecision::Unknown || decision == FactDecision::Invalid)
-                return finish(true, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
+                return finish(true, PreparationResult::InvalidPolicy, false);
         }
 
         std::vector<AcceptedCandidate> accepted;
-        accepted.reserve(in.facts.size());
-        for (ItemFact const& fact : in.facts)
+        try
         {
-            PreparedFact const prepared = PrepareFact(fact, in.bot, in.cap.cap, scorer);
-            if (prepared.decision == FactDecision::Accept)
-                accepted.push_back(AcceptedCandidate{fact.slot, prepared.candidate});
+            accepted.reserve(in.facts.size());
+            for (ItemFact const& fact : in.facts)
+            {
+                PreparedFact const prepared = PrepareFact(fact, in.bot, in.cap.cap, scorer);
+                if (prepared.decision == FactDecision::Accept)
+                    accepted.push_back(AcceptedCandidate{fact.slot, prepared.candidate});
+            }
+        }
+        catch (...)
+        {
+            return finish(true, PreparationResult::NotPrepared, false);
         }
         plan.factsAccepted = accepted.size();
 
         DomainSet const domains = CollectDomains(accepted, in.eligibleMask, in.completeMask, in.candidateBudget);
         if (domains.status == DomainSet::Status::Bounded)
-            return finish(true, PreparationResult::NotPrepared, false, RecoveryReason::None);
+            return finish(true, PreparationResult::NotPrepared, false);
         if (domains.status != DomainSet::Status::Ok)
-            return finish(true, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
+            return finish(true, PreparationResult::InvalidPolicy, false);
 
         std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> views{};
         bool searchComplete = true;
@@ -114,9 +120,12 @@ namespace PlayerbotsAutoGearSelection
 
         plan.cap = in.cap.cap;
         plan.solved = PlayerbotsAutoGearSet::Solve(views, policy, in.candidateBudget, in.nodeBudget);
-        if (plan.solved.status == PlayerbotsAutoGearSet::Status::Incomplete)
+        if (plan.solved.status == PlayerbotsAutoGearSet::Status::Incomplete ||
+            plan.solved.status == PlayerbotsAutoGearSet::Status::Invalid)
             searchComplete = false;
-        plan.sourceComplete = searchComplete && plan.solved.status != PlayerbotsAutoGearSet::Status::Incomplete;
+        bool const finished = plan.solved.status == PlayerbotsAutoGearSet::Status::SuitableSet ||
+                              plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet;
+        plan.sourceComplete = searchComplete && finished;
 
         PreparationResult prepared = PreparationResult::InvalidPolicy;
         switch (plan.solved.status)
@@ -134,7 +143,9 @@ namespace PlayerbotsAutoGearSelection
                 prepared = PreparationResult::InvalidPolicy;
                 break;
         }
-        return finish(true, prepared, searchComplete, RecoveryReason::None);
+        plan.outcome = MapOutcome(true, prepared, searchComplete, in.bags);
+        plan.outcome.recovery.restorePermitted = false;
+        return plan;
     }
 }
 

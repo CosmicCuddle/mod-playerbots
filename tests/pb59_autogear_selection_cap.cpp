@@ -106,7 +106,10 @@ int main()
     CapInput match = Base(1, 40);
     match.mode = CapMode::Match;
     match.senderSampleKnown = false;
-    ok = Check(ComposeCap(match).cap == 78, "match does not require the average") && ok;
+    ok = Check(ComposeCap(match).preserve, "match without its own sample preserves") && ok;
+    match.matchSampleKnown = true;
+    match.matchAverage = 40;
+    ok = Check(ComposeCap(match).cap == 40, "explicit match keeps its average") && ok;
 
     CapInput unresolved = Base(2, 100);
     unresolved.mode = CapMode::Endgame;
@@ -140,10 +143,14 @@ int main()
     for (CommandForm form : kForms)
     {
         CapResult const got = ResolveCommandEligibility(form, shared);
-        ok = Check(KnownCommandForm(form) && got.preserve == plain.preserve && got.cap == plain.cap,
-                "forms share eligibility") &&
-             ok;
+        if (form == CommandForm::Match)
+            ok = Check(got.preserve, "match form rejects a leveling mode") && ok;
+        else
+            ok = Check(got.preserve == plain.preserve && got.cap == plain.cap, "non-match forms share the mode") && ok;
     }
+    CapInput badMode = shared;
+    badMode.mode = static_cast<CapMode>(9);
+    ok = Check(ResolveCommandEligibility(CommandForm::Plain, badMode).preserve, "unknown mode preserves") && ok;
     CapInput numeric = Base(1, 100);
     numeric.typedItemLevelPresent = true;
     numeric.typedItemLevel = 50;

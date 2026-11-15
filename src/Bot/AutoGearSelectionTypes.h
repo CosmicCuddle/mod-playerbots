@@ -85,6 +85,9 @@ namespace PlayerbotsAutoGearSelection
         // Result of the bot's real equip check. False equipKnown is Unknown.
         bool equipKnown = false;
         bool equipAllowed = false;
+        // CanEquip failed only because of gear that a strip would remove.
+        // That is a final-set question, not a static miss.
+        bool blockedOnlyByCurrentGear = false;
     };
 
     inline constexpr std::uint32_t ClassBit(std::uint8_t classId)

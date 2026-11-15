@@ -44,6 +44,10 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t typedItemLevel = 0;
         bool senderSampleKnown = false;
         std::uint32_t senderAverage = 0;
+        // Explicit match target. Default callers leave this unset.
+        // Legacy match fills it from the master's occupied-slot average.
+        bool matchSampleKnown = false;
+        std::uint32_t matchAverage = 0;
     };
 
     struct CapResult
@@ -57,6 +61,8 @@ namespace PlayerbotsAutoGearSelection
     // A zero result is preserve, never unlimited.
     constexpr CapResult ComposeCap(CapInput const& in)
     {
+        if (in.mode != CapMode::Leveling && in.mode != CapMode::Endgame && in.mode != CapMode::Match)
+            return {};
         if (!in.playerContext || !in.progressionContext)
             return {};
         if (in.typedItemLevelPresent && in.typedItemLevel == 0)
@@ -74,6 +80,13 @@ namespace PlayerbotsAutoGearSelection
             if (!in.senderSampleKnown || in.senderAverage == 0)
                 return {};
             cap = cap < in.senderAverage ? cap : in.senderAverage;
+        }
+        else if (in.mode == CapMode::Match)
+        {
+            // Do not replace an explicit match with the tier cap alone.
+            if (!in.matchSampleKnown || in.matchAverage == 0)
+                return {};
+            cap = cap < in.matchAverage ? cap : in.matchAverage;
         }
         if (cap == 0)
             return {};

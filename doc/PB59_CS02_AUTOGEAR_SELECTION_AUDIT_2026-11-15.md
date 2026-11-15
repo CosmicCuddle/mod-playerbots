@@ -35,7 +35,7 @@ The two plans are `doc/PB59_CS02_NATIVE_FACT_SOURCE_MATRIX_2026-11-15.md` and `d
 
 Darkmoon fixtures stay synthetic. The real rows are coordination #64.
 
-Local runs after these corrections: GCC 13 and Clang 18 each report `checks=42` for the cap fixture and `checks=50` for the plan fixture. GCC ASan+UBSan reports the same two counts. Clang ASan+UBSan still cannot link: `libclang_rt.asan-x86_64.a` is not installed. No hosted CI was started from here.
+Later corrections, still on `69943153` and not rebased onto `881256249e`: command parsing keeps the occupied master-slot match unless a caller opts into another source or denominator; an unknown mode or a mismatched form preserves; pure selection cannot permit restore; `sourceComplete` is false for Invalid and Incomplete. The fact-source matrix v2 and the set-bonus comparison are separate files. GCC 13, Clang 18, and GCC ASan+UBSan each report cap 44, plan 52, command parse 22, fact source 7, and set bonus 5. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
 
 ## Integration still waiting on Maintenance
 

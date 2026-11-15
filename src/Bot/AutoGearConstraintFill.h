@@ -63,7 +63,7 @@ namespace PlayerbotsAutoGearSelection
         if ((fact.hasGem && fact.gemItemLevel == 0) || (fact.hasEnchant && fact.enchantItemLevel == 0))
             return FactDecision::Invalid;
 
-        if (!fact.equipAllowed)
+        if (!fact.equipAllowed && !fact.blockedOnlyByCurrentGear)
             return FactDecision::Unavailable;
         if (fact.itemLevel > cap || fact.requiredLevel > bot.level)
             return FactDecision::Unavailable;
