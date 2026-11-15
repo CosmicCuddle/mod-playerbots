@@ -4055,6 +4055,17 @@ uint32 PlayerbotFactory::CalcMixedGearScore(uint32 gs, uint32 quality)
     return gs * PlayerbotAI::GetItemScoreMultiplier(ItemQualities(quality));
 }
 
+PlayerbotsAutoGearSet::Result PlayerbotFactory::PlanEquipmentSet(
+    std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> const& domains,
+    PlayerbotsAutoGearSet::Policy const& policy, std::size_t candidateBudget, std::size_t nodeBudget)
+{
+    static_assert(EQUIPMENT_SLOT_END == PlayerbotsAutoGearSet::Slots &&
+        EQUIPMENT_SLOT_MAINHAND == PlayerbotsAutoGearSet::Main &&
+        EQUIPMENT_SLOT_OFFHAND == PlayerbotsAutoGearSet::Off &&
+        EQUIPMENT_SLOT_RANGED == PlayerbotsAutoGearSet::Ranged);
+    return PlayerbotsAutoGearSet::Solve(domains, policy, candidateBudget, nodeBudget);
+}
+
 void PlayerbotFactory::DestroyEquippedGear(Player* bot)
 {
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)

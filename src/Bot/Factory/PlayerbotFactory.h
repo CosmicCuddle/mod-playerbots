@@ -9,6 +9,7 @@
 
 #include "InventoryAction.h"
 #include "AutoGearEquipmentSample.h"
+#include "AutoGearSetSolver.h"
 #if __has_include("EquipmentCaptureState.h")
 #include "AutoGearNativeAuthority.h"
 #endif
@@ -87,6 +88,10 @@ public:
     void InitAmmo();
     static uint32 CalcMixedGearScore(uint32 gs, uint32 quality);
     static void DestroyEquippedGear(Player* bot);
+    // Complete copied candidate universe only; never modifies bot inventory.
+    static PlayerbotsAutoGearSet::Result PlanEquipmentSet(
+        std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> const& domains,
+        PlayerbotsAutoGearSet::Policy const& policy, std::size_t candidateBudget, std::size_t nodeBudget);
     struct EquipmentStorageMove
     {
         ObjectGuid itemGuid;
