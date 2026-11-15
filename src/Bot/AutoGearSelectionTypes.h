@@ -90,9 +90,56 @@ namespace PlayerbotsAutoGearSelection
         bool blockedOnlyByCurrentGear = false;
     };
 
+    // WotLK classes are 1..11. Anything else returns 0 and does not shift.
     inline constexpr std::uint32_t ClassBit(std::uint8_t classId)
     {
-        return classId >= 1 && classId <= 31 ? std::uint32_t{1} << (classId - 1) : 0;
+        if (classId < 1 || classId > 11)
+            return 0;
+        return std::uint32_t{1} << (classId - 1);
+    }
+
+    inline constexpr bool ValidWotlkClass(std::uint8_t classId)
+    {
+        return classId >= 1 && classId <= 11;
+    }
+
+    inline constexpr bool ValidSpecTab(std::uint8_t specTab)
+    {
+        return specTab <= 2 || specTab == 10;
+    }
+
+    inline constexpr bool ValidRole(Role role)
+    {
+        switch (role)
+        {
+            case Role::Any:
+            case Role::Tank:
+            case Role::Healer:
+            case Role::Melee:
+            case Role::Caster:
+                return true;
+        }
+        return false;
+    }
+
+    inline constexpr bool ValidWeaponKind(PlayerbotsAutoGearWeapons::Kind kind)
+    {
+        switch (kind)
+        {
+            case PlayerbotsAutoGearWeapons::Kind::OneHand:
+            case PlayerbotsAutoGearWeapons::Kind::TwoHand:
+            case PlayerbotsAutoGearWeapons::Kind::Shield:
+            case PlayerbotsAutoGearWeapons::Kind::Holdable:
+            case PlayerbotsAutoGearWeapons::Kind::Bow:
+            case PlayerbotsAutoGearWeapons::Kind::Gun:
+            case PlayerbotsAutoGearWeapons::Kind::Crossbow:
+            case PlayerbotsAutoGearWeapons::Kind::Wand:
+            case PlayerbotsAutoGearWeapons::Kind::Thrown:
+            case PlayerbotsAutoGearWeapons::Kind::Relic:
+            case PlayerbotsAutoGearWeapons::Kind::Count:
+                return true;
+        }
+        return false;
     }
 }
 

@@ -1,7 +1,9 @@
 #include "AutoGearConstraintFill.h"
+#include "AutoGearSelectionPlan.h"
 #include "AutoGearVariantSource.h"
 #include <array>
 #include <iostream>
+#include <vector>
 
 using namespace PlayerbotsAutoGearSelection;
 using PlayerbotsAutoGearWeapons::Kind;
@@ -61,15 +63,53 @@ int main()
     loaded.entryId = 100;
     loaded.itemLevel = 60;
     loaded.templateLoaded = true;
-    loaded.sourceEligible = false;
+    loaded.eligibility = SourceEligibility::KnownUnavailable;
     loaded.staticCapabilityKnown = true;
     loaded.staticCapable = true;
     std::array<SourceRow, 1> onlyLoaded{{loaded}};
     CopiedSource const notEligible = CopyBoundedSource(onlyLoaded, 4);
-    ok = Check(notEligible.rows.empty(), "a loaded template is not an eligible source") && ok;
+    ok = Check(notEligible.rows.empty() && notEligible.sourceComplete && notEligible.status == CopyStatus::Copied,
+            "known-unavailable is omitted and the source can still be complete") &&
+         ok;
+
+    SourceRow unknown = loaded;
+    unknown.eligibility = SourceEligibility::Unknown;
+    std::array<SourceRow, 1> unknownRows{{unknown}};
+    CopiedSource const unknownCopy = CopyBoundedSource(unknownRows, 4);
+    ok = Check(unknownCopy.rows.empty() && !unknownCopy.sourceComplete && unknownCopy.status == CopyStatus::Incomplete,
+            "unknown eligibility is not an empty complete source") &&
+         ok;
+    SourceRow unloaded = loaded;
+    unloaded.eligibility = SourceEligibility::KnownEligible;
+    unloaded.templateLoaded = false;
+    std::array<SourceRow, 1> unloadedRows{{unloaded}};
+    ok = Check(!CopyBoundedSource(unloadedRows, 4).sourceComplete, "an unloaded template is incomplete") && ok;
+    SourceRow unknownCapability = unloaded;
+    unknownCapability.templateLoaded = true;
+    unknownCapability.staticCapabilityKnown = false;
+    std::array<SourceRow, 1> capabilityRows{{unknownCapability}};
+    ok = Check(!CopyBoundedSource(capabilityRows, 4).sourceComplete, "unknown capability is incomplete") && ok;
+    SourceRow zeroEntry = unloaded;
+    zeroEntry.templateLoaded = true;
+    zeroEntry.entryId = 0;
+    std::array<SourceRow, 1> zeroEntryRows{{zeroEntry}};
+    ok = Check(!CopyBoundedSource(zeroEntryRows, 4).sourceComplete, "a zero entry is incomplete") && ok;
+    SourceRow zeroLevel = unloaded;
+    zeroLevel.templateLoaded = true;
+    zeroLevel.itemLevel = 0;
+    std::array<SourceRow, 1> zeroLevelRows{{zeroLevel}};
+    ok = Check(!CopyBoundedSource(zeroLevelRows, 4).sourceComplete, "a zero item level is incomplete") && ok;
+    SourceRow incapable = unloaded;
+    incapable.templateLoaded = true;
+    incapable.staticCapable = false;
+    std::array<SourceRow, 1> incapableRows{{incapable}};
+    CopiedSource const incapableCopy = CopyBoundedSource(incapableRows, 4);
+    ok = Check(incapableCopy.rows.empty() && incapableCopy.sourceComplete,
+            "known-incapable is not unknown") &&
+         ok;
 
     SourceRow propA = loaded;
-    propA.sourceEligible = true;
+    propA.eligibility = SourceEligibility::KnownEligible;
     propA.randomProperty = 1;
     SourceRow propB = propA;
     propB.randomProperty = 2;
@@ -105,12 +145,80 @@ int main()
             "a known equip miss stays unavailable") &&
          ok;
 
-    OwnerThreadCopy published{11, 22, 33, true};
+    OwnerThreadCopy published;
+    published.senderEpoch = 11;
+    published.botEpoch = 22;
+    published.senderIpRevision = 33;
+    published.senderEquipmentRevision = 44;
+    published.botEquipmentRevision = 55;
+    published.sessionIncarnation = 66;
+    published.botIncarnation = 77;
+    published.policyRevision = 88;
+    published.immutable = true;
     OwnerThreadCopy same = published;
     OwnerThreadCopy otherBot = published;
     otherBot.botEpoch = 99;
+    OwnerThreadCopy otherSenderGear = published;
+    otherSenderGear.senderEquipmentRevision = 1;
+    OwnerThreadCopy otherBotGear = published;
+    otherBotGear.botEquipmentRevision = 1;
+    OwnerThreadCopy otherSession = published;
+    otherSession.sessionIncarnation = 1;
+    OwnerThreadCopy otherPolicy = published;
+    otherPolicy.policyRevision = 1;
+    OwnerThreadCopy zeroPolicy = published;
+    zeroPolicy.policyRevision = 0;
+    OwnerThreadCopy mutableCopy = published;
+    mutableCopy.immutable = false;
     ok = Check(SameFinalCopy(published, same) && !SameFinalCopy(published, otherBot),
             "final B compares sender and bot epochs on the copy") &&
+         ok;
+    ok = Check(!SameFinalCopy(published, otherSenderGear) && !SameFinalCopy(published, otherBotGear) &&
+               !SameFinalCopy(published, otherSession) && !SameFinalCopy(published, otherPolicy),
+            "final B compares each revision on its own") &&
+         ok;
+    ok = Check(!SameFinalCopy(published, zeroPolicy) && !SameFinalCopy(published, mutableCopy),
+            "a zero or mutable revision is not the same copy") &&
+         ok;
+
+    auto counting = [](std::uint32_t, std::int32_t, std::uint32_t) -> std::uint32_t
+    {
+        return 1;
+    };
+    PlanInput unknownPlan;
+    unknownPlan.cap = CapResult{false, 66};
+    unknownPlan.bot = KnownMage();
+    unknownPlan.eligibleMask = 1u << 4;
+    unknownPlan.requiredMask = 1u << 4;
+    unknownPlan.completeMask = 1u << 4;
+    unknownPlan.authorityValid = true;
+    unknownPlan.bags = BagSpace::Enough;
+    unknownPlan.hasNativeSource = true;
+    unknownPlan.nativeRows = unknownRows;
+    unknownPlan.sourceBudget = 4;
+    Plan const unknownResult = SelectFromFacts(unknownPlan, counting);
+    ok = Check(unknownResult.outcome.disposition == Disposition::Preserve &&
+               unknownResult.outcome.action != GearAction::StripToBags && !unknownResult.sourceComplete,
+            "an unknown native row cannot authorize a strip") &&
+         ok;
+
+    PlanInput knownEmpty = unknownPlan;
+    knownEmpty.nativeRows = onlyLoaded;
+    Plan const knownEmptyResult = SelectFromFacts(knownEmpty, counting);
+    ok = Check(knownEmptyResult.outcome.disposition == Disposition::GenuineNoSet &&
+               knownEmptyResult.outcome.action == GearAction::StripToBags && knownEmptyResult.sourceComplete,
+            "a known-empty native source can still be complete") &&
+         ok;
+
+    ItemFact extra = KnownChest();
+    extra.id = 100;
+    extra.randomProperty = 1;
+    std::array<ItemFact, 1> extraFacts{{extra}};
+    PlanInput extraPlan = unknownPlan;
+    extraPlan.facts = extraFacts;
+    Plan const extraResult = SelectFromFacts(extraPlan, counting);
+    ok = Check(extraResult.outcome.disposition == Disposition::Preserve && !extraResult.sourceComplete,
+            "facts cannot outrun an unknown native source") &&
          ok;
 
     if (!ok)

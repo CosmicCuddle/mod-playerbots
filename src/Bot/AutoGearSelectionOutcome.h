@@ -30,13 +30,11 @@ namespace PlayerbotsAutoGearSelection
         InspectUnknown
     };
 
+    // Diagnostic only. Nothing here can permit a restore.
     struct RecoveryRequest
     {
-        // The plan noticed a failure after a mutation. Not permission to undo it.
         bool needed = false;
         RecoveryReason reason = RecoveryReason::None;
-        // Only the native transaction owner may set this. Selection never does.
-        bool restorePermitted = false;
     };
 
     static_assert(std::is_trivially_copyable_v<RecoveryRequest>);
@@ -65,8 +63,8 @@ namespace PlayerbotsAutoGearSelection
         RecoveryRequest recovery{};
     };
 
-    // Planning only. restorePermitted stays false. StripToBags moves combat
-    // gear into empty storage. Body and tabard stay. Nothing is deleted.
+    // Planning only. StripToBags moves combat gear into empty storage.
+    // Body and tabard stay. Nothing is deleted.
     constexpr Outcome MapOutcome(bool authorityValid, PlayerbotsAutoGearCommand::PreparationResult prepared,
         bool searchComplete, BagSpace bags)
     {
@@ -92,17 +90,7 @@ namespace PlayerbotsAutoGearSelection
     {
         if (reason == RecoveryReason::None)
             return {};
-        return {true, reason, false};
-    }
-
-    // The native transaction owner is the only caller that may permit restore.
-    constexpr RecoveryRequest PermitRestore(RecoveryRequest const& needed)
-    {
-        if (!needed.needed || needed.reason == RecoveryReason::None)
-            return needed;
-        RecoveryRequest granted = needed;
-        granted.restorePermitted = true;
-        return granted;
+        return {true, reason};
     }
 }
 

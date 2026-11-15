@@ -372,13 +372,10 @@ int main()
          ok;
 
     Plan const moved = SelectFromFacts(Chest(66, tier0, 60), ScoreOf);
-    ok = Check(!moved.outcome.recovery.needed && !moved.outcome.recovery.restorePermitted,
-            "pure selection does not authorize recovery") &&
-         ok;
+    ok = Check(!moved.outcome.recovery.needed, "pure selection does not authorize recovery") && ok;
     RecoveryRequest const needed = NoteRecoveryNeeded(RecoveryReason::MoveFailed);
-    ok = Check(needed.needed && !needed.restorePermitted, "recovery needed is not restore") && ok;
-    RecoveryRequest const granted = PermitRestore(needed);
-    ok = Check(granted.restorePermitted, "only an explicit grant permits restore") && ok;
+    ok = Check(needed.needed && needed.reason == RecoveryReason::MoveFailed, "recovery needed is diagnostic only") &&
+         ok;
     int throws = 0;
     auto throwing = [&](std::uint32_t, std::int32_t, std::uint32_t) -> std::uint32_t
     {
@@ -507,6 +504,66 @@ int main()
     DomainSet const bounded = CollectDomains(std::span<AcceptedCandidate const>(extra, 2), 1u << 4, 1u << 4, 1);
     ok = Check(bounded.status == DomainSet::Status::Bounded && bounded.slots[4].empty(),
             "domain overflow keeps no partial list") &&
+         ok;
+
+    int shifts = 0;
+    auto shiftScorer = [&](std::uint32_t, std::int32_t, std::uint32_t) -> std::uint32_t
+    {
+        ++shifts;
+        return 1;
+    };
+    BotView class255 = Mage(60);
+    class255.classId = 255;
+    PlanInput classIn = Chest(66, one, 60);
+    classIn.bot = class255;
+    Plan const classPlan = SelectFromFacts(classIn, shiftScorer);
+    ok = Check(classPlan.outcome.disposition == Disposition::Preserve && shifts == 0 &&
+               Classify(one[0], class255, 66) == FactDecision::Invalid && ClassBit(255) == 0,
+            "class 255 is invalid before any shift") &&
+         ok;
+    BotView spec255 = Mage(60);
+    spec255.specTab = 255;
+    ok = Check(Classify(one[0], spec255, 66) == FactDecision::Invalid, "spec 255 is invalid") && ok;
+    BotView role255 = Mage(60);
+    role255.role = static_cast<Role>(255);
+    ok = Check(Classify(one[0], role255, 66) == FactDecision::Invalid, "role 255 is invalid") && ok;
+    ItemFact kind255 = one[0];
+    kind255.kind = static_cast<Kind>(255);
+    ok = Check(Classify(kind255, Mage(60), 66) == FactDecision::Invalid, "weapon kind 255 is invalid before a shift") &&
+         ok;
+
+    PlanInput emptyRequired = Chest(66, one, 60);
+    emptyRequired.requiredMask = 0;
+    shifts = 0;
+    Plan const noRequired = SelectFromFacts(emptyRequired, shiftScorer);
+    ok = Check(noRequired.outcome.disposition == Disposition::Preserve && shifts == 0,
+            "an empty required mask preserves before scoring") &&
+         ok;
+    PlanInput outside = Chest(66, one, 60);
+    outside.requiredMask = (1u << 4) | (1u << 5);
+    shifts = 0;
+    Plan const outsidePlan = SelectFromFacts(outside, shiftScorer);
+    ok = Check(outsidePlan.outcome.disposition == Disposition::Preserve && shifts == 0,
+            "a required bit outside the eligible mask preserves") &&
+         ok;
+
+    PlanInput alloc = Chest(66, one, 60);
+    alloc.allocationFault = PlanInput::AllocationPoint::Domain;
+    Plan const domainAlloc = SelectFromFacts(alloc, ScoreOf);
+    ok = Check(domainAlloc.outcome.disposition == Disposition::Preserve && !domainAlloc.sourceComplete,
+            "a domain allocation failure preserves") &&
+         ok;
+    alloc.allocationFault = PlanInput::AllocationPoint::Solve;
+    Plan const solveAlloc = SelectFromFacts(alloc, ScoreOf);
+    ok = Check(solveAlloc.outcome.disposition == Disposition::Preserve && !solveAlloc.sourceComplete &&
+               solveAlloc.outcome.action != GearAction::StripToBags,
+            "a solver allocation failure preserves") &&
+         ok;
+    alloc.allocationFault = PlanInput::AllocationPoint::Scoring;
+    shifts = 0;
+    Plan const scoreAlloc = SelectFromFacts(alloc, shiftScorer);
+    ok = Check(scoreAlloc.outcome.disposition == Disposition::Preserve && shifts == 0,
+            "a scoring allocation failure preserves") &&
          ok;
 
     if (!ok)

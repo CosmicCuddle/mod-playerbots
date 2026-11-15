@@ -2,13 +2,25 @@
 
 Owner: CosmicCuddle. Coordination #59. This is a plan. It does not wire a command or change a shared file.
 
+## v3
+
+`SourceEligibility` is Unknown, KnownUnavailable, or KnownEligible. The default is Unknown. Known-unavailable and known-incapable rows are omitted and can leave a complete source. An unloaded template, unknown capability, unknown eligibility, a zero entry, or a zero item level makes the copy Incomplete and clears it. `SelectFromFacts` runs that copy when `hasNativeSource` is set, before scoring, and preserves unless the fact list is the same set of variants. A complete empty known source can still be a genuine no-set when bags are Enough. An unknown row cannot.
+
+`AutoGearVariantSolver.h` is a prototype beside the shared solver. It does not edit `AutoGearSetSolver.h`. The equipped identity is entry plus signed random property. Unique-equipped, MaxCount, and category limits use the template entry. On a non-variant domain the chosen entries, score, and status match `PlayerbotsAutoGearSet::Solve`. Past the candidate budget the result is Incomplete, not NoSet. The shared solver still cannot store two properties of one entry, so that case stays Incomplete on the old path (`IncompleteVariants`).
+
+Class, spec tab, role, and weapon kind are rejected before a bit shift. WotLK classes are 1 through 11. The required mask must be a non-empty subset of the eligible mask. An allocation failure in scoring, domain build, or solve preserves. `NoteRecoveryNeeded` only records a reason. This lane has no function that permits restore. The native transaction owner still has to prove that.
+
+`SameFinalCopy` requires both copies to be immutable and compares sender epoch, bot epoch, sender IP revision, sender equipment revision, bot equipment revision, session incarnation, bot incarnation, and policy revision. A zero revision does not match. It does not read a live `Player`.
+
+The set-bonus comparison accepts at most four rules. A zero set id, a zero piece count, a duplicate set id, a duplicate piece id, or a bonus that would overflow is bounded and scores zero. No rule means the joint score is the sum of the base scores.
+
 ## v2
 
-A loaded item template is not an eligible source. `sourceEligible` is a separate fact (possession, availability, and a real variant). `CopyBoundedSource` refuses to copy when the native row count exceeds the budget, before it builds the copied vector. Two random-property variants of one entry are both retained, and `sourceComplete` stays false so a short list is not treated as the whole universe. The shared solver is not changed to store those variants.
+A loaded item template is not an eligible source. Eligibility is a separate fact (possession, availability, and a real variant). `CopyBoundedSource` refuses to copy when the native row count exceeds the budget, before it builds the copied vector. Two random-property variants of one entry are both retained, and `sourceComplete` stays false so a short list is not treated as the whole universe. The shared solver is not changed to store those variants.
 
 Static capability (class, level, armour skill, weapon kind, and a known equip result) is not the final-set check. A `CanEquip` failure caused only by gear that a strip would remove stays a candidate. Unique, category, and weapon pairing stay on the existing solver.
 
-Final B compares an immutable `OwnerThreadCopy`: sender epoch, bot epoch, and equipment revision. It does not call `IsPB59EquipmentCurrent` or any other live `Player` from another thread. Quality and BiS gates stay on the command parse. A genuine no-set still requires `BagSpace::Enough`. Full or unknown bags stay a technical preserve.
+Final B compares an immutable `OwnerThreadCopy`. It does not call `IsPB59EquipmentCurrent` or any other live `Player` from another thread. Quality and BiS gates stay on the command parse. A genuine no-set still requires `BagSpace::Enough`. Full or unknown bags stay a technical preserve.
 
 Explicit `match` defaults to the master's occupied combat-slot average, capped by config. `MatchSource::CommandingSender` and `MatchDenominator::FixedCountedSlots` are opt-in and await owner confirmation. Feature off does not call `ComposeCap`.
 

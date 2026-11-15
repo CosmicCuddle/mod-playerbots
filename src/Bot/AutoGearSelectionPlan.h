@@ -11,6 +11,8 @@
 #include "AutoGearConstraintFill.h"
 #include "AutoGearSelectionCap.h"
 #include "AutoGearSelectionOutcome.h"
+#include "AutoGearVariantSource.h"
+#include <new>
 #include <vector>
 
 namespace PlayerbotsAutoGearSelection
@@ -28,6 +30,19 @@ namespace PlayerbotsAutoGearSelection
         bool authorityValid = false;
         // Unknown until a real storage preflight says otherwise.
         BagSpace bags = BagSpace::Unknown;
+        // When set, native rows are copied before any fact is scored.
+        bool hasNativeSource = false;
+        std::span<SourceRow const> nativeRows{};
+        std::size_t sourceBudget = 0;
+        // Fixture hook. Production callers leave this at None.
+        enum class AllocationPoint : std::uint8_t
+        {
+            None,
+            Scoring,
+            Domain,
+            Solve
+        };
+        AllocationPoint allocationFault = AllocationPoint::None;
     };
 
     struct Plan
@@ -50,11 +65,47 @@ namespace PlayerbotsAutoGearSelection
         {
             plan.sourceComplete = false;
             plan.outcome = MapOutcome(authority, prepared, searchComplete, in.bags);
-            plan.outcome.recovery.restorePermitted = false;
             return plan;
         };
         if (!in.authorityValid || in.cap.preserve || in.cap.cap == 0)
             return finish(false, PreparationResult::InvalidPolicy, false);
+        if (in.hasNativeSource)
+        {
+            try
+            {
+                CopiedSource const copied = CopyBoundedSource(in.nativeRows, in.sourceBudget);
+                if (!copied.sourceComplete)
+                    return finish(true, PreparationResult::NotPrepared, false);
+                for (ItemFact const& fact : in.facts)
+                {
+                    bool found = false;
+                    for (SourceRow const& row : copied.rows)
+                    {
+                        if (row.entryId == fact.id && row.randomProperty == fact.randomProperty)
+                            found = true;
+                    }
+                    if (!found)
+                        return finish(true, PreparationResult::NotPrepared, false);
+                }
+                for (SourceRow const& row : copied.rows)
+                {
+                    bool found = false;
+                    for (ItemFact const& fact : in.facts)
+                    {
+                        if (fact.id == row.entryId && fact.randomProperty == row.randomProperty)
+                            found = true;
+                    }
+                    if (!found)
+                        return finish(true, PreparationResult::NotPrepared, false);
+                }
+            }
+            catch (...)
+            {
+                return finish(true, PreparationResult::NotPrepared, false);
+            }
+        }
+        if (in.requiredMask == 0 || (in.requiredMask & ~in.eligibleMask) != 0)
+            return finish(true, PreparationResult::InvalidPolicy, false);
         if (!in.bot.levelKnown || !in.bot.classKnown || !in.bot.specKnown || !in.bot.roleKnown)
             return finish(true, PreparationResult::InvalidPolicy, false);
         if ((in.eligibleMask & PlayerbotsAutoGearSet::WeaponMask) != 0 && !in.bot.weaponsKnown)
@@ -72,8 +123,11 @@ namespace PlayerbotsAutoGearSelection
         }
 
         std::vector<AcceptedCandidate> accepted;
+        DomainSet domains;
         try
         {
+            if (in.allocationFault == PlanInput::AllocationPoint::Scoring)
+                throw std::bad_alloc();
             accepted.reserve(in.facts.size());
             for (ItemFact const& fact : in.facts)
             {
@@ -88,7 +142,16 @@ namespace PlayerbotsAutoGearSelection
         }
         plan.factsAccepted = accepted.size();
 
-        DomainSet const domains = CollectDomains(accepted, in.eligibleMask, in.completeMask, in.candidateBudget);
+        try
+        {
+            if (in.allocationFault == PlanInput::AllocationPoint::Domain)
+                throw std::bad_alloc();
+            domains = CollectDomains(accepted, in.eligibleMask, in.completeMask, in.candidateBudget);
+        }
+        catch (...)
+        {
+            return finish(true, PreparationResult::NotPrepared, false);
+        }
         if (domains.status == DomainSet::Status::Bounded)
             return finish(true, PreparationResult::NotPrepared, false);
         if (domains.status != DomainSet::Status::Ok)
@@ -119,7 +182,17 @@ namespace PlayerbotsAutoGearSelection
         policy.known = true;
 
         plan.cap = in.cap.cap;
-        plan.solved = PlayerbotsAutoGearSet::Solve(views, policy, in.candidateBudget, in.nodeBudget);
+        try
+        {
+            if (in.allocationFault == PlanInput::AllocationPoint::Solve)
+                throw std::bad_alloc();
+            plan.solved = PlayerbotsAutoGearSet::Solve(views, policy, in.candidateBudget, in.nodeBudget);
+        }
+        catch (...)
+        {
+            plan.sourceComplete = false;
+            return finish(true, PreparationResult::NotPrepared, false);
+        }
         if (plan.solved.status == PlayerbotsAutoGearSet::Status::Incomplete ||
             plan.solved.status == PlayerbotsAutoGearSet::Status::Invalid)
             searchComplete = false;
@@ -144,7 +217,6 @@ namespace PlayerbotsAutoGearSelection
                 break;
         }
         plan.outcome = MapOutcome(true, prepared, searchComplete, in.bags);
-        plan.outcome.recovery.restorePermitted = false;
         return plan;
     }
 }

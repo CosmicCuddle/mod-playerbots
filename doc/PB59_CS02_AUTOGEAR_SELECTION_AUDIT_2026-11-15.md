@@ -20,6 +20,8 @@ Delivered on `feature/cs02-pb59-autogear-selection-20261115`, still based on `69
 | RNDBOT-only tier-sync predicate | `src/Bot/AutoGearRndbotTierSync.h` |
 | Cap, command-parity, and population tests | `tests/pb59_autogear_selection_cap.cpp` |
 | Selection, constraint, Darkmoon, and outcome tests | `tests/pb59_autogear_selection_plan.cpp` |
+| Variant-aware solver prototype | `src/Bot/AutoGearVariantSolver.h` |
+| Differential variant-solver tests | `tests/pb59_autogear_variant_solver.cpp` |
 
 CS01 review `6898131567` is applied on this branch, still based on `69943153`. It is not rebased onto PB `881256249e`.
 
@@ -35,7 +37,11 @@ The two plans are `doc/PB59_CS02_NATIVE_FACT_SOURCE_MATRIX_2026-11-15.md` and `d
 
 Darkmoon fixtures stay synthetic. The real rows are coordination #64.
 
-Later corrections, still on `69943153` and not rebased onto `881256249e`: command parsing keeps the occupied master-slot match unless a caller opts into another source or denominator; an unknown mode or a mismatched form preserves; pure selection cannot permit restore; `sourceComplete` is false for Invalid and Incomplete. The fact-source matrix v2 and the set-bonus comparison are separate files. GCC 13, Clang 18, and GCC ASan+UBSan each report cap 44, plan 52, command parse 22, fact source 7, and set bonus 5. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
+Later corrections, still on `69943153` and not rebased onto `881256249e`: command parsing keeps the occupied master-slot match unless a caller opts into another source or denominator; an unknown mode or a mismatched form preserves; pure selection cannot permit restore; `sourceComplete` is false for Invalid and Incomplete. The fact-source matrix v2 and the set-bonus comparison are separate files.
+
+CS01 review `6898853300` is applied on the same head. `CopyBoundedSource` keeps known-unavailable separate from unknown or malformed. Any unknown, unloaded, zero-entry, or zero-item-level row is Incomplete, so it cannot become a complete empty list and authorize a strip. `SourceEligibility` defaults to Unknown. The planner copies that source before it scores, and the fact list has to match the copy. Class (1–11), spec tab, role, and weapon kind are validated before any shift. The required mask must be a non-empty subset of the eligible mask. An allocation failure while building the domain or solving preserves, as a throwing scorer already did. `NoteRecoveryNeeded` is diagnostic only. There is no public restore grant on this lane. `SameFinalCopy` compares sender IP, sender equipment, bot equipment, session and bot incarnations, and policy, and only on immutable copies. The set-bonus demo bounds its rule count and rejects a malformed, duplicate, or overflowing rule. It invents no weight. `AutoGearVariantSolver.h` is a prototype: variant identity is entry plus random property, and unique, MaxCount, and category use the template entry. On non-variant domains it matches `AutoGearSetSolver`. That shared header is not edited. Feature off and the match default are unchanged. Darkmoon stays synthetic.
+
+GCC 13, Clang 18, and GCC ASan+UBSan each report cap 44, plan 60, command parse 22, fact source 18, set bonus 12, and variant solver 14. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
 
 ## Integration still waiting on Maintenance
 

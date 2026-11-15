@@ -46,12 +46,18 @@ namespace PlayerbotsAutoGearSelection
 
         if (fact.slot >= PlayerbotsAutoGearSet::Slots || cap == 0)
             return FactDecision::Invalid;
+        if (!ValidWeaponKind(fact.kind))
+            return FactDecision::Invalid;
         if (!fact.sourceKnown || !fact.metadataKnown || fact.id == 0 || fact.itemLevel == 0)
             return FactDecision::Unknown;
-        bool const botKnown = bot.levelKnown && bot.level != 0 && bot.classKnown && bot.classId != 0 && bot.specKnown &&
-                              bot.roleKnown;
-        if (!botKnown)
+        if (!bot.levelKnown || bot.level == 0 || !bot.classKnown || !bot.specKnown || !bot.roleKnown)
             return FactDecision::Unknown;
+        if (!ValidWotlkClass(bot.classId) || !ValidSpecTab(bot.specTab) || !ValidRole(bot.role))
+            return FactDecision::Invalid;
+        if (fact.specRestricted && !ValidSpecTab(fact.specTab))
+            return FactDecision::Invalid;
+        if (!ValidRole(fact.role))
+            return FactDecision::Invalid;
         if (!fact.equipKnown)
             return FactDecision::Unknown;
         if ((fact.limitCategory == 0) != (fact.categoryLimit == 0) || fact.armorSubtype > 31)

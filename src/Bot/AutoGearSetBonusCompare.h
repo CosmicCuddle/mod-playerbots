@@ -56,7 +56,11 @@ namespace PlayerbotsAutoGearSelection
                     ++count;
             }
             if (count >= rule.pieces)
+            {
+                if (total > 0xFFFFFFFFu - rule.bonus)
+                    return 0xFFFFFFFFu;
                 total += rule.bonus;
+            }
         }
         return total;
     }
@@ -64,10 +68,30 @@ namespace PlayerbotsAutoGearSelection
     // Greedy picks the highest base score in each slot. Joint adds the set
     // bonus only after a full combination is chosen. Over-cap pieces are
     // excluded from both. Past the bound, neither score is a result.
+    inline bool RulesAreUsable(std::span<BonusRule const> rules)
+    {
+        if (rules.size() > 4)
+            return false;
+        for (std::size_t i = 0; i < rules.size(); ++i)
+        {
+            BonusRule const& rule = rules[i];
+            if (rule.setId == 0 || rule.pieces == 0 || rule.pieces > 4)
+                return false;
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                if (rules[j].setId == rule.setId)
+                    return false;
+            }
+        }
+        return true;
+    }
+
     inline BonusCompare CompareSetBonus(std::span<BonusPiece const> pieces, std::span<BonusRule const> rules,
         std::uint32_t cap)
     {
         BonusCompare compared;
+        if (!RulesAreUsable(rules))
+            return compared;
         std::array<std::array<BonusPiece, kBonusItemCap>, kBonusSlotCap> slots{};
         std::array<std::uint8_t, kBonusSlotCap> counts{};
         std::uint8_t usedSlots = 0;
@@ -82,6 +106,14 @@ namespace PlayerbotsAutoGearSelection
             {
                 compared.bounded = true;
                 return compared;
+            }
+            for (std::uint8_t k = 0; k < count; ++k)
+            {
+                if (slots[piece.slot][k].id == piece.id)
+                {
+                    compared.bounded = true;
+                    return compared;
+                }
             }
             slots[piece.slot][count] = piece;
             ++count;
@@ -119,20 +151,32 @@ namespace PlayerbotsAutoGearSelection
                     greedyChosen[i] = slots[order[i]][k];
             }
         }
-        compared.greedyScore += SetBonusFor(std::span<BonusPiece const>(greedyChosen.data(), n), rules);
+        std::uint32_t const greedyBonus = SetBonusFor(std::span<BonusPiece const>(greedyChosen.data(), n), rules);
+        if (greedyBonus == 0xFFFFFFFFu || compared.greedyScore > 0xFFFFFFFFu - greedyBonus)
+            return BonusCompare{};
+        compared.greedyScore += greedyBonus;
 
         std::array<std::uint8_t, kBonusSlotCap> pick{};
         std::uint32_t bestJoint = 0;
         std::array<std::uint32_t, 4> bestIds{};
         bool found = false;
+        bool overflow = false;
         auto consider = [&](auto&& self, std::uint8_t depth, std::uint32_t score) -> void
         {
+            if (overflow)
+                return;
             if (depth == n)
             {
                 std::array<BonusPiece, kBonusSlotCap> chosen{};
                 for (std::uint8_t i = 0; i < n; ++i)
                     chosen[i] = slots[order[i]][pick[i]];
-                score += SetBonusFor(std::span<BonusPiece const>(chosen.data(), n), rules);
+                std::uint32_t const bonus = SetBonusFor(std::span<BonusPiece const>(chosen.data(), n), rules);
+                if (bonus == 0xFFFFFFFFu || score > 0xFFFFFFFFu - bonus)
+                {
+                    overflow = true;
+                    return;
+                }
+                score += bonus;
                 bool const better = !found || score > bestJoint;
                 bool tie = found && score == bestJoint;
                 if (tie)
@@ -158,11 +202,19 @@ namespace PlayerbotsAutoGearSelection
             }
             for (std::uint8_t k = 0; k < counts[order[depth]]; ++k)
             {
+                std::uint32_t const base = slots[order[depth]][k].baseScore;
+                if (score > 0xFFFFFFFFu - base)
+                {
+                    overflow = true;
+                    return;
+                }
                 pick[depth] = k;
-                self(self, static_cast<std::uint8_t>(depth + 1), score + slots[order[depth]][k].baseScore);
+                self(self, static_cast<std::uint8_t>(depth + 1), score + base);
             }
         };
         consider(consider, 0, 0);
+        if (overflow)
+            return BonusCompare{};
         compared.bounded = false;
         compared.jointScore = bestJoint;
         compared.jointIds = bestIds;
