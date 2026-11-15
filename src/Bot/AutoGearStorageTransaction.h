@@ -30,46 +30,83 @@ inline bool ValidMoves(std::span<Move const> moves)
     return true;
 }
 
-// Inspect returns nullopt on unknown, zero on empty, or exact item GUID.
-// Verify all positions, not just the return value of a movement operation.
-// No allocations or yields by this coordinator after the first mutation.
-template<class Inspect, class MoveExact>
-TransactionStatus Execute(std::span<Move const> moves, bool authorityValid,
-    Inspect inspect, MoveExact moveExact)
+// Bag identity is zero for the base inventory (equipment or backpack).
+// The backend must return unknown for missing/replaced/unreadable containers,
+// not an empty slot. Count is zero if and only if the slot is empty.
+struct ExactSlot
 {
-    if (!authorityValid || !ValidMoves(moves))
+    std::uint64_t itemGuid, bagGuid;
+    std::uint32_t count;
+    bool operator==(ExactSlot const&) const = default;
+};
+struct ExactMove
+{
+    Move position;
+    std::uint32_t count;
+    std::uint64_t destinationBagGuid;
+};
+
+// The authority reader is a read-only check of the captured command authority.
+// It must not yield or mutate inventory. Restore does not require command
+// authority, but the backend must separately prove live bot ownership/context.
+// MoveExact receives the full reservation in BOTH directions and must never
+// destroy/merge/overwrite, even if it detects a stale reservation internally.
+template<class Inspect, class Authority, class MoveExact>
+TransactionStatus Execute(std::span<ExactMove const> moves, Inspect inspect,
+    Authority authority, MoveExact moveExact)
+{
+    if (moves.size() > 17)
         return TransactionStatus::Rejected;
-    auto read = [&](std::uint16_t position) -> std::optional<std::uint64_t>
+    Move positions[17]{};
+    for (std::size_t i = 0; i < moves.size(); ++i)
     {
-        try { return inspect(position); }
-        catch (...) { return std::nullopt; }
-    };
-    auto at = [&](std::uint16_t position, std::uint64_t guid)
+        if (!moves[i].count)
+            return TransactionStatus::Rejected;
+        positions[i] = moves[i].position;
+    }
+    if (!ValidMoves(std::span<Move const>(positions, moves.size())))
+        return TransactionStatus::Rejected;
+    auto authorized = [&]()
     {
-        auto value = read(position);
-        return value && *value == guid;
+        try { return authority(); }
+        catch (...) { return false; }
     };
-    auto original = [&](Move const& m) { return at(m.source, m.itemGuid) && at(m.destination, 0); };
-    auto moved = [&](Move const& m) { return at(m.source, 0) && at(m.destination, m.itemGuid); };
+    if (!authorized())
+        return TransactionStatus::Rejected;
+    auto at = [&](std::uint16_t position, ExactSlot expected)
+    {
+        try { return inspect(position) == std::optional<ExactSlot>(expected); }
+        catch (...) { return false; }
+    };
+    auto original = [&](ExactMove const& m)
+    {
+        return at(m.position.source, {m.position.itemGuid, 0, m.count}) &&
+            at(m.position.destination, {0, m.destinationBagGuid, 0});
+    };
+    auto moved = [&](ExactMove const& m)
+    {
+        return at(m.position.source, {0, 0, 0}) &&
+            at(m.position.destination, {m.position.itemGuid, m.destinationBagGuid, m.count});
+    };
     for (auto const& m : moves)
         if (!original(m))
             return TransactionStatus::Rejected;
 
-    auto attempt = [&](std::uint16_t from, std::uint16_t to, std::uint64_t guid)
+    auto attempt = [&](ExactMove const& m, bool restore)
     {
-        try { return moveExact(from, to, guid); }
+        try { return moveExact(m, restore); }
         catch (...) { return false; }
     };
     bool success = true;
     for (auto const& m : moves)
     {
-        if (!original(m) || !attempt(m.source, m.destination, m.itemGuid) || !moved(m))
+        if (!authorized() || !original(m) || !attempt(m, false) || !moved(m))
         {
             success = false;
             break;
         }
     }
-    if (success)
+    if (success && authorized())
     {
         for (auto const& m : moves)
             if (!moved(m))
@@ -81,12 +118,12 @@ TransactionStatus Execute(std::span<Move const> moves, bool authorityValid,
             return TransactionStatus::Committed;
     }
 
-    // Roll back only the exact item in its reserved destination with its
-    // original slot still empty. Never overwrite, delete, or guess ownership.
-    // A backend can report failure after moving: observation is authoritative.
+    // Observe actual state after failures, including exceptions. Never move an
+    // item from a replacement bag or a stack whose count changed. If exact
+    // restoration cannot be proven, return RecoveryRequired, not RolledBack.
     for (auto it = moves.rbegin(); it != moves.rend(); ++it)
         if (moved(*it))
-            attempt(it->destination, it->source, it->itemGuid);
+            attempt(*it, true);
     for (auto const& m : moves)
         if (!original(m))
             return TransactionStatus::RecoveryRequired;
