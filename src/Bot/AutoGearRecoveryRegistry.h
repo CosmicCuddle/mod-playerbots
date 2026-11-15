@@ -119,6 +119,12 @@ public:
         Reservation& operator=(Reservation const&) = delete;
         explicit operator bool() const noexcept { return bool(_entry); }
         [[nodiscard]] Id Operation() const noexcept { return _entry ? _entry->identity.operation : 0; }
+        // Exact active producer token, not a diagnostic snapshot or proof of native lifetime.
+        [[nodiscard]] bool OwnsInProgress(Identity identity, Kind kind) const noexcept
+        {
+            return _entry && _entry->identity == identity && _entry->kind == kind &&
+                _entry->phase.load(std::memory_order_acquire) == Phase::InProgress;
+        }
         [[nodiscard]] bool MarkMutation() noexcept
         {
             auto expected = Phase::Reserved;

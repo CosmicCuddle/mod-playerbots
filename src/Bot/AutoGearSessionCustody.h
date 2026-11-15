@@ -83,6 +83,7 @@ public:
         }
         catch (...) { return false; }
     }
+    [[nodiscard]] static bool IsOwnerThread() noexcept { return OnOwner(); }
     class Reservation final
     {
     public:
