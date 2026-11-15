@@ -45,7 +45,9 @@ CS01 checkpoint 4 (`6899847073`) is applied on the same head. Playable classes a
 
 Work order `6902772558` is applied on the same head. Slot lists now carry provenance: duplicate, missing, stale, and mismatched rows stay Incomplete or Invalid, and a strip requires a proven empty list whose set bonuses are proven absent. Retained-constraint, fixed-seed oracle, export-check, and symbolic cap-matrix fixtures are separate. The read-only adapter contract and the offline export spec are `doc/PB59_CS02_NATIVE_ADAPTER_CONTRACT_2026-11-15.md` and `doc/PB59_CS02_OFFLINE_EXPORT_VALIDATION_2026-11-15.md`. The combined note is `doc/PB59_CS02_CHECKPOINT_REPORT_2026-11-15.md`.
 
-GCC 13, Clang 18, and GCC ASan+UBSan each report cap 44, plan 72, command parse 22, fact source 23, set bonus 12, variant solver 20, slot enumeration 12, retained constraints 9, solver oracle 14, export check 6, and cap matrix 14. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
+CS01 review `6903067303` is applied on the same head. `AssessSlotList` rejects a duplicate or a contradiction in either order, including a present row paired with an unavailable copy. HAVE and MaxCount go through the variant solver for the whole chosen set, including two variants of one template and retained copies. Native mode requires a slot proof bound to the same revision, the copied rows, and the accepted facts. A contradictory proof does not strip. A known non-empty set that cannot be worn stays a preserve. `CheckExport` uses SHA-256, separate world and spell manifests, a bounded sorted index, signed spell references, and override, proc, and source evidence. `MetadataChecked` is not production readiness.
+
+GCC 13, Clang 18, and GCC ASan+UBSan each report cap 44, plan 72, command parse 22, fact source 24, set bonus 12, variant solver 20, slot enumeration 12, retained constraints 9, solver oracle 14, export check 5, cap matrix 14, and adversarial 17. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
 
 ## Integration still waiting on Maintenance
 

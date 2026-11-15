@@ -19,49 +19,81 @@ bool Check(bool condition, char const* text)
     return true;
 }
 
-ExportSnapshot Synthetic()
+Sha256Digest DigestOf(char const* text)
 {
-    ExportSnapshot snapshot;
-    snapshot.schemaNamed = true;
-    snapshot.checksumKnown = true;
-    snapshot.versionKnown = true;
-    snapshot.checksum = 11;
-    snapshot.expectedChecksum = 11;
-    snapshot.itemTemplateRows = 2;
-    snapshot.expectedItemRows = 2;
-    snapshot.spellRows = 2;
-    snapshot.expectedSpellRows = 2;
-    snapshot.spellHeaderIsId = true;
-    return snapshot;
+    std::array<std::uint8_t, 16> bytes{};
+    std::size_t length = 0;
+    while (text[length] != 0 && length < bytes.size())
+    {
+        bytes[length] = static_cast<std::uint8_t>(text[length]);
+        ++length;
+    }
+    return HashSha256(std::span<std::uint8_t const>(bytes.data(), length));
+}
+
+WorldManifest World()
+{
+    WorldManifest world;
+    world.schemaNamed = true;
+    world.versionKnown = true;
+    world.digestKnown = true;
+    world.digest = DigestOf("world");
+    world.expectedDigest = world.digest;
+    world.itemTemplateRows = 2;
+    world.expectedItemRows = 2;
+    world.validationBound = 8;
+    return world;
+}
+
+SpellManifest Spells(std::span<std::int32_t const> ids, std::span<bool const> known)
+{
+    SpellManifest spells;
+    spells.headerIsId = true;
+    spells.versionKnown = true;
+    spells.digestKnown = true;
+    spells.digest = DigestOf("spell");
+    spells.expectedDigest = spells.digest;
+    spells.spellRows = static_cast<std::uint32_t>(ids.size());
+    spells.expectedSpellRows = spells.spellRows;
+    spells.spellIds = ids;
+    spells.overrideKnown = known;
+    spells.procKnown = known;
+    spells.sourceKnown = known;
+    spells.validationBound = 8;
+    return spells;
 }
 }
 
 int main()
 {
     bool ok = true;
-    std::array<std::uint32_t, 2> spells{{100, 200}};
-    std::array<std::uint32_t, 1> refs{{100}};
-    ExportSnapshot snapshot = Synthetic();
-    snapshot.spellIds = spells;
-    snapshot.itemSpellIds = refs;
-    ok = Check(CheckExport(snapshot) == ExportVerdict::Accepted, "a complete synthetic export is accepted") && ok;
+    Sha256Digest const empty = HashSha256({});
+    std::uint8_t const emptyKnown[32] = {0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99,
+        0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8,
+        0x55};
+    Sha256Digest expectedEmpty;
+    for (int i = 0; i < 32; ++i)
+        expectedEmpty.byte[i] = emptyKnown[i];
+    ok = Check(empty == expectedEmpty, "SHA256 of an empty message matches the standard digest") && ok;
 
-    snapshot.checksumKnown = false;
-    ok = Check(CheckExport(snapshot) == ExportVerdict::Unknown, "a missing checksum is unknown") && ok;
-    snapshot.checksumKnown = true;
-    snapshot.spellHeaderIsId = false;
-    ok = Check(CheckExport(snapshot) == ExportVerdict::Unknown, "a missing spell header is unknown") && ok;
-    snapshot.spellHeaderIsId = true;
-    snapshot.itemTemplateRows = 1;
-    ok = Check(CheckExport(snapshot) == ExportVerdict::Invalid, "a row-count mismatch is invalid") && ok;
-    snapshot.itemTemplateRows = 2;
-    spells[1] = 100;
-    ok = Check(CheckExport(snapshot) == ExportVerdict::Invalid, "a duplicate spell id is invalid") && ok;
-    spells[1] = 200;
-    std::array<std::uint32_t, 1> missing{{300}};
-    snapshot.itemSpellIds = missing;
-    ok = Check(CheckExport(snapshot) == ExportVerdict::Unknown, "a spell that is not in the export stays unknown") &&
+    std::array<std::int32_t, 2> ids{{100, 200}};
+    std::array<bool, 2> known{{true, true}};
+    std::array<std::int32_t, 1> refs{{100}};
+    WorldManifest world = World();
+    world.itemSpellIds = refs;
+    ExportVerdict const agreed = CheckExport(world, Spells(ids, known));
+    ok = Check(agreed == ExportVerdict::MetadataChecked, "separate manifests can agree") && ok;
+    ok = Check(!ExportIsProductionReady(ExportVerdict::MetadataChecked),
+            "checked metadata is not production ready") &&
          ok;
+
+    world.digestKnown = false;
+    ok = Check(CheckExport(world, Spells(ids, known)) == ExportVerdict::Unknown, "a missing world digest is unknown") &&
+         ok;
+    world.digestKnown = true;
+    world.itemTemplateRows = 1;
+    ExportVerdict const mismatch = CheckExport(world, Spells(ids, known));
+    ok = Check(mismatch == ExportVerdict::Invalid, "a world row-count mismatch is invalid") && ok;
 
     if (!ok)
         return 1;

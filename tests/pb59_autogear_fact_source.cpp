@@ -218,6 +218,12 @@ int main()
             "a complete flag without a per-slot list does not strip") &&
          ok;
     knownEmpty.slotLists[4] = PlanInput::SlotListState::Complete;
+    Plan const flagOnly = SelectFromFacts(knownEmpty, counting);
+    ok = Check(flagOnly.outcome.disposition == Disposition::Preserve && !flagOnly.sourceComplete,
+            "a complete flag is not a native slot proof") &&
+         ok;
+    knownEmpty.sourceRevision = 7;
+    knownEmpty.nativeProofs[4].authoritative = true;
     Plan const knownEmptyResult = SelectFromFacts(knownEmpty, counting);
     ok = Check(knownEmptyResult.outcome.disposition == Disposition::GenuineNoSet &&
                knownEmptyResult.outcome.action == GearAction::StripToBags && knownEmptyResult.sourceComplete,
@@ -242,6 +248,17 @@ int main()
          ok;
     levelFacts[0].itemLevel = 60;
     levelPlan.facts = levelFacts;
+    ProvenanceRow matched;
+    matched.entryId = 100;
+    matched.randomProperty = 1;
+    matched.itemLevel = 60;
+    matched.state = RowState::KnownPresent;
+    matched.revision = 7;
+    matched.setEvidenceKnown = true;
+    std::array<ProvenanceRow, 1> matchedRows{{matched}};
+    levelPlan.sourceRevision = 7;
+    levelPlan.nativeProofs[4].authoritative = true;
+    levelPlan.nativeProofs[4].rows = matchedRows;
     Plan const levelMatch = SelectFromFacts(levelPlan, counting);
     ok = Check(levelMatch.outcome.disposition == Disposition::Commit && levelMatch.solved.items[4] == 100 &&
                levelMatch.sourceComplete,

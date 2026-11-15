@@ -50,6 +50,9 @@ GCC 13, Clang 18, and GCC ASan+UBSan each passed:
 | solver oracle | 14 |
 | export check | 6 |
 | cap matrix | 14 |
+| adversarial | 17 |
+
+Review `6903067303` adds the duplicate-order checks, the variant-solver possession path, native proofs bound to the copied source, and SHA-256 export manifests. `MetadataChecked` is not production readiness. TrainerAction.cpp stays reserved for CS01.
 
 Clang ASan+UBSan did not link. `libclang_rt.asan` is not installed. These are model fixtures, not native proof. No hosted CI was started.
 

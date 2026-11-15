@@ -8,7 +8,7 @@ The owner will supply `acore_world` and `Spell.csv` later. This spec checks thos
 ## Provenance the export must carry
 
 - Schema name present. A missing name is Unknown.
-- Checksum known and equal to the checksum published with the file. A mismatch is Invalid. Unknown checksum is Unknown.
+- SHA-256 digest known and equal to the digest published with that file. A 64-bit checksum is not accepted. A mismatch is Invalid. An unknown digest is Unknown. The world file and the spell file each have their own manifest.
 - Version known. Unknown version is Unknown.
 - Row counts for `item_template` and the spell file, both expected and observed. A count of zero expected is Unknown. A mismatch is Invalid.
 
@@ -25,9 +25,10 @@ The owner will supply `acore_world` and `Spell.csv` later. This spec checks thos
 
 ## Verdicts
 
-- `Unknown`: checksum, version, schema, expected counts, spell header, or a referenced spell is missing. Selection preserves.
-- `Invalid`: row count mismatch, checksum mismatch, zero spell id, or a duplicate spell id. Selection preserves.
-- `Accepted`: the snapshot's counts, checksum, header, and joins agree. This still does not score an item. Scoring waits for the existing calculator and for installed evidence of procs.
+- `Unknown`: digest, version, schema, expected counts, spell header, override, proc, source evidence, or a referenced spell is missing. Selection preserves.
+- `Invalid`: row count mismatch, digest mismatch, a negative spell reference, an empty item-spell list when spells are required, or an unsorted id index. Selection preserves.
+- `Bounded`: the id window is larger than the stated bound. It is not scanned.
+- `MetadataChecked`: the two manifests agree. `ExportIsProductionReady` is always false. This is not a production gear source.
 
 Darkmoon cards stay Unknown for availability and procs until those spell rows are in an accepted export. Item level 66, required level 60, and unique trinket may be recorded as base fields from coordination #64 comment `6900198011`. They are not a forced set.
 

@@ -12,7 +12,9 @@
 #include "AutoGearSelectionCap.h"
 #include "AutoGearSelectionOutcome.h"
 #include "AutoGearSlotEnumeration.h"
+#include "AutoGearVariantSolver.h"
 #include "AutoGearVariantSource.h"
+#include <algorithm>
 #include <array>
 #include <new>
 #include <vector>
@@ -45,10 +47,14 @@ namespace PlayerbotsAutoGearSelection
         };
         std::array<SlotListState, PlayerbotsAutoGearSet::Slots> slotLists{};
         std::span<RetainedCount const> retained{};
-        // When set, a NoSet may strip only if every eligible slot is a proven
-        // empty list and every set bonus on that list is proven absent.
-        bool enforceSlotProof = false;
-        std::array<ListAssessment, PlayerbotsAutoGearSet::Slots> slotProofs{};
+        // Native mode requires these rows. They are not a caller-supplied verdict.
+        std::uint64_t sourceRevision = 0;
+        struct NativeSlotProof
+        {
+            bool authoritative = false;
+            std::span<ProvenanceRow const> rows{};
+        };
+        std::array<NativeSlotProof, PlayerbotsAutoGearSet::Slots> nativeProofs{};
         // Fixture hook. Production callers leave this at None.
         enum class AllocationPoint : std::uint8_t
         {
@@ -147,36 +153,18 @@ namespace PlayerbotsAutoGearSelection
             if (decision == FactDecision::Unknown || decision == FactDecision::Invalid)
                 return finish(true, PreparationResult::InvalidPolicy, false);
         }
-        std::array<std::uint32_t, PlayerbotsAutoGearSet::Slots> entrySlots{};
-        std::array<std::uint32_t, PlayerbotsAutoGearSet::Slots> categorySlots{};
+        bool needsVariant = false;
         for (ItemFact const& fact : in.facts)
         {
             if (fact.slot >= PlayerbotsAutoGearSet::Slots)
                 return finish(true, PreparationResult::InvalidPolicy, false);
-            if (fact.maxCount != 0)
-                entrySlots[fact.slot] = fact.id;
-            if (fact.categoryHaveLimit != 0)
-                categorySlots[fact.slot] = fact.limitCategory;
             std::uint32_t room = 0;
-            PossessionGate const gate = GatePossession(fact, in.retained, room);
-            if (gate == PossessionGate::Unknown)
+            if (GatePossession(fact, in.retained, room) == PossessionGate::Unknown)
                 return finish(true, PreparationResult::NotPrepared, false);
-            if (gate == PossessionGate::Omit)
-                continue;
-            std::uint32_t slots = 0;
             if (fact.maxCount != 0 || fact.categoryHaveLimit != 0)
-            {
-                for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
-                {
-                    bool const sameEntry = fact.maxCount != 0 && entrySlots[slot] == fact.id && entrySlots[slot] != 0;
-                    bool const sameCategory = fact.categoryHaveLimit != 0 && categorySlots[slot] == fact.limitCategory;
-                    if (sameEntry || sameCategory)
-                        ++slots;
-                }
-                if (slots > room)
-                    return finish(true, PreparationResult::NotPrepared, false);
-            }
+                needsVariant = true;
         }
+        std::array<ListAssessment, PlayerbotsAutoGearSet::Slots> nativeAssessments{};
         if (in.hasNativeSource)
         {
             try
@@ -184,13 +172,6 @@ namespace PlayerbotsAutoGearSelection
                 CopiedSource const copied = CopyBoundedSource(in.nativeRows, in.sourceBudget);
                 if (!copied.sourceComplete || copied.status != CopyStatus::Copied)
                     return finish(true, PreparationResult::NotPrepared, false);
-                for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
-                {
-                    if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
-                        continue;
-                    if (in.slotLists[slot] != PlanInput::SlotListState::Complete)
-                        return finish(true, PreparationResult::NotPrepared, false);
-                }
                 for (ItemFact const& fact : in.facts)
                 {
                     bool found = false;
@@ -213,6 +194,58 @@ namespace PlayerbotsAutoGearSelection
                     if (!found)
                         return finish(true, PreparationResult::NotPrepared, false);
                 }
+                if (in.sourceRevision == 0)
+                    return finish(true, PreparationResult::NotPrepared, false);
+                for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+                {
+                    if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
+                        continue;
+                    PlanInput::NativeSlotProof const& proof = in.nativeProofs[slot];
+                    nativeAssessments[slot] =
+                        AssessSlotList(proof.rows, in.sourceRevision, proof.authoritative);
+                    if (nativeAssessments[slot].verdict == ListVerdict::Invalid ||
+                        nativeAssessments[slot].verdict == ListVerdict::Incomplete)
+                        return finish(true, PreparationResult::NotPrepared, false);
+                    std::size_t present = 0;
+                    for (ProvenanceRow const& row : proof.rows)
+                    {
+                        if (row.state != RowState::KnownPresent)
+                            continue;
+                        ++present;
+                        bool inSource = false;
+                        for (SourceRow const& source : copied.rows)
+                        {
+                            if (source.slot == slot && source.entryId == row.entryId &&
+                                source.randomProperty == row.randomProperty && source.itemLevel == row.itemLevel)
+                                inSource = true;
+                        }
+                        bool inFacts = false;
+                        for (ItemFact const& fact : in.facts)
+                        {
+                            bool const sameFact = fact.slot == slot && fact.id == row.entryId &&
+                                                      fact.randomProperty == row.randomProperty &&
+                                                      fact.itemLevel == row.itemLevel;
+                            if (sameFact && Classify(fact, in.bot, in.cap.cap) == FactDecision::Accept)
+                                inFacts = true;
+                        }
+                        if (!inSource || !inFacts)
+                            return finish(true, PreparationResult::NotPrepared, false);
+                    }
+                    std::size_t copiedHere = 0;
+                    for (SourceRow const& source : copied.rows)
+                    {
+                        if (source.slot == slot)
+                            ++copiedHere;
+                    }
+                    std::size_t acceptedHere = 0;
+                    for (ItemFact const& fact : in.facts)
+                    {
+                        if (fact.slot == slot && Classify(fact, in.bot, in.cap.cap) == FactDecision::Accept)
+                            ++acceptedHere;
+                    }
+                    if (present != copiedHere || present != acceptedHere)
+                        return finish(true, PreparationResult::NotPrepared, false);
+                }
             }
             catch (...)
             {
@@ -229,9 +262,6 @@ namespace PlayerbotsAutoGearSelection
             accepted.reserve(in.facts.size());
             for (ItemFact const& fact : in.facts)
             {
-                std::uint32_t room = 0;
-                if (GatePossession(fact, in.retained, room) == PossessionGate::Omit)
-                    continue;
                 PreparedFact const prepared = PrepareFact(fact, in.bot, in.cap.cap, scorer);
                 if (prepared.decision == FactDecision::Accept)
                     accepted.push_back(AcceptedCandidate{fact.slot, prepared.candidate});
@@ -243,30 +273,36 @@ namespace PlayerbotsAutoGearSelection
         }
         plan.factsAccepted = accepted.size();
 
-        try
-        {
-            if (in.allocationFault == PlanInput::AllocationPoint::Domain)
-                throw std::bad_alloc();
-            domains = CollectDomains(accepted, in.eligibleMask, in.completeMask, in.candidateBudget);
-        }
-        catch (...)
-        {
-            return finish(true, PreparationResult::NotPrepared, false);
-        }
-        if (domains.status == DomainSet::Status::Bounded)
-            return finish(true, PreparationResult::NotPrepared, false);
-        if (domains.status != DomainSet::Status::Ok)
-            return finish(true, PreparationResult::InvalidPolicy, false);
-
         std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> views{};
         bool searchComplete = true;
-        for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+        if (!needsVariant)
         {
-            if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
-                continue;
-            views[slot] = {domains.slots[slot], domains.complete[slot]};
-            if (!domains.complete[slot])
-                searchComplete = false;
+            try
+            {
+                if (in.allocationFault == PlanInput::AllocationPoint::Domain)
+                    throw std::bad_alloc();
+                domains = CollectDomains(accepted, in.eligibleMask, in.completeMask, in.candidateBudget);
+            }
+            catch (...)
+            {
+                return finish(true, PreparationResult::NotPrepared, false);
+            }
+            if (domains.status == DomainSet::Status::Bounded)
+                return finish(true, PreparationResult::NotPrepared, false);
+            if (domains.status != DomainSet::Status::Ok)
+                return finish(true, PreparationResult::InvalidPolicy, false);
+            for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+            {
+                if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
+                    continue;
+                views[slot] = {domains.slots[slot], domains.complete[slot]};
+                if (!domains.complete[slot])
+                    searchComplete = false;
+            }
+        }
+        else if (in.allocationFault == PlanInput::AllocationPoint::Domain)
+        {
+            return finish(true, PreparationResult::NotPrepared, false);
         }
 
         PlayerbotsAutoGearSet::Policy policy;
@@ -287,7 +323,76 @@ namespace PlayerbotsAutoGearSelection
         {
             if (in.allocationFault == PlanInput::AllocationPoint::Solve)
                 throw std::bad_alloc();
-            plan.solved = PlayerbotsAutoGearSet::Solve(views, policy, in.candidateBudget, in.nodeBudget);
+            if (!needsVariant)
+                plan.solved = PlayerbotsAutoGearSet::Solve(views, policy, in.candidateBudget, in.nodeBudget);
+            else
+            {
+                std::array<std::vector<PlayerbotsAutoGearVariant::Candidate>, PlayerbotsAutoGearSet::Slots> lists;
+                for (ItemFact const& fact : in.facts)
+                {
+                    PreparedFact const prepared = PrepareFact(fact, in.bot, in.cap.cap, scorer);
+                    if (prepared.decision != FactDecision::Accept)
+                        continue;
+                    PlayerbotsAutoGearVariant::Candidate row;
+                    row.entryId = fact.id;
+                    row.randomProperty = fact.randomProperty;
+                    row.itemLevel = fact.itemLevel;
+                    row.score = prepared.candidate.score;
+                    row.limitCategory = fact.limitCategory;
+                    row.categoryLimit = fact.categoryLimit;
+                    row.categoryHaveLimit = fact.categoryHaveLimit;
+                    row.maxCount = fact.maxCount;
+                    row.kind = fact.kind;
+                    row.uniqueEquipped = fact.uniqueEquipped;
+                    row.exclusiveMainhand = fact.exclusiveMainhand;
+                    row.metadataKnown = true;
+                    row.eligible = true;
+                    lists[fact.slot].push_back(row);
+                }
+                std::array<PlayerbotsAutoGearVariant::Domain, PlayerbotsAutoGearSet::Slots> variantDomains{};
+                for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+                {
+                    std::sort(lists[slot].begin(), lists[slot].end(),
+                        [](PlayerbotsAutoGearVariant::Candidate const& left,
+                            PlayerbotsAutoGearVariant::Candidate const& right)
+                        {
+                            return left.entryId < right.entryId ||
+                                   (left.entryId == right.entryId && left.randomProperty < right.randomProperty);
+                        });
+                    if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
+                        continue;
+                    bool const complete = (in.completeMask & (std::uint32_t{1} << slot)) != 0;
+                    variantDomains[slot] = {lists[slot], complete};
+                }
+                PlayerbotsAutoGearVariant::Policy variantPolicy;
+                variantPolicy.cap = in.cap.cap;
+                variantPolicy.eligibleMask = in.eligibleMask;
+                variantPolicy.requiredMask = policy.requiredMask;
+                variantPolicy.weapons = policy.weapons;
+                variantPolicy.known = true;
+                variantPolicy.entryHeld = in.retained;
+                variantPolicy.categoryHeld = in.retained;
+                PlayerbotsAutoGearVariant::Result const variant =
+                    PlayerbotsAutoGearVariant::Solve(variantDomains, variantPolicy, in.candidateBudget, in.nodeBudget);
+                plan.solved.score = variant.score;
+                plan.solved.visited = variant.visited;
+                plan.solved.items = variant.entries;
+                switch (variant.status)
+                {
+                    case PlayerbotsAutoGearVariant::Status::Invalid:
+                        plan.solved.status = PlayerbotsAutoGearSet::Status::Invalid;
+                        break;
+                    case PlayerbotsAutoGearVariant::Status::Incomplete:
+                        plan.solved.status = PlayerbotsAutoGearSet::Status::Incomplete;
+                        break;
+                    case PlayerbotsAutoGearVariant::Status::NoSet:
+                        plan.solved.status = PlayerbotsAutoGearSet::Status::NoSet;
+                        break;
+                    case PlayerbotsAutoGearVariant::Status::SuitableSet:
+                        plan.solved.status = PlayerbotsAutoGearSet::Status::SuitableSet;
+                        break;
+                }
+            }
         }
         catch (...)
         {
@@ -297,22 +402,29 @@ namespace PlayerbotsAutoGearSelection
         if (plan.solved.status == PlayerbotsAutoGearSet::Status::Incomplete ||
             plan.solved.status == PlayerbotsAutoGearSet::Status::Invalid)
             searchComplete = false;
-        if (in.enforceSlotProof)
+        if (in.hasNativeSource)
         {
+            bool provenEmptyUniverse = true;
             for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
             {
                 if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
                     continue;
-                ListAssessment const& proof = in.slotProofs[slot];
-                bool const provenEmpty = proof.verdict == ListVerdict::ProvenEmpty && proof.setBonusProvenAbsent;
-                bool const provenSet = proof.verdict == ListVerdict::ProvenCandidates;
-                if (proof.verdict == ListVerdict::Incomplete || proof.verdict == ListVerdict::Invalid)
+                ListAssessment const& proof = nativeAssessments[slot];
+                bool const required = (in.requiredMask & (std::uint32_t{1} << slot)) != 0;
+                bool const empty = proof.verdict == ListVerdict::ProvenEmpty && proof.setBonusProvenAbsent;
+                if (!empty)
+                    provenEmptyUniverse = false;
+                if (proof.verdict == ListVerdict::Invalid || proof.verdict == ListVerdict::Incomplete)
                     searchComplete = false;
-                if (plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet && !provenEmpty)
+                if (plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet && !empty)
                     searchComplete = false;
-                if (plan.solved.status == PlayerbotsAutoGearSet::Status::SuitableSet && !provenSet)
+                if (plan.solved.items[slot] != 0 && proof.verdict != ListVerdict::ProvenCandidates)
+                    searchComplete = false;
+                if (required && plan.solved.items[slot] == 0 && proof.verdict == ListVerdict::ProvenCandidates)
                     searchComplete = false;
             }
+            if (plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet && !provenEmptyUniverse)
+                searchComplete = false;
         }
         bool const finished = plan.solved.status == PlayerbotsAutoGearSet::Status::SuitableSet ||
                               plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet;

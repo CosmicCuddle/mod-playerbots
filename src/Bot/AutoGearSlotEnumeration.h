@@ -90,16 +90,19 @@ namespace PlayerbotsAutoGearSelection
                 else if (row.setBonusPresent)
                     setPresent = true;
             }
-            if (row.state == RowState::KnownUnavailable)
-                continue;
             for (std::size_t earlier = 0; earlier < i; ++earlier)
             {
-                if (rows[earlier].state == RowState::KnownPresent && SameIdentity(rows[earlier], row))
+                ProvenanceRow const& previous = rows[earlier];
+                bool const tracked = previous.state == RowState::KnownPresent ||
+                                     previous.state == RowState::KnownUnavailable;
+                if (tracked && SameIdentity(previous, row))
                 {
                     assessment.verdict = ListVerdict::Invalid;
                     return assessment;
                 }
             }
+            if (row.state == RowState::KnownUnavailable)
+                continue;
             ++assessment.present;
         }
         if (setUnknown)

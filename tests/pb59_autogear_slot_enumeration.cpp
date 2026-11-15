@@ -53,7 +53,9 @@ PlanInput EmptyChest()
     in.completeMask = 1u << 4;
     in.authorityValid = true;
     in.bags = BagSpace::Enough;
-    in.enforceSlotProof = true;
+    in.hasNativeSource = true;
+    in.sourceBudget = 4;
+    in.sourceRevision = 7;
     return in;
 }
 
@@ -125,21 +127,22 @@ int main()
          ok;
 
     PlanInput proven = EmptyChest();
-    proven.slotProofs[4] = empty;
+    proven.nativeProofs[4].authoritative = true;
     Plan const stripped = SelectFromFacts(proven, ZeroScore);
     ok = Check(stripped.outcome.disposition == Disposition::GenuineNoSet && stripped.sourceComplete,
             "a proven empty slot may strip") &&
          ok;
 
     PlanInput unproven = EmptyChest();
-    unproven.slotProofs[4] = missing;
+    unproven.nativeProofs[4].authoritative = false;
     Plan const held = SelectFromFacts(unproven, ZeroScore);
     ok = Check(held.outcome.disposition == Disposition::Preserve && !held.sourceComplete,
             "incomplete slot proof preserves") &&
          ok;
 
     PlanInput bonusHold = EmptyChest();
-    bonusHold.slotProofs[4] = unprovenBonus;
+    bonusHold.nativeProofs[4].authoritative = true;
+    bonusHold.nativeProofs[4].rows = bonusRows;
     Plan const bonusPlan = SelectFromFacts(bonusHold, ZeroScore);
     ok = Check(bonusPlan.outcome.action != GearAction::StripToBags && !bonusPlan.sourceComplete,
             "a strip does not proceed while a set bonus is unproven") &&
