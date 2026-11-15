@@ -278,9 +278,14 @@ void PlayerbotHolder::UpdatePendingLogins()
     }
 }
 
-void PlayerbotHolder::ClearPendingLogins()
+void PlayerbotHolder::StopPendingLogins()
 {
     _pendingLoginsStopping = true;
+}
+
+void PlayerbotHolder::ClearPendingLogins()
+{
+    StopPendingLogins();
     // No new requests or queued publication after the shutdown fence.
     for (auto& [guid, pending] : botLoading)
         pending.owner.Fail();
@@ -350,6 +355,7 @@ bool PlayerbotHolder::CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sess
     if (!owner.Begin(Phase::Queued))
         return false;
     bool published = false;
+    bool interrupted = false;
     try
     {
         WorldSession* session = owner.Get();
@@ -373,6 +379,7 @@ bool PlayerbotHolder::CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sess
         // If the holder was already published, do not delete its session.
         // Post-publication callback recovery belongs to the native holder phase.
         published = owner.State() == Phase::Released;
+        interrupted = true;
         LOG_ERROR("playerbots", "Queued login {} session {} interrupted; published {}", guid.ToString(), sessionId, published);
     }
     if (!published)
@@ -385,7 +392,7 @@ bool PlayerbotHolder::CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sess
             current->second.owner.State() == Phase::Released)
             botLoading.erase(current);
     }
-    return published;
+    return published && !interrupted;
 }
 
 void PlayerbotHolder::UpdateSessions()
