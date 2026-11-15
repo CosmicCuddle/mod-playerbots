@@ -624,11 +624,12 @@ private:
 class BotLogoutGroupCleanupOperation : public PlayerbotOperation
 {
 public:
-    BotLogoutGroupCleanupOperation(ObjectGuid botGuid) : m_botGuid(botGuid) {}
+    BotLogoutGroupCleanupOperation(ObjectGuid botGuid, std::uint64_t playerId, std::uint64_t sessionId)
+        : m_botGuid(botGuid), m_playerId(playerId), m_sessionId(sessionId) {}
 
     bool Execute() override
     {
-        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        Player* bot = Resolve();
         if (!bot)
             return false;
 
@@ -649,12 +650,27 @@ public:
 
     bool IsValid() const override
     {
-        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
-        return bot != nullptr;
+        return Resolve() != nullptr;
     }
 
 private:
+    // World-owner context only. A queued cleanup must never save a replacement
+    // character/session merely because it reused the same character GUID.
+    Player* Resolve() const
+    {
+        if (!m_playerId || !m_sessionId)
+            return nullptr;
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        if (!bot || bot->GetPB59OwnerIncarnation() != m_playerId)
+            return nullptr;
+        WorldSession* session = bot->GetSession();
+        return session && session->GetPlayer() == bot &&
+            session->GetPB59SessionIncarnation() == m_sessionId ? bot : nullptr;
+    }
+
     ObjectGuid m_botGuid;
+    std::uint64_t m_playerId;
+    std::uint64_t m_sessionId;
 };
 
 // Add player bot operation (for logging in bots from map threads)
