@@ -406,6 +406,7 @@ public:
 
     void UpdateAI(uint32 elapsed, bool minimal = false) override;
     void UpdateAIInternal(uint32 elapsed, bool minimal = false) override;
+    bool IsTimedLogoutReady(); // owner context; re-evaluated before world-side retirement
     bool UpdateAIReaction(uint32 elapsed, bool minimal, bool canControlSelf);
     Engine* GetCurrentEngine() const { return currentEngine; }
     void SetActionDuration(Action const* action);
