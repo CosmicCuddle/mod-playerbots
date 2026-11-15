@@ -3,6 +3,7 @@
 #include "AutoGearPendingSessionOwner.h"
 #include "AutoGearRecoveryRegistry.h"
 #include "AutoGearSessionCustody.h"
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -41,6 +42,7 @@ private:
         std::unique_ptr<Session> owned;
         Phase phase = Phase::Reserved;
         Id operation = 0;
+        std::size_t callbacks = 0;
     };
     struct State
     {
@@ -117,6 +119,45 @@ public:
         }
         catch (...) { return {}; }
     }
+    // Borrow only a genuinely owned published session on the bound owner
+    // thread. The registry lock is never held across native callbacks.
+    // This prevents this registry's handoff from deleting the session on the
+    // callback stack; native destruction routes still have to honor ownership.
+    template<class Call>
+    static bool WithPublished(Identity id, Call&& call)
+    {
+        if (!Custody::IsOwnerThread() || !id.Valid())
+            return false;
+        std::shared_ptr<Entry> entry;
+        {
+            auto& state = Store();
+            std::lock_guard guard(state.lock);
+            auto it = state.entries.find(id.guid);
+            if (it == state.entries.end())
+                return false;
+            entry = it->second;
+            if (state.stopping || entry->identity != id || entry->phase != Phase::Published ||
+                !entry->holder->Alive() || !Matches(id, entry->owned.get()) ||
+                entry->callbacks == std::numeric_limits<std::size_t>::max())
+                return false;
+            ++entry->callbacks;
+        }
+        struct Release
+        {
+            std::shared_ptr<Entry> entry;
+            ~Release()
+            {
+                auto& state = Store();
+                std::lock_guard guard(state.lock);
+                --entry->callbacks;
+            }
+        } release{entry};
+        std::forward<Call>(call)(*entry->owned);
+        // Native callbacks may change the attached Player or retire the holder.
+        // Do not report an exact continuation merely because the session survived.
+        return entry->holder->Alive() && Matches(id, entry->owned.get());
+    }
+
     class Handoff final
     {
     public:
@@ -209,7 +250,7 @@ public:
             auto it = state.entries.find(id.guid);
             if (it == state.entries.end()) return {};
             auto e = it->second;
-            if (e->identity != id || e->phase != Phase::Published || !Matches(id, e->owned.get())) return {};
+            if (e->identity != id || e->phase != Phase::Published || e->callbacks || !Matches(id, e->owned.get())) return {};
             typename Custody::Identity custodyId{id.guid, id.player, id.holder, operation, id.session};
             auto ticket = Custody::Reserve(custodyId, e->owned.get());
             if (!ticket || !ticket.Adopt(custodyId, e->owned)) return {};
