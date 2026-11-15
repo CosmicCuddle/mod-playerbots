@@ -1,7 +1,51 @@
 # PB59 CS02 AutoGear selection audit and implementation plan
 
 Owner: CosmicCuddle. Coordination #59, with #41 (Darkmoon) and #52 (15 Nov workload).
-Phase 1 is read-only. This document does not select gear, change a transaction, or activate a command.
+Phase 1 was the read-only audit. Phase 2 adds pure selection headers and focused tests. Commands, transactions, and Core private APIs stay unwired.
+
+## Phase 2 status
+
+Delivered on `feature/cs02-pb59-autogear-selection-20261115`, still based on `69943153b86f872cd6a42417ea3f4b76a8ba5602`. No COORDINATE FIRST file was edited. No CMake or test-list entry was required: the new tests compile the same way as the existing `tests/pb59_autogear_*.cpp` fixtures, with `-Isrc/Bot`.
+
+| Task | New file |
+| --- | --- |
+| Cap composer, including the levelling average | `src/Bot/AutoGearSelectionCap.h` |
+| Shared item facts | `src/Bot/AutoGearSelectionTypes.h` |
+| Constraint filler | `src/Bot/AutoGearConstraintFill.h` |
+| Score filler | `src/Bot/AutoGearScoreFill.h` |
+| Candidate-domain collector | `src/Bot/AutoGearCandidateDomain.h` |
+| Solver call and plan | `src/Bot/AutoGearSelectionPlan.h` |
+| Outcome mapping | `src/Bot/AutoGearSelectionOutcome.h` |
+| One eligibility function for every command form | `src/Bot/AutoGearCommandEligibility.h` |
+| RNDBOT-only tier-sync predicate | `src/Bot/AutoGearRndbotTierSync.h` |
+| Cap, command-parity, and population tests | `tests/pb59_autogear_selection_cap.cpp` |
+| Selection, constraint, Darkmoon, and outcome tests | `tests/pb59_autogear_selection_plan.cpp` |
+
+`ComposeCap` uses stage 0 = 66 and stage 1 = 78. A lower configured value can tighten those. A higher configured value cannot raise them. Stages 2 to 7 preserve unless that stage's configured completion entry is non-zero, and then the stricter of that entry, a non-zero `AutoGearScoreLimit`, a typed item level, and the sender average wins. Stages 8 and above preserve even if a config entry is present. A missing player, missing progression context, missing or zero sender sample, or a present typed item level of 0 preserves. A usable cap is never 0.
+
+`ExistingScore` returns the caller-supplied scorer unchanged. The intended later scorer is `StatsWeightCalculator::CalculateItem`. This phase does not call it and does not change its weights. Set permission, gems, and enchants are eligibility gates. They do not add a second bonus.
+
+Darkmoon facts are ordinary candidates. `requestForceBis` is ignored. The fixtures use synthetic ids 910001, 910002, and 910003. Those stats are not the owner's database.
+
+`AllowsPopulationTierSync` is true only for `RandomBot`. Alt bot, AddClass, and unknown are denied. The predicate does not write progression.
+
+`MapOutcome` reuses `ResolveNextStep`. A complete no-set with room in the bags is `GenuineNoSet` / `StripToBags`. Full bags stay `GenuineNoSet` and preserve. `RecoveryRequest` is a plain reason code. Nothing in these headers calls `_StoreItem`, `_EquipItem`, `RelocatePB59InventoryLinks`, or `ReconcilePB59VisibleEquipment`.
+
+Local runs after the final source edit: GCC 13 and Clang 18, each `checks=37` for the cap fixture and `checks=34` for the plan fixture. GCC ASan+UBSan passed the same two counts. Clang ASan+UBSan did not link: `libclang_rt.asan-x86_64.a` is not installed. No hosted CI was started from here.
+
+Still unresolved: numeric caps for stages 2 to 7, the real Darkmoon rows, whether a configured stage 2 to 7 value is the one the owner wants, joint set-bonus search beyond the existing scorer, and every integration point below.
+
+## Integration still waiting on Maintenance
+
+Do not do these until Maintenance says the shared files are free:
+
+- Replace `ResolveCommandSenderAutoGearCap` in `src/Ai/Base/Actions/TrainerAction.cpp` so plain, reset, match, quality, numeric, and both BiS forms call `ResolveCommandEligibility`. Do not delete gear there yet.
+- Pass `StatsWeightCalculator::CalculateItem` into `SelectFromFacts` from the factory path. That requires `src/Bot/Factory/PlayerbotFactory.cpp`, which is COORDINATE FIRST.
+- Perform a strip or a commit only through `PlayerbotsAutoGearStorage::Execute` after Maintenance enables a `MoveExact` backend. On `RecoveryRequired`, keep using `PB59::TransactionAdmission::RequireRecovery` and `Player::ReconcilePB59VisibleEquipment` under `Access::Recovery`. `RecoveryRequest` is only the reason to ask for that. It is not the call.
+- Attach `AllowsPopulationTierSync` in front of any future RNDBOT regear. `src/Bot/RandomPlayerbotMgr.cpp` is COORDINATE FIRST. Do not call it from `Refresh` or logout in this phase.
+- Read the sender sample and the IP snapshot on the sender's thread before filling `CapInput`. `src/Bot/AutoGearNativeAuthority.h` is COORDINATE FIRST.
+
+The sections below are the phase 1 audit and are unchanged except for this status.
 
 ## Pins
 
