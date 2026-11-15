@@ -22,7 +22,7 @@ static_assert(Resolve(physicalRows, 100, 0, normalEntranceSelection, 19).result 
 static_assert(Resolve(physicalRows, 100, 1, 0, 45).result == Result::Allowed);
 static_assert(Resolve(physicalRows, 100, 0, 5, 1).result == Result::SeasonalException);
 static_assert(Resolve(physicalRows, 100, 0, 0, 1).result == Result::BelowMinimum);
-static_assert(Resolve(physicalRows, 100, 0, 0, 20, 20, 25).result == Result::Allowed);
+static_assert(Resolve(physicalRows, 100, 0, 0, 20, 20, 25).result == Result::MissingBracket);
 static_assert(Resolve(physicalRows, 999, 0, 0, 20).result == Result::MissingBracket);
 static_assert(Resolve(physicalRows, 999, 0, 0, 20, 20, 25).result == Result::MissingBracket);
 // Core access bounds can tighten but cannot expand the physical 14-18 bracket.
