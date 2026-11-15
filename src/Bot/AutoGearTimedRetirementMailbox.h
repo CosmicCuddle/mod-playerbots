@@ -26,9 +26,9 @@ public:
         }
     };
     struct Work { Identity identity; Id ticket; };
-    enum class Submit { Accepted, Coalesced, Missing, Stopped, Exhausted };
+    enum class Submit { Accepted, Coalesced, Missing, Stopped, Exhausted, Blocked };
 private:
-    enum class Phase { Idle, Pending, Claimed };
+    enum class Phase { Idle, Pending, Claimed, Blocked };
     struct Entry { Identity identity; Phase phase = Phase::Idle; Id ticket = 0; };
     std::mutex _lock;
     std::map<Id, Entry> _entries;
@@ -75,6 +75,7 @@ public:
         if (it == _entries.end() || it->second.identity.player != player || it->second.identity.session != session)
             return Submit::Missing;
         auto& e = it->second;
+        if (e.phase == Phase::Blocked) return Submit::Blocked;
         if (e.phase != Phase::Idle) return Submit::Coalesced;
         if (_lastTicket == std::numeric_limits<Id>::max()) return Submit::Exhausted;
         e.ticket = ++_lastTicket;
@@ -104,13 +105,13 @@ public:
         return std::nullopt;
     }
     // Old completion cannot clear a later request or replacement incarnation.
-    bool Finish(Work const& work) noexcept
+    bool Finish(Work const& work, bool recoveryRequired = false) noexcept
     {
         std::lock_guard guard(_lock);
         auto it = _entries.find(work.identity.guid);
         if (it == _entries.end() || it->second.identity != work.identity ||
             it->second.ticket != work.ticket || it->second.phase != Phase::Claimed) return false;
-        it->second.phase = Phase::Idle;
+        it->second.phase = recoveryRequired ? Phase::Blocked : Phase::Idle;
         return true;
     }
     void Stop() noexcept { std::lock_guard guard(_lock); _stopping = true; }
