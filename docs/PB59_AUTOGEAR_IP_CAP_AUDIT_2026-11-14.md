@@ -24,6 +24,18 @@ The factory's `ilvl` argument is converted to a mixed gear-score limit using the
 
 ## Policy and remaining evidence
 
+## Equipment planning dependency
+
+At PB branch parent `3a9e39f1`, reset and BiS fallback destroy all equipped items before factory selection. BiS also destroys equippable bag items before running AutoGear. In `InitEquipment`'s second-chance pass, a slot's equipped item is destroyed before checking whether `items[slot]` is empty or any candidate passes `CanEquipUnseenItem`. A valid progression cap does not establish that replacements exist. The current enabled command gate denies, so the new policy cannot reach these mutations yet.
+
+Before enabling capped reset/BiS, selection must produce a replacement plan without deleting or moving items or granting reputation. The plan must record item IDs, random properties, destination slots, cap authority and the bot inventory state it was computed against. Eligibility must account for unique-equipped pairs, two-handed/offhand conflicts, class/race/skills, reputation and storage constraints across the whole plan. A candidate list alone is not proof of a successful replacement. No-candidate, stale-authority, stale-inventory and allocation/equip failure paths need an explicit preservation/rollback outcome before any wipe is permitted. Full-reset semantics with a legitimately unfillable slot require a documented decision; silently deleting that slot's current item is not acceptable for the capped path. Existing autonomous factory behavior requires separate regression review before changing shared selection.
+
+Required scenarios include zero eligible candidates, all candidates above cap, empty second-chance lists, paired unique items, two-handed weapons, full bags, failed item creation, and authority invalidation after planning. The execution/authorization contract must cover the mutation rather than only comparing snapshots before it.
+
+## Cap fixture coverage
+
+The exact fixture is `tests/pb59_autogear_cap_policy.cpp`, including every raw/effective pair from 0 through 19, byte-boundary invalid inputs, and configured/requested limit symmetry and non-widening properties. Intended isolated commands from the module root are `g++ -std=c++20 -Wall -Wextra -Werror -Isrc/Bot tests/pb59_autogear_cap_policy.cpp -o pb59-cap-test` followed by running that executable; repeat with `clang++`. These commands have not executed here because the native compilers are absent. This fixture cannot establish provider linkage, no-IP module linkage, item eligibility, or gameplay behavior.
+
 The resolver rejects an effective stage above the raw completion stage, matching snapshot API v1's validity rule. Fixtures include invalid raw12/effective13 and valid raw13/effective12 inputs. The published snapshot provider draft is IP `ec5b7fb6` (PR #185). Integration still needs a contract that serializes authorization with gear mutation: a second snapshot read alone does not prevent invalidation after that read and before deletion on another map thread. Per-character invalidation revisions also need to be exposed if equal snapshots are intended to mean the same publication. These source-review findings are recorded in coordination Issue #59; the enabled command path continues to deny.
 
 Stage 0 item level 66 and stage 1 item level 78 are provisional candidates. CS01 proposed further Vanilla and later-era candidates in Issue #59; none are production-approved. The resolver implements `min(max(completionCap(raw), entryFloor(effectiveEra)), eraCeiling(effectiveEra))`, then the stricter nonzero configured/requested limit. The parser-backed default table has 19 stage entries, with stages 2-18 zero; TBC/Wrath era ceilings are zero. Missing entries fail closed when enabled.
