@@ -691,43 +691,25 @@ private:
 class OnBotLoginOperation : public PlayerbotOperation
 {
 public:
-    OnBotLoginOperation(ObjectGuid botGuid, uint32 masterAccountId)
-        : m_botGuid(botGuid), m_masterAccountId(masterAccountId)
-    {
-    }
+    OnBotLoginOperation(ObjectGuid botGuid, std::uint64_t sessionIncarnation, std::shared_ptr<int> marker)
+        : m_botGuid(botGuid), m_sessionIncarnation(sessionIncarnation), m_marker(std::move(marker)) { }
 
     bool Execute() override
     {
-        // find and verify bot still exists
-        Player* bot = ObjectAccessor::FindConnectedPlayer(m_botGuid);
-        if (!bot)
-            return false;
-
-        PlayerbotHolder* holder = &RandomPlayerbotMgr::instance();
-        if (m_masterAccountId)
-        {
-            WorldSession* masterSession = sWorldSessionMgr->FindSession(m_masterAccountId);
-            Player* masterPlayer = masterSession ? masterSession->GetPlayer() : nullptr;
-            if (masterPlayer)
-                holder = PlayerbotsMgr::instance().GetPlayerbotMgr(masterPlayer);
-        }
-
-        if (!holder)
-            return false;
-
-        holder->OnBotLogin(bot);
-        return true;
+        return PlayerbotHolder::CompleteQueuedBotLogin(m_botGuid, m_sessionIncarnation);
     }
 
     ObjectGuid GetBotGuid() const override { return m_botGuid; }
     uint32 GetPriority() const override { return 100; }
     std::string GetName() const override { return "OnBotLogin"; }
-
-    bool IsValid() const override { return ObjectAccessor::FindConnectedPlayer(m_botGuid) != nullptr; }
+    // The exact owning record validates in Execute. A stale/dropped operation
+    // cannot attach a replacement. Destruction expires the pending weak marker.
+    bool IsValid() const override { return m_sessionIncarnation != 0 && bool(m_marker); }
 
 private:
     ObjectGuid m_botGuid;
-    uint32 m_masterAccountId = 0;
+    std::uint64_t m_sessionIncarnation;
+    std::shared_ptr<int> m_marker;
 };
 
 class ArenaTeamAssignOperation : public PlayerbotOperation
