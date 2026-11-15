@@ -11,7 +11,7 @@ namespace PB59
 {
 // Independent headless-session custody primitive. NOT wired to native logout.
 // The world-thread owner must bind explicitly, prove exclusive native ownership,
-// and supply a non-recycled session incarnation. No restart durability.
+// and use the Core non-recycled session incarnation. No restart durability.
 template<class Session>
 class SessionCustody final
 {
@@ -103,6 +103,7 @@ public:
         {
             if (!OnOwner() || !_entry || _entry->identity != id || _entry->owned ||
                 !source || source.get() != _entry->expected || !source->IsHeadless() ||
+                source->GetPB59SessionIncarnation() != id.session ||
                 source->GetPlayer() != _entry->player || !MatchesPlayer(id, source->GetPlayer()))
                 return false;
             _entry->owned = std::move(source);
@@ -116,6 +117,7 @@ public:
         {
             auto entry = _entry;
             if (!OnOwner() || !entry || entry->identity != id || !entry->owned || entry->busy || entry->attempted ||
+                entry->owned->GetPB59SessionIncarnation() != id.session ||
                 entry->owned->GetPlayer() != entry->player || !MatchesPlayer(id, entry->owned->GetPlayer()))
                 return false;
             entry->attempted = true;
@@ -131,7 +133,8 @@ public:
         {
             auto entry = _entry;
             if (!OnOwner() || !entry || entry->identity != id || !entry->owned ||
-                entry->busy || !entry->detachedOnReturn || entry->owned->GetPlayer())
+                entry->busy || !entry->detachedOnReturn || entry->owned->GetPB59SessionIncarnation() != id.session ||
+                entry->owned->GetPlayer())
                 return false;
             auto session = std::move(entry->owned);
             EraseExact(entry);
@@ -154,7 +157,8 @@ public:
     };
     static Reservation Reserve(Identity id, Session* expected) noexcept
     {
-        if (!OnOwner() || !id.Valid() || !expected || !expected->IsHeadless() || !MatchesPlayer(id, expected->GetPlayer()))
+        if (!OnOwner() || !id.Valid() || !expected || !expected->IsHeadless() ||
+            expected->GetPB59SessionIncarnation() != id.session || !MatchesPlayer(id, expected->GetPlayer()))
             return {};
         try
         {
