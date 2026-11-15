@@ -231,7 +231,9 @@ void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId
     }
     catch (...)
     {
-        pendingIt->second.owner.Fail();
+        auto current = botLoading.find(playerGuid);
+        if (current != botLoading.end() && current->second.owner.Matches(sessionId))
+            current->second.owner.Fail();
     }
 }
 
@@ -287,11 +289,18 @@ void PlayerbotHolder::ClearPendingLogins()
         LOG_ERROR("playerbots", "{} pending bot sessions remain unresolved at shutdown", botLoading.size());
 }
 
+bool PlayerbotHolder::IsAccountLinked(uint32 accountId, uint32 linkedAccountId)
+{
+    PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACCOUNT_LINK);
+    stmt->SetData(0, accountId);
+    stmt->SetData(1, linkedAccountId);
+    return PlayerbotsDatabase.Query(stmt) != nullptr;
+}
+
 void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder const& holder, WorldSession* botSession)
 {
     using Phase = PendingBotLogin::Owner::Phase;
     auto const guid = holder.GetGuid();
-    auto const masterAccountId = holder.GetMasterAccountId();
     auto it = botLoading.find(guid);
     if (!botSession || it == botLoading.end() || it->second.owner.Get() != botSession ||
         !it->second.owner.Busy() || it->second.owner.State() != Phase::Loading)
@@ -323,7 +332,6 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder con
         !PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(op)))
         pending.owner.Fail();
     // No erase here: the queue owns only its marker, not the WorldSession.
-    (void)masterAccountId;
 }
 
 bool PlayerbotHolder::CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sessionId)
