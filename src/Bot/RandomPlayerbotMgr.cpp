@@ -964,20 +964,25 @@ uint32 RandomPlayerbotMgr::RemoveRandomBots()
     toLogout.insert(toLogout.end(), allianceBots.begin(), allianceBots.begin() + removeAlliance);
     toLogout.insert(toLogout.end(), hordeBots.begin(), hordeBots.begin() + removeHorde);
 
-    // Reuse the same teardown as the 'add' event expiry path from ProcessBot.
+    // Retain population bookkeeping when the retirement producer is busy.
+    // The next population tick can select the same bot again.
+    uint32 removed = 0;
     for (ObjectGuid guid : toLogout)
     {
-        uint32 bot = guid.GetCounter();
-        SetEventValue(bot, "add", 0, 0);
-        currentBots.erase(bot);
-        LogoutPlayerBot(guid);
+        if (TryLogoutPlayerBot(guid, [&]
+        {
+            uint32 bot = guid.GetCounter();
+            SetEventValue(bot, "add", 0, 0);
+            currentBots.erase(bot);
+        }) == BotRetirementResult::Completed)
+            ++removed;
     }
 
-    if (!toLogout.empty())
-        LOG_DEBUG("playerbots", "Logged-out {} randombots to match target count of {}", toLogout.size(),
+    if (removed)
+        LOG_DEBUG("playerbots", "Logged-out {} randombots to match target count of {}", removed,
                   maxAllowedBotCount);
 
-    return toLogout.size();
+    return removed;
 }
 
 // Population target for RandomBotCountMode 2: a 24 hour cycle ramping from MinRandomBots at RandomBotCountMinTime
@@ -1573,17 +1578,25 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     {
         if (!player || !player->GetGroup())
         {
+            auto clearSchedule = [&]
+            {
+                SetEventValue(bot, "add", 0, 0);
+                currentBots.erase(bot);
+            };
             if (player)
-                LOG_DEBUG("playerbots", "Bot #{} {}:{} <{}>: log out", bot, IsAlliance(player->getRace()) ? "A" : "H",
-                          player->GetLevel(), player->GetName().c_str());
+            {
+                TryLogoutPlayerBot(botGUID, [&]
+                {
+                    LOG_DEBUG("playerbots", "Bot #{} {}:{} <{}>: log out", bot, IsAlliance(player->getRace()) ? "A" : "H",
+                              player->GetLevel(), player->GetName().c_str());
+                    clearSchedule();
+                });
+            }
             else
+            {
                 LOG_DEBUG("playerbots", "Bot #{}: log out", bot);
-
-            SetEventValue(bot, "add", 0, 0);
-            currentBots.erase(bot);
-
-            if (player)
-                LogoutPlayerBot(botGUID);
+                clearSchedule();
+            }
         }
 
         return false;
@@ -3689,18 +3702,43 @@ void RandomPlayerbotMgr::RandomTeleportForRpg(Player* bot)
 
 void RandomPlayerbotMgr::Remove(Player* bot)
 {
+    if (!bot)
+        return;
     ObjectGuid owner = bot->GetGUID();
+    auto clearEvents = [&]
+    {
+        PlayerbotsDatabasePreparedStatement* stmt =
+            PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_RANDOM_BOTS_BY_OWNER);
+        stmt->SetData(0, 0);
+        stmt->SetData(1, owner.GetCounter());
+        PlayerbotsDatabase.Execute(stmt);
 
-    PlayerbotsDatabasePreparedStatement* stmt =
-        PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_RANDOM_BOTS_BY_OWNER);
-    stmt->SetData(0, 0);
-    stmt->SetData(1, owner.GetCounter());
-    PlayerbotsDatabase.Execute(stmt);
+        uint32 botId = owner.GetCounter();
+        eventCache.erase(botId);
+    };
 
-    uint32 botId = owner.GetCounter();
-    eventCache.erase(botId);
+    if (Player* held = GetPlayerBot(owner))
+    {
+        if (held == bot)
+            TryLogoutPlayerBot(owner, clearEvents);
+        return;
+    }
 
-    LogoutPlayerBot(owner);
+    // Preserve the existing non-holder event cleanup, but never run it while
+    // this live owner's gear transaction or another retirement is in progress.
+    auto retirement = bot->TryAcquirePB59Retirement();
+    if (!retirement || !retirement.MarkMutation())
+        return;
+    try
+    {
+        clearEvents();
+        if (!retirement.Complete())
+            LOG_ERROR("playerbots", "Bot {} event cleanup incomplete; recovery required", owner.ToString());
+    }
+    catch (...)
+    {
+        LOG_ERROR("playerbots", "Bot {} event cleanup incomplete; recovery required", owner.ToString());
+    }
 }
 
 CreatureData const* RandomPlayerbotMgr::GetCreatureDataByEntry(uint32 entry)

@@ -7,6 +7,8 @@
 #include "PlayerbotFactory.h"
 #include "AutoGearProgressionCap.h"
 #include "AutoGearSlotPolicy.h"
+#include "AutoGearStorageMatching.h"
+#include "AutoGearStorageTransaction.h"
 #include <algorithm>
 #include <array>
 #include "PlayerbotsDatabase.h"
@@ -15,6 +17,7 @@
 #include "AiObjectContext.h"
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
+#include "Bag.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "GuildMgr.h"
@@ -4055,6 +4058,17 @@ uint32 PlayerbotFactory::CalcMixedGearScore(uint32 gs, uint32 quality)
     return gs * PlayerbotAI::GetItemScoreMultiplier(ItemQualities(quality));
 }
 
+PlayerbotsAutoGearSet::Result PlayerbotFactory::PlanEquipmentSet(
+    std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> const& domains,
+    PlayerbotsAutoGearSet::Policy const& policy, std::size_t candidateBudget, std::size_t nodeBudget)
+{
+    static_assert(EQUIPMENT_SLOT_END == PlayerbotsAutoGearSet::Slots &&
+        EQUIPMENT_SLOT_MAINHAND == PlayerbotsAutoGearSet::Main &&
+        EQUIPMENT_SLOT_OFFHAND == PlayerbotsAutoGearSet::Off &&
+        EQUIPMENT_SLOT_RANGED == PlayerbotsAutoGearSet::Ranged);
+    return PlayerbotsAutoGearSet::Solve(domains, policy, candidateBudget, nodeBudget);
+}
+
 void PlayerbotFactory::DestroyEquippedGear(Player* bot)
 {
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
@@ -4069,148 +4083,275 @@ void PlayerbotFactory::DestroyEquippedGear(Player* bot)
 PlayerbotsAutoGearSample::Result PlayerbotFactory::CaptureEquipmentSample(Player* sender,
     std::span<uint8 const> countedSlots, bool eligibilityKnown)
 {
-    if (!eligibilityKnown || !sender || !sender->IsInWorld() || !sender->GetSession() ||
-        sender->GetSession()->IsHeadless())
+#if __has_include("EquipmentCaptureState.h")
+    if (!sender || !eligibilityKnown)
         return {};
-
-    std::array<PlayerbotsAutoGearSample::Slot, EQUIPMENT_SLOT_END> slots{};
+    uint32 mask = 0;
     for (uint8 slot : countedSlots)
     {
         if (slot >= EQUIPMENT_SLOT_END || slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD ||
-            slots[slot].countedByPolicy)
+            (mask & (1u << slot)))
             return {};
-        slots[slot].countedByPolicy = true;
-        Item* item = sender->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item)
-            continue;
-        ItemTemplate const* itemTemplate = item->GetTemplate();
-        slots[slot] = {true, true, itemTemplate != nullptr,
-            itemTemplate && itemTemplate->Quality == ITEM_QUALITY_HEIRLOOM,
-            itemTemplate ? itemTemplate->ItemLevel : 0};
+        mask |= 1u << slot;
     }
-    return PlayerbotsAutoGearSample::Average(slots, eligibilityKnown);
+    // Legacy arithmetic-only entry point. Its local revision is not an
+    // authorization and must never be used as the command's final policy stamp.
+    auto sample = CaptureEquipmentAuthority(sender, 1, mask, eligibilityKnown);
+    return sample ? sample->average : PlayerbotsAutoGearSample::Result{};
+#else
+    // No native capture seam: no unsafe live-Player fallback.
+    (void)sender;
+    (void)countedSlots;
+    (void)eligibilityKnown;
+    return {};
+#endif
 }
+
+#if __has_include("EquipmentCaptureState.h")
+std::optional<PlayerbotsAutoGearNativeAuthority::Sample> PlayerbotFactory::CaptureEquipmentAuthority(
+    Player const* sender, uint64 policyRevision, uint32 countedMask, bool eligibilityKnown)
+{
+    if (!sender || !eligibilityKnown)
+        return std::nullopt;
+    auto facts = sender->CapturePB59Equipment();
+    if (!facts)
+        return std::nullopt;
+    return PlayerbotsAutoGearNativeAuthority::Capture(*facts, policyRevision, countedMask,
+        eligibilityKnown, ITEM_QUALITY_HEIRLOOM);
+}
+
+bool PlayerbotFactory::IsEquipmentAuthorityCurrent(Player const* sender,
+    PlayerbotsAutoGearNativeAuthority::Sample const& expected, uint64 policyRevision,
+    uint32 countedMask, bool eligibilityKnown)
+{
+    if (!sender || !sender->IsPB59EquipmentCurrent(expected.facts.stamp))
+        return false;
+    auto facts = sender->CapturePB59Equipment();
+    return facts && PlayerbotsAutoGearNativeAuthority::Current(expected, *facts, policyRevision,
+        countedMask, eligibilityKnown, ITEM_QUALITY_HEIRLOOM);
+}
+#endif
 
 InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves)
 {
     moves.clear();
-    if (!bot || !bot->IsInWorld())
-        return EQUIP_ERR_ITEM_NOT_FOUND;
+#if !__has_include("PB59InventorySlotFacts.h")
+    (void)bot;
+    return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+#else
+    if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+        return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 
-    std::vector<EquipmentStorageMove> prepared;
+    using namespace PlayerbotsAutoGearStorage;
+    std::vector<Domain> domains;
+    std::vector<ObjectGuid> guids;
+    std::vector<uint32> counts;
+    std::vector<PB59::InventorySlotFacts> originals;
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
         if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
             continue;
-        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item)
-            continue;
         uint16 const source = (uint16(INVENTORY_SLOT_BAG_0) << 8) | slot;
+        auto original = bot->CapturePB59InventorySlot(source);
+        if (!original)
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        if (!original->item)
+            continue;
+        Item* item = bot->GetItemByPos(source);
+        if (!item)
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        ObjectGuid const originalGuid = item->GetGUID();
+        uint32 const originalCount = original->item->count;
         InventoryResult const unequip = bot->CanUnequipItem(source, false);
         if (unequip != EQUIP_ERR_OK)
             return unequip;
-        if (item->IsInTrade())
+        // The script hook can run arbitrary code. Never dereference the old
+        // pointer after that callback; reacquire and check the exact GUID.
+        auto current = bot->CapturePB59InventorySlot(source);
+        if (!current || *current != *original)
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        item = bot->GetItemByPos(source);
+        if (!item || item->GetGUID() != originalGuid || !originalCount || item->GetCount() != originalCount || item->IsInTrade() ||
+            item->GetGUID() == bot->GetLootGUID())
             return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 
-        bool reserved = false;
-        auto reserve = [&](uint8 bag, uint8 destinationSlot)
+        Domain domain{originalGuid.GetRawValue(), source, {}};
+        bool unknownDestination = false;
+        auto collect = [&](uint8 bag, uint8 destinationSlot)
         {
             uint16 const destination = (uint16(bag) << 8) | destinationSlot;
-            if (bot->GetItemByPos(bag, destinationSlot) ||
-                std::any_of(prepared.begin(), prepared.end(), [destination](EquipmentStorageMove const& move)
-                    { return move.destination == destination; }))
-                return false;
-
-            ItemPosCountVec destinations;
-            if (bot->CanStoreItem(bag, destinationSlot, destinations, item, false) != EQUIP_ERR_OK ||
-                destinations.size() != 1 || destinations.front().pos != destination ||
-                destinations.front().count != item->GetCount())
-                return false;
-
-            prepared.push_back({item->GetGUID(), source, destination});
-            return true;
-        };
-
-        for (uint8 destination = INVENTORY_SLOT_ITEM_START; destination < INVENTORY_SLOT_ITEM_END; ++destination)
-            if (reserve(INVENTORY_SLOT_BAG_0, destination))
+            if (bot->GetItemByPos(bag, destinationSlot))
+                return;
+            auto observed = bot->CapturePB59InventorySlot(destination);
+            if (!observed || observed->item)
             {
-                reserved = true;
-                break;
+                unknownDestination = true;
+                return;
             }
-        for (uint8 bag = INVENTORY_SLOT_BAG_START; !reserved && bag < INVENTORY_SLOT_BAG_END; ++bag)
-            if (Bag* container = bot->GetBagByPos(bag))
-                for (uint32 destination = 0; destination < container->GetBagSize(); ++destination)
-                    if (reserve(bag, static_cast<uint8>(destination)))
-                    {
-                        reserved = true;
-                        break;
-                    }
-        if (!reserved)
-            return EQUIP_ERR_INVENTORY_FULL;
+            ItemPosCountVec destinations;
+            if (bot->CanStoreItem(bag, destinationSlot, destinations, item, false) == EQUIP_ERR_OK &&
+                destinations.size() == 1 && destinations.front().pos == destination &&
+                destinations.front().count == item->GetCount())
+                domain.destinations.push_back(destination);
+        };
+        for (uint8 destination = INVENTORY_SLOT_ITEM_START; destination < INVENTORY_SLOT_ITEM_END; ++destination)
+            collect(INVENTORY_SLOT_BAG_0, destination);
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        {
+            Bag* container = bot->GetBagByPos(bag);
+            if (!container)
+            {
+                // A non-bag object in an equipped bag slot is not a known
+                // empty bag slot. Refuse inconsistent inventory structure.
+                if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag))
+                    return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+                continue;
+            }
+            if (!container->GetBagSize() || container->GetBagSize() > MAX_BAG_SIZE)
+                return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+            for (uint32 destination = 0; destination < container->GetBagSize(); ++destination)
+                collect(bag, static_cast<uint8>(destination));
+        }
+        if (unknownDestination)
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        current = bot->CapturePB59InventorySlot(source);
+        if (!current || *current != *original)
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        guids.push_back(originalGuid);
+        counts.push_back(originalCount);
+        originals.push_back(std::move(*original));
+        domains.push_back(std::move(domain));
     }
 
+    // At most 17 items x (16 backpack + 4 x the native bag capacity).
+    // This is a structural bound, not a production gear policy.
+    auto result = Match(domains, true, 17 * (16 + 4 * MAX_BAG_SIZE));
+    if (result.status == Status::NoSpace)
+        return EQUIP_ERR_INVENTORY_FULL;
+    if (result.status != Status::Ready)
+        return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+    std::vector<EquipmentStorageMove> prepared;
+    for (std::size_t i = 0; i < result.moves.size(); ++i)
+    {
+        auto const& move = result.moves[i];
+        uint8 const bag = move.destination >> 8;
+        ObjectGuid bagGuid = ObjectGuid::Empty;
+        if (bag != INVENTORY_SLOT_BAG_0)
+        {
+            Bag* container = bot->GetBagByPos(bag);
+            if (!container || (move.destination & 255) >= container->GetBagSize())
+                return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+            bagGuid = container->GetGUID();
+        }
+        prepared.push_back({guids[i], move.source, move.destination, counts[i], bagGuid,
+            std::move(originals[i])});
+    }
+
+    // Offhand first: reverse restoration then puts mainhand back before
+    // offhand, including ordinary two-hand and Titan Grip combinations.
+    auto offhand = std::find_if(prepared.begin(), prepared.end(), [](EquipmentStorageMove const& move)
+        { return (move.source & 255) == EQUIPMENT_SLOT_OFFHAND; });
+    if (offhand != prepared.end())
+        std::rotate(prepared.begin(), offhand, offhand + 1);
     InventoryResult const validation = ValidateEquipmentStorage(bot, prepared);
     if (validation != EQUIP_ERR_OK)
         return validation;
     moves = std::move(prepared);
     return EQUIP_ERR_OK;
+#endif
 }
 
 InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
     std::vector<EquipmentStorageMove> const& moves)
 {
+#if !__has_include("PB59InventorySlotFacts.h")
+    (void)bot;
+    (void)moves;
+    return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+#else
     if (!bot || !bot->IsInWorld() || !bot->IsAlive() || moves.size() > EQUIPMENT_SLOT_END)
         return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 
-    std::size_t equippedCount = 0;
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-        if (slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD &&
-            bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            ++equippedCount;
-    if (equippedCount != moves.size())
+    std::vector<PlayerbotsAutoGearStorage::Move> exact;
+    for (auto const& move : moves)
+    {
+        if (!move.original.item || move.original.item->guid != move.itemGuid.GetRawValue() ||
+            move.original.item->count != move.count || move.original.position != move.source)
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        exact.push_back({move.itemGuid.GetRawValue(), move.source, move.destination});
+    }
+    if (!PlayerbotsAutoGearStorage::ValidMoves(exact))
         return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 
-    for (std::size_t index = 0; index < moves.size(); ++index)
+    auto equippedCount = [&]()
     {
-        EquipmentStorageMove const& move = moves[index];
+        std::size_t count = 0;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD &&
+                bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                ++count;
+        return count;
+    };
+    auto originalAndEmpty = [&](EquipmentStorageMove const& move)
+    {
         uint8 const slot = move.source & 255;
         uint8 const bag = move.destination >> 8;
         uint8 const destinationSlot = move.destination & 255;
         if ((move.source >> 8) != INVENTORY_SLOT_BAG_0 || slot >= EQUIPMENT_SLOT_END ||
-            slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
-            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+            slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD || !move.count)
+            return false;
         bool const backpack = bag == INVENTORY_SLOT_BAG_0 && destinationSlot >= INVENTORY_SLOT_ITEM_START &&
             destinationSlot < INVENTORY_SLOT_ITEM_END;
         bool const equippedBag = bag >= INVENTORY_SLOT_BAG_START && bag < INVENTORY_SLOT_BAG_END;
         if (!backpack && !equippedBag)
-            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+            return false;
+        if (backpack && move.destinationBagGuid != ObjectGuid::Empty)
+            return false;
         if (equippedBag)
         {
             Bag* container = bot->GetBagByPos(bag);
-            if (!container || destinationSlot >= container->GetBagSize())
-                return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+            if (!container || container->GetGUID() != move.destinationBagGuid ||
+                destinationSlot >= container->GetBagSize())
+                return false;
         }
-        for (std::size_t previous = 0; previous < index; ++previous)
-            if (moves[previous].source == move.source || moves[previous].destination == move.destination ||
-                moves[previous].itemGuid == move.itemGuid)
-                return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        auto sourceNow = bot->CapturePB59InventorySlot(move.source);
+        auto destinationNow = bot->CapturePB59InventorySlot(move.destination);
+        return sourceNow && destinationNow && PlayerbotsAutoGearStorage::OriginalAndEmpty(
+            move.original, move.destination, move.destinationBagGuid.GetRawValue(),
+            *sourceNow, *destinationNow);
+    };
+    if (equippedCount() != moves.size())
+        return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 
-        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item || item->GetGUID() != move.itemGuid || item->IsInTrade() ||
-            item->GetGUID() == bot->GetLootGUID() || bot->GetItemByPos(bag, destinationSlot))
+    for (auto const& move : moves)
+    {
+        if (!originalAndEmpty(move))
             return EQUIP_ERR_CANT_DO_RIGHT_NOW;
         InventoryResult const unequip = bot->CanUnequipItem(move.source, false);
         if (unequip != EQUIP_ERR_OK)
             return unequip;
+        if (!originalAndEmpty(move))
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+        Item* item = bot->GetItemByPos(move.source);
         ItemPosCountVec destinations;
-        InventoryResult const storage = bot->CanStoreItem(bag, destinationSlot, destinations, item, false);
+        InventoryResult const storage = bot->CanStoreItem(move.destination >> 8,
+            move.destination & 255, destinations, item, false);
         if (storage != EQUIP_ERR_OK)
             return storage;
         if (destinations.size() != 1 || destinations.front().pos != move.destination ||
-            destinations.front().count != item->GetCount())
+            destinations.front().count != move.count)
             return EQUIP_ERR_CANT_DO_RIGHT_NOW;
     }
+
+    // Later validation callbacks may have changed an earlier reservation.
+    // Recheck the entire exact positional plan without invoking scripts.
+    if (!bot->IsInWorld() || !bot->IsAlive() || equippedCount() != moves.size())
+        return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+    for (auto const& move : moves)
+        if (!originalAndEmpty(move))
+            return EQUIP_ERR_CANT_DO_RIGHT_NOW;
     return EQUIP_ERR_OK;
+#endif
 }
 
 void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance,

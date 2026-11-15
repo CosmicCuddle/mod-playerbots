@@ -9,6 +9,13 @@
 
 #include "InventoryAction.h"
 #include "AutoGearEquipmentSample.h"
+#include "AutoGearSetSolver.h"
+#if __has_include("PB59InventorySlotFacts.h")
+#include "AutoGearExactStorageObservation.h"
+#endif
+#if __has_include("EquipmentCaptureState.h")
+#include "AutoGearNativeAuthority.h"
+#endif
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include <string>
@@ -84,11 +91,20 @@ public:
     void InitAmmo();
     static uint32 CalcMixedGearScore(uint32 gs, uint32 quality);
     static void DestroyEquippedGear(Player* bot);
+    // Complete copied candidate universe only; never modifies bot inventory.
+    static PlayerbotsAutoGearSet::Result PlanEquipmentSet(
+        std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> const& domains,
+        PlayerbotsAutoGearSet::Policy const& policy, std::size_t candidateBudget, std::size_t nodeBudget);
     struct EquipmentStorageMove
     {
         ObjectGuid itemGuid;
         uint16 source;
         uint16 destination;
+        uint32 count;
+        ObjectGuid destinationBagGuid; // Empty for the backpack.
+#if __has_include("PB59InventorySlotFacts.h")
+        PB59::InventorySlotFacts original; // Exact copied instance and source links.
+#endif
     };
     // Call on the bot-owning thread. Does not move items; output is empty on failure.
     static InventoryResult PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves);
@@ -96,6 +112,14 @@ public:
     // Sender-owning thread only; publication/freshness must be supplied separately.
     static PlayerbotsAutoGearSample::Result CaptureEquipmentSample(Player* sender,
         std::span<uint8 const> countedSlots, bool eligibilityKnown);
+#if __has_include("EquipmentCaptureState.h")
+    // Owner-context only. Never pass a live sender to a bot worker.
+    static std::optional<PlayerbotsAutoGearNativeAuthority::Sample> CaptureEquipmentAuthority(Player const* sender,
+        uint64 policyRevision, uint32 countedMask, bool eligibilityKnown);
+    static bool IsEquipmentAuthorityCurrent(Player const* sender,
+        PlayerbotsAutoGearNativeAuthority::Sample const& expected,
+        uint64 policyRevision, uint32 countedMask, bool eligibilityKnown);
+#endif
     static void AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance = false,
                         bool applyFinishers = true, uint32 maxRawItemLevel = 0);
     void InitPetTalents();

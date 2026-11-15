@@ -334,31 +334,32 @@ void PlayerbotHolder::HandleBotPackets(WorldSession* session)
 
 void PlayerbotHolder::LogoutAllBots()
 {
-    /*
-    while (true)
+    // Snapshot exact registered incarnations, not Player pointers that a
+    // previous callback could destroy or replace. Owner-context only.
+    auto holderLife = _pb59HolderLifetime.Observe();
+    std::vector<std::pair<ObjectGuid, std::uint64_t>> bots;
+    bots.reserve(playerBots.size());
+    for (auto const& [guid, bot] : playerBots)
     {
-        PlayerBotMap::const_iterator itr = GetPlayerBotsBegin();
-        if (itr == GetPlayerBotsEnd())
-            break;
-
-        Player* bot= itr->second;
-        if (!IsSelfBot(bot))
-            LogoutPlayerBot(bot->GetGUID());
+        Player* live = ObjectAccessor::FindConnectedPlayer(guid);
+        if (live && live == bot && live->GetPB59OwnerIncarnation())
+            bots.emplace_back(guid, live->GetPB59OwnerIncarnation());
     }
-    */
 
-    PlayerBotMap bots = playerBots;
-    for (auto& itr : bots)
+    for (auto const& [guid, incarnation] : bots)
     {
-        Player* bot = itr.second;
-        if (!bot)
+        if (!holderLife->Alive())
+            return;
+        Player* live = ObjectAccessor::FindConnectedPlayer(guid);
+        if (!live || live != GetPlayerBot(guid) || live->GetPB59OwnerIncarnation() != incarnation)
             continue;
-
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!botAI || IsSelfBot(bot))
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(live);
+        if (!botAI || IsSelfBot(live))
             continue;
-
-        LogoutPlayerBot(bot->GetGUID());
+        auto result = TryLogoutPlayerBot(guid);
+        if (result != BotRetirementResult::Completed)
+            LOG_ERROR("playerbots", "Bulk bot logout incomplete for {} owner {}; independent live custody still required",
+                guid.ToString(), incarnation);
     }
 }
 
@@ -403,99 +404,212 @@ void PlayerbotMgr::CancelLogout()
     }
 }
 
-void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
+bool PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
-    if (Player* bot = GetPlayerBot(guid))
-    {
-        PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!botAI)
-            return;
+    return TryLogoutPlayerBot(guid) == BotRetirementResult::Completed;
+}
 
-        // Queue group cleanup operation for world thread
+BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement)
+{
+    using Result = BotRetirementResult;
+    using Journal = PB59::RecoveryRegistry;
+    auto holderLife = _pb59HolderLifetime.Observe();
+    if (!holderLife->Alive())
+        return Result::Refused;
+    Player* bot = GetPlayerBot(guid);
+    if (!bot || ObjectAccessor::FindConnectedPlayer(guid) != bot)
+        return Result::Refused;
+
+    auto retirement = bot->TryAcquirePB59Retirement();
+    if (!retirement)
+        return bot->PB59RetirementRecoveryRequired() ? Result::RecoveryRequired : Result::Refused;
+
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    WorldSession* botWorldSessionPtr = bot->GetSession();
+    if (!botAI || !botWorldSessionPtr || botWorldSessionPtr->GetPlayer() != bot || botWorldSessionPtr->IsLoggingOut())
+        return Result::Refused;
+
+    auto const ownerIncarnation = bot->GetPB59OwnerIncarnation();
+    auto record = Journal::Reserve(guid.GetRawValue(), ownerIncarnation, holderLife->identity, Journal::Kind::Logout);
+    if (!record)
+    {
+        auto existing = Journal::Inspect(guid.GetRawValue(), ownerIncarnation);
+        return existing && existing->phase == Journal::Phase::RecoveryRequired ?
+            Result::RecoveryRequired : Result::Refused;
+    }
+
+    // Owner-context only: reacquire the registered Player before dereferencing
+    // after callbacks. Exact token rejects a replacement owner at the same address.
+    // This does not make ObjectAccessor a cross-thread lifetime pin.
+    auto current = [&]()
+    {
+        if (!holderLife->Alive())
+            return false;
+        Player* live = ObjectAccessor::FindConnectedPlayer(guid);
+        return live && live == bot && live->GetPB59OwnerIncarnation() == ownerIncarnation &&
+            GetPlayerBot(guid) == live &&
+            live->OwnsPB59Retirement(retirement) && live->GetSession() == botWorldSessionPtr &&
+            GET_PLAYERBOT_AI(live) == botAI && botWorldSessionPtr->GetPlayer() == live &&
+            !botWorldSessionPtr->IsLoggingOut();
+    };
+    auto partial = [&]()
+    {
+        LOG_ERROR("playerbots", "Bot {} retirement incomplete; operation {} owner {} recovery required",
+            guid.ToString(), record.Operation(), ownerIncarnation);
+        return Result::RecoveryRequired;
+    };
+    if (!retirement.MarkMutation())
+        return Result::Refused;
+    if (!record.MarkMutation())
+        return partial();
+    try
+    {
+        record.MarkStep(Journal::Step::BeforeBookkeeping);
+        if (beforeRetirement)
+            beforeRetirement();
+        if (!current())
+            return partial();
+
+        record.MarkStep(Journal::Step::BeforeIdentityRetire);
+        PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
+        record.MarkStep(Journal::Step::BeforeGroupQueue);
         auto cleanupOp = std::make_unique<BotLogoutGroupCleanupOperation>(guid);
         PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(cleanupOp));
+        if (!current())
+            return partial();
 
         LOG_DEBUG("playerbots", "Bot {} logging out", bot->GetName().c_str());
-
-        // Remove taxi cheat flag on alts.
+        record.MarkStep(Journal::Step::BeforeTaxiChange);
         if (!sRandomPlayerbotMgr.IsRandomBot(bot) && bot->isTaxiCheater())
             bot->SetTaxiCheater(false);
-
+        if (!current())
+            return partial();
+        record.MarkStep(Journal::Step::BeforeSave);
         bot->SaveToDB(false, false);
+        if (!current())
+            return partial();
 
-        WorldSession* botWorldSessionPtr = bot->GetSession();
-        [[maybe_unused]] WorldSession* masterWorldSessionPtr = nullptr;     // Remove [[maybe_unused]] tag if timed logout implemented.
-
-        if (botWorldSessionPtr->IsLoggingOut())
-            return;
-
-        Player* master = botAI->GetMaster();
-        if (master)
-            masterWorldSessionPtr = master->GetSession();
-
-        // TODO: Review whether or not to implement timed logout.
-        // Unused block. Useful only for timed logout.
-/*
-        // check for instant logout
-        bool logout = botWorldSessionPtr->ShouldLogOut(time(nullptr));
-
-        if (masterWorldSessionPtr && masterWorldSessionPtr->ShouldLogOut(time(nullptr)))
-            logout = true;
-
-        if (masterWorldSessionPtr && !masterWorldSessionPtr->GetPlayer())
-            logout = true;
-
-        if (bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || bot->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
-            botWorldSessionPtr->GetSecurity() >= (AccountTypes)sWorld->getIntConfig(CONFIG_INSTANT_LOGOUT))
-            logout = true;
-
-        if (master &&
-            (master->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || master->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
-             (masterWorldSessionPtr &&
-              masterWorldSessionPtr->GetSecurity() >= (AccountTypes)sWorld->getIntConfig(CONFIG_INSTANT_LOGOUT))))
-            logout = true;
-*/
-        // Instant logout (the only option right now)
-        {
-            std::string message = PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "goodbye", "Goodbye!", {});
-            botAI->TellMaster(message);
-            RemoveFromPlayerbotsMap(guid);              // deletes bot player ptr inside this WorldSession PlayerBotMap
-            botWorldSessionPtr->LogoutPlayer(true);     // this will delete the bot Player object and PlayerbotAI object
-            delete botWorldSessionPtr;                  // finally delete the bot's WorldSession
-        }
+        record.MarkStep(Journal::Step::BeforeFarewell);
+        std::string message = PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "goodbye", "Goodbye!", {});
+        botAI->TellMaster(message);
+        if (!current())
+            return partial();
+        record.MarkStep(Journal::Step::BeforeHolderErase);
+        RemoveFromPlayerbotsMap(guid);
+        record.MarkStep(Journal::Step::HolderErased);
+        record.MarkStep(Journal::Step::BeforeNativeLogout);
+        botWorldSessionPtr->LogoutPlayer(true);
+        record.MarkStep(Journal::Step::NativeLogoutReturned);
+        // A future native logout veto must not be followed by session deletion.
+        if (botWorldSessionPtr->GetPlayer())
+            return partial();
+        record.MarkStep(Journal::Step::BeforeSessionDelete);
+        delete botWorldSessionPtr;
+        record.MarkStep(Journal::Step::SessionDeleteReturned);
+        return retirement.Complete() && record.Complete() ? Result::Completed : partial();
+    }
+    catch (...)
+    {
+        // An admitted producer may already have changed scheduler/identity/DB
+        // state. The lease latches recovery on unwind; never retry blindly.
+        return partial();
     }
 }
 
-void PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
+bool PlayerbotHolder::DisablePlayerBot(ObjectGuid guid)
 {
-    if (Player* bot = GetPlayerBot(guid))
+    return TryDisablePlayerBot(guid) == BotRetirementResult::Completed;
+}
+
+BotRetirementResult PlayerbotHolder::TryDisablePlayerBot(ObjectGuid guid)
+{
+    using Result = BotRetirementResult;
+    using Journal = PB59::RecoveryRegistry;
+    auto holderLife = _pb59HolderLifetime.Observe();
+    if (!holderLife->Alive())
+        return Result::Refused;
+    Player* bot = GetPlayerBot(guid);
+    if (!bot || ObjectAccessor::FindConnectedPlayer(guid) != bot)
+        return Result::Refused;
+
+    auto retirement = bot->TryAcquirePB59Retirement();
+    if (!retirement)
+        return bot->PB59RetirementRecoveryRequired() ? Result::RecoveryRequired : Result::Refused;
+
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    WorldSession* session = bot->GetSession();
+    if (!botAI || !session || session->GetPlayer() != bot)
+        return Result::Refused;
+
+    auto const ownerIncarnation = bot->GetPB59OwnerIncarnation();
+    auto record = Journal::Reserve(guid.GetRawValue(), ownerIncarnation, holderLife->identity, Journal::Kind::Disable);
+    if (!record)
     {
+        auto existing = Journal::Inspect(guid.GetRawValue(), ownerIncarnation);
+        return existing && existing->phase == Journal::Phase::RecoveryRequired ?
+            Result::RecoveryRequired : Result::Refused;
+    }
+
+    auto current = [&]()
+    {
+        if (!holderLife->Alive())
+            return false;
+        Player* live = ObjectAccessor::FindConnectedPlayer(guid);
+        return live && live == bot && live->GetPB59OwnerIncarnation() == ownerIncarnation &&
+            GetPlayerBot(guid) == live &&
+            live->OwnsPB59Retirement(retirement) && live->GetSession() == session &&
+            GET_PLAYERBOT_AI(live) == botAI && session->GetPlayer() == live;
+    };
+    auto partial = [&]()
+    {
+        LOG_ERROR("playerbots", "Bot {} disable incomplete; operation {} owner {} recovery required",
+            guid.ToString(), record.Operation(), ownerIncarnation);
+        return Result::RecoveryRequired;
+    };
+    if (!retirement.MarkMutation())
+        return Result::Refused;
+    if (!record.MarkMutation())
+        return partial();
+    try
+    {
+        record.MarkStep(Journal::Step::BeforeIdentityRetire);
         PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!botAI)
-        {
-            return;
-        }
+        record.MarkStep(Journal::Step::BeforeFarewell);
         botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
             "goodbye", "Goodbye!", {}));
+        if (!current())
+            return partial();
+        record.MarkStep(Journal::Step::BeforeMotion);
         bot->StopMoving();
         bot->GetMotionMaster()->Clear();
+        if (!current())
+            return partial();
 
+        record.MarkStep(Journal::Step::BeforeRepositorySave);
         Group* group = bot->GetGroup();
         if (group && !bot->InBattleground() && !bot->InBattlegroundQueue() && IsRealPlayer(botAI->GetMaster()))
         {
             PlayerbotRepository::instance().Save(botAI);
         }
-
+        if (!current())
+            return partial();
         LOG_DEBUG("playerbots", "Bot {} logged out", bot->GetName().c_str());
-
+        record.MarkStep(Journal::Step::BeforeSave);
         bot->SaveToDB(false, false);
-
-        RemoveFromPlayerbotsMap(guid);  // deletes bot player ptr inside this WorldSession PlayerBotMap
-
+        if (!current())
+            return partial();
+        record.MarkStep(Journal::Step::BeforeHolderErase);
+        RemoveFromPlayerbotsMap(guid);
+        record.MarkStep(Journal::Step::HolderErased);
+        record.MarkStep(Journal::Step::BeforeAIDelete);
         delete botAI;
+        record.MarkStep(Journal::Step::AIDeleteReturned);
+        return retirement.Complete() && record.Complete() ? Result::Completed : partial();
+    }
+    catch (...)
+    {
+        return partial();
     }
 }
 
@@ -795,7 +909,11 @@ std::string const PlayerbotHolder::ProcessBotCommand(std::string const cmd, Obje
         if (!GetPlayerBot(guid))
             return "not your bot";
 
-        LogoutPlayerBot(guid);
+        auto result = TryLogoutPlayerBot(guid);
+        if (result == BotRetirementResult::RecoveryRequired)
+            return "bot retirement incomplete; recovery required, do not retry";
+        if (result == BotRetirementResult::Refused)
+            return "bot logout refused; busy or unavailable, please retry";
         return "ok";
     }
 
@@ -1596,6 +1714,7 @@ PlayerbotMgr::PlayerbotMgr(Player* const master) : PlayerbotHolder(), master(mas
 
 PlayerbotMgr::~PlayerbotMgr()
 {
+    _pb59HolderLifetime.Detach();
     if (master)
         PlayerbotsMgr::instance().RemovePlayerBotData(master->GetGUID(), false);
 }
