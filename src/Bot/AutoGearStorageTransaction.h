@@ -46,16 +46,18 @@ struct ExactMove
     std::uint64_t destinationBagGuid;
 };
 
-// The authority reader is a read-only check of the captured command authority.
-// It must not yield or mutate inventory. Restore does not require command
-// authority, but the backend must separately prove live bot ownership/context.
+// Final-B admission is an immutable, already validated command ticket, not
+// a renewable sender lease. Later sender changes are diagnostic only.
+// ContextValid checks only the exact live BOT owner/lifetime/serialization;
+// it must be non-yielding, read-only, and remain false after losing that lease.
+// Both inspection and restoration require that independent bot context.
 // MoveExact receives the full reservation in BOTH directions and must never
 // destroy/merge/overwrite, even if it detects a stale reservation internally.
-template<class Inspect, class Authority, class MoveExact>
-TransactionStatus Execute(std::span<ExactMove const> moves, Inspect inspect,
-    Authority authority, MoveExact moveExact)
+template<class Inspect, class ContextValid, class MoveExact>
+TransactionStatus Execute(std::span<ExactMove const> moves, bool admittedFinalB,
+    Inspect inspect, ContextValid contextValid, MoveExact moveExact)
 {
-    if (moves.size() > 17)
+    if (!admittedFinalB || moves.size() > 17)
         return TransactionStatus::Rejected;
     Move positions[17]{};
     for (std::size_t i = 0; i < moves.size(); ++i)
@@ -66,15 +68,17 @@ TransactionStatus Execute(std::span<ExactMove const> moves, Inspect inspect,
     }
     if (!ValidMoves(std::span<Move const>(positions, moves.size())))
         return TransactionStatus::Rejected;
-    auto authorized = [&]()
+    auto context = [&]()
     {
-        try { return authority(); }
+        try { return contextValid(); }
         catch (...) { return false; }
     };
-    if (!authorized())
+    if (!context())
         return TransactionStatus::Rejected;
     auto at = [&](std::uint16_t position, ExactSlot expected)
     {
+        if (!context())
+            return false;
         try { return inspect(position) == std::optional<ExactSlot>(expected); }
         catch (...) { return false; }
     };
@@ -92,21 +96,25 @@ TransactionStatus Execute(std::span<ExactMove const> moves, Inspect inspect,
         if (!original(m))
             return TransactionStatus::Rejected;
 
+    bool attempted = false;
     auto attempt = [&](ExactMove const& m, bool restore)
     {
+        if (!context())
+            return false;
+        attempted = true; // a throwing backend may already have moved the item
         try { return moveExact(m, restore); }
         catch (...) { return false; }
     };
     bool success = true;
     for (auto const& m : moves)
     {
-        if (!authorized() || !original(m) || !attempt(m, false) || !moved(m))
+        if (!context() || !original(m) || !attempt(m, false) || !moved(m))
         {
             success = false;
             break;
         }
     }
-    if (success && authorized())
+    if (success && context())
     {
         for (auto const& m : moves)
             if (!moved(m))
@@ -114,19 +122,25 @@ TransactionStatus Execute(std::span<ExactMove const> moves, Inspect inspect,
                 success = false;
                 break;
             }
-        if (success)
+        if (success && context())
             return TransactionStatus::Committed;
     }
 
+    if (!attempted)
+        return TransactionStatus::Rejected;
     // Observe actual state after failures, including exceptions. Never move an
     // item from a replacement bag or a stack whose count changed. If exact
     // restoration cannot be proven, return RecoveryRequired, not RolledBack.
     for (auto it = moves.rbegin(); it != moves.rend(); ++it)
+    {
+        if (!context())
+            return TransactionStatus::RecoveryRequired;
         if (moved(*it))
             attempt(*it, true);
+    }
     for (auto const& m : moves)
         if (!original(m))
             return TransactionStatus::RecoveryRequired;
-    return TransactionStatus::RolledBack;
+    return context() ? TransactionStatus::RolledBack : TransactionStatus::RecoveryRequired;
 }
 }
