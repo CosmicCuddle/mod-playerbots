@@ -43,6 +43,7 @@ private:
         Phase phase = Phase::Reserved;
         Id operation = 0;
         std::size_t callbacks = 0;
+        bool retirementReserved = false;
     };
     struct State
     {
@@ -137,7 +138,7 @@ public:
                 return false;
             entry = it->second;
             if (state.stopping || entry->identity != id || entry->phase != Phase::Published ||
-                !entry->holder->Alive() || !Matches(id, entry->owned.get()) ||
+                !entry->holder->Alive() || entry->retirementReserved || !Matches(id, entry->owned.get()) ||
                 entry->callbacks == std::numeric_limits<std::size_t>::max())
                 return false;
             ++entry->callbacks;
@@ -156,6 +157,55 @@ public:
         // Native callbacks may change the attached Player or retire the holder.
         // Do not report an exact continuation merely because the session survived.
         return entry->holder->Alive() && Matches(id, entry->owned.get());
+    }
+
+    // Reserve before the native producer marks mutation or invokes callbacks.
+    // This is exclusive against WithPublished and other retirement producers.
+    // It is not a Player lifetime pin or authorization to run off-thread.
+    class RetirementAdmission final
+    {
+    public:
+        RetirementAdmission() = default;
+        ~RetirementAdmission()
+        {
+            if (_entry)
+            {
+                auto& state = Store();
+                std::lock_guard guard(state.lock);
+                _entry->retirementReserved = false;
+            }
+        }
+        RetirementAdmission(RetirementAdmission&&) noexcept = default;
+        RetirementAdmission& operator=(RetirementAdmission&&) = delete;
+        RetirementAdmission(RetirementAdmission const&) = delete;
+        RetirementAdmission& operator=(RetirementAdmission const&) = delete;
+        explicit operator bool() const noexcept { return bool(_entry); }
+    private:
+        friend class PublishedSessionOwner;
+        explicit RetirementAdmission(std::shared_ptr<Entry> entry) noexcept : _entry(std::move(entry)) { }
+        std::shared_ptr<Entry> _entry;
+    };
+    static RetirementAdmission TryReserveRetirement(Identity id) noexcept
+    {
+        if (!Custody::IsOwnerThread() || !id.Valid())
+            return {};
+        try
+        {
+            auto& state = Store();
+            std::lock_guard guard(state.lock);
+            auto it = state.entries.find(id.guid);
+            if (it == state.entries.end())
+                return {};
+            auto entry = it->second;
+            if (entry->identity != id || entry->phase != Phase::Published ||
+                entry->callbacks || entry->retirementReserved || !Matches(id, entry->owned.get()))
+                return {};
+            // Orphaned published sessions may be reserved for controlled
+            // recovery; the native caller must prove unlink/quiescence.
+            entry->retirementReserved = true;
+            return RetirementAdmission(std::move(entry));
+        }
+        catch (...) { return {}; }
     }
 
     class Handoff final
@@ -238,9 +288,9 @@ public:
     // Must run in the independently bound world owner context. The journal
     // identity is checked, but native retirement admission/manager quiescence
     // still belong to the caller. Do not use this as cross-thread pointer proof.
-    static Handoff TakeForRecovery(Identity id, Journal::Reservation& record) noexcept
+    static Handoff TakeForRecovery(Identity id, RetirementAdmission const& admission, Journal::Reservation& record) noexcept
     {
-        if (!Custody::IsOwnerThread() || !id.Valid()) return {};
+        if (!Custody::IsOwnerThread() || !id.Valid() || !admission._entry) return {};
         auto operation = record.Operation();
         if (!operation || !record.OwnsInProgress({id.guid, id.player, id.holder, operation}, Journal::Kind::Logout)) return {};
         try
@@ -250,7 +300,8 @@ public:
             auto it = state.entries.find(id.guid);
             if (it == state.entries.end()) return {};
             auto e = it->second;
-            if (e->identity != id || e->phase != Phase::Published || e->callbacks || !Matches(id, e->owned.get())) return {};
+            if (e != admission._entry || !e->retirementReserved || e->identity != id ||
+                e->phase != Phase::Published || e->callbacks || !Matches(id, e->owned.get())) return {};
             typename Custody::Identity custodyId{id.guid, id.player, id.holder, operation, id.session};
             auto ticket = Custody::Reserve(custodyId, e->owned.get());
             if (!ticket || !ticket.Adopt(custodyId, e->owned)) return {};
