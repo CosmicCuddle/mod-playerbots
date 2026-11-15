@@ -10,6 +10,7 @@
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAIBase.h"
+#include <functional>
 
 class ChatHandler;
 class PlayerbotAI;
@@ -37,8 +38,9 @@ public:
     bool IsAccountLinked(uint32 accountId, uint32 masterAccountId);
     void HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder const& holder, WorldSession* botSession);
 
-    void LogoutPlayerBot(ObjectGuid guid);
-    void DisablePlayerBot(ObjectGuid guid);
+    // False means no completed retirement; callers must not report success.
+    bool LogoutPlayerBot(ObjectGuid guid);
+    bool DisablePlayerBot(ObjectGuid guid);
     void RemoveFromPlayerbotsMap(ObjectGuid guid);
     Player* GetPlayerBot(ObjectGuid guid) const;
     Player* GetPlayerBot(ObjectGuid::LowType lowGuid) const;
@@ -65,6 +67,9 @@ public:
     uint32 GetPlayerbotsCountByClass(uint32 cls);
 
 protected:
+    // Synchronous existing scheduler bookkeeping, only after retirement admission.
+    // The callback must not delete/transfer the bot or initiate another retirement.
+    bool LogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement);
     virtual void OnBotLoginInternal(Player* const bot) = 0;
 
     PlayerBotMap playerBots;
