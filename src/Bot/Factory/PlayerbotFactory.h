@@ -10,6 +10,9 @@
 #include "InventoryAction.h"
 #include "AutoGearEquipmentSample.h"
 #include "AutoGearSetSolver.h"
+#if __has_include("PB59InventorySlotFacts.h")
+#include "AutoGearExactStorageObservation.h"
+#endif
 #if __has_include("EquipmentCaptureState.h")
 #include "AutoGearNativeAuthority.h"
 #endif
@@ -99,6 +102,9 @@ public:
         uint16 destination;
         uint32 count;
         ObjectGuid destinationBagGuid; // Empty for the backpack.
+#if __has_include("PB59InventorySlotFacts.h")
+        PB59::InventorySlotFacts original; // Exact copied instance and source links.
+#endif
     };
     // Call on the bot-owning thread. Does not move items; output is empty on failure.
     static InventoryResult PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves);
