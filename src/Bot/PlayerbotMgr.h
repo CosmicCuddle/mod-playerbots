@@ -45,7 +45,7 @@ class PlayerbotHolder : public PlayerbotAIBase
 {
 public:
     PlayerbotHolder();
-    virtual ~PlayerbotHolder(){ _pb59HolderLifetime.Detach(); };
+    virtual ~PlayerbotHolder();
 
     void AddPlayerBot(ObjectGuid guid, uint32 masterAccountId);
     bool IsAccountLinked(uint32 accountId, uint32 masterAccountId);
@@ -63,6 +63,9 @@ public:
     void UpdateAIInternal([[maybe_unused]] uint32 elapsed, [[maybe_unused]] bool minimal = false) override{};
     void UpdateSessions();
     void HandleBotPackets(WorldSession* session);
+    static void RequestTimedBotLogout(Player* bot); // value-only producer from bot owner context
+    static void ProcessTimedBotLogouts(); // world thread after map-worker barrier
+    static void StopTimedBotLogouts();
     static void UpdatePendingLogins();  // world thread, once per tick
     static void StopPendingLogins();    // fence new producers before shutdown logout
     static void ClearPendingLogins();   // shutdown, outside any callback
@@ -84,8 +87,11 @@ public:
 protected:
     // Synchronous existing scheduler bookkeeping, only after retirement admission.
     // The callback must not delete/transfer the bot or initiate another retirement.
-    BotRetirementResult TryLogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement = {});
+    BotRetirementResult TryLogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement = {},
+        bool timedLogout = false);
     BotRetirementResult TryDisablePlayerBot(ObjectGuid guid);
+    bool RegisterTimedBot(Player* bot);
+    void ForgetTimedBot(ObjectGuid guid, std::uint64_t player, std::uint64_t session);
     virtual void OnBotLoginInternal(Player* const bot) = 0;
 
     PB59::RecoveryRegistry::HolderLifetime _pb59HolderLifetime;

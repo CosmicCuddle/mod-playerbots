@@ -560,6 +560,7 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        PlayerbotHolder::ProcessTimedBotLogouts(); // after Core waits for map workers
         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
         PlayerbotWorldThreadProcessor::instance().Update(diff);
@@ -570,6 +571,7 @@ public:
     void OnShutdown() override
     {
         LOG_INFO("playerbots", "Logging out all bots...");
+        PlayerbotHolder::StopTimedBotLogouts();
         PlayerbotHolder::StopPendingLogins();
         sRandomPlayerbotMgr.LogoutAllBots();
         PlayerbotHolder::ClearPendingLogins();
