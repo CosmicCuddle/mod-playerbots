@@ -2,6 +2,12 @@
 
 **Status:** source audit and default-off, fail-closed implementation candidate on PB `3a9e39f1` and IP `05ff032b`. Command gear outcomes remain unchanged with the new option disabled; enabling currently refuses all AutoGear/BiS commands. Tracked in [coordination Issue #59](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/59).
 
+## Latest independent validation evidence
+
+CS01 reported exact-source GCC/Clang C++20 compile-and-run PASS for both revised sample fixtures at PB `eee6787f35c1f62931136f63859d464a1d2e5dd0`, using `-Wall -Wextra -Werror`. Verified sources: sample header blob `97195b335b9cd51080cb8542ff3ed142cad36cc8`, sample fixture `ff1412323a334b4d2dedf567408b501f459aaa5c`, policy fixture `2b946419a35c73f746bb78ad269ba26a563489f9`. This covers 64 occupancy/removal cases, 64 parameterized policy/removal cases and their static assertions; all four compiler/fixture runs passed. Evidence is in coordination Issue #59, CS01 Part10 ACK of `eee6787f`. These tests were executed independently by CS01, not in this local checkout. Earlier statements below that compilation is pending describe local availability and prior milestones.
+
+This evidence establishes fixed-policy arithmetic only. Production weighting/threshold choices, class capability capture, changed factory capture signature in a full PB/no-IP build, runtime sample/progression publication and freshness, deterministic coupled set search, inventory transaction behavior and gameplay remain open. The sample/weapon/scan prototypes do not establish a working AutoGear command. No activation or deployment follows from these pure-fixture results.
+
 The branch now contains an unmerged source candidate: deferred chat triggers retain a sender GUID; AutoGear and BiS have a fail-closed cap gate before changing gear. The gate currently denies every enabled command until a cache-only IP snapshot provider is available. BiS filters raw item templates before deleting gear; factory finishers reject over-cap ammo and gems when a cap is supplied. The new option is disabled by default. Synthetic policy fixtures use later-era values solely to exercise raw/effective stage behavior.
 
 ## Commanding player and IP authority
