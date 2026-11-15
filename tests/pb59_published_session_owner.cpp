@@ -61,10 +61,24 @@ int main()
     std::thread foreign([&]{assert(!slot.Publish(pending));assert(!R::Reserve(Id(replacementHolder,1,22,33),replacementHolder.Observe(),wrong));}); foreign.join();
     assert(slot.Publish(pending) && !pending.Get()); pending.End();
     assert(R::Inspect(id)==Phase::Published && Session::destroyed==0);
+    // Nested owner callbacks retain actual session custody, and foreign or
+    // mismatched identities cannot borrow. Exceptions release the counter.
+    assert(!R::WithPublished({1,2,id.holder,99},[](Session&){assert(false);}));
+    std::thread borrower([&]{assert(!R::WithPublished(id,[](Session&){assert(false);}));}); borrower.join();
+    assert(R::WithPublished(id,[&](Session& outer){
+        assert(&outer==exact);
+        assert(R::WithPublished(id,[&](Session& inner){assert(&inner==exact);}));
+    }));
+    try { R::WithPublished(id,[](Session&){throw std::runtime_error("callback");});assert(false); }
+    catch(std::runtime_error const&) {}
+
     assert(!R::Reserve(Id(replacementHolder,1,22,33),replacementHolder.Observe(),wrong));
     // Wrong kind, reserved-only, wrong session, and foreign-thread handoff fail.
     { auto record=J::Reserve(id.guid,id.player,id.holder,J::Kind::Disable);assert(record && record.MarkMutation());assert(!R::TakeForRecovery(id,record));record.MarkStep(J::Step::AIDeleteReturned);assert(record.Complete()); }
     { auto record=J::Reserve(id.guid,id.player,id.holder,J::Kind::Logout);assert(record);assert(!R::TakeForRecovery(id,record));assert(record.MarkMutation());assert(!R::TakeForRecovery({1,2,id.holder,99},record));std::thread t([&]{assert(!R::TakeForRecovery(id,record));});t.join();
+      assert(R::WithPublished(id,[&](Session& live){
+          assert(&live==exact);assert(!R::TakeForRecovery(id,record));assert(record);
+      }));
       auto handoff=R::TakeForRecovery(id,record);assert(handoff && !record && R::Inspect(id)==Phase::InCustody);
       assert(!handoff.WithSession([](Session&){assert(false);}));
       assert(!handoff.DeleteDetached());
