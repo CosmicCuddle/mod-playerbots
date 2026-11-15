@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Compile exact PB retirement bodies with synthetic native dependencies."""
+import argparse
+from pathlib import Path
+import subprocess
+import tempfile
+
+
+def between(source, start, end):
+    if source.count(start) != 1:
+        raise RuntimeError(f"expected unique method: {start}")
+    pos = source.index(start)
+    return source[pos:source.index(end, pos)].rstrip() + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--core", type=Path, required=True)
+    parser.add_argument("--cxx", default="g++")
+    parser.add_argument("--sanitizers", action="store_true")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parents[1]
+    mgr = (root / "src/Bot/PlayerbotMgr.cpp").read_text(encoding="utf-8")
+    random = (root / "src/Bot/RandomPlayerbotMgr.cpp").read_text(encoding="utf-8")
+    body = between(mgr, "bool PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)",
+                   "void PlayerbotHolder::RemoveFromPlayerbotsMap")
+    # Source contract checks only: actual scheduling/DB behavior requires native tests.
+    population = between(random, "uint32 RandomPlayerbotMgr::RemoveRandomBots()",
+                         "// Population target for RandomBotCountMode 2")
+    expiry = between(random, "bool RandomPlayerbotMgr::ProcessBot(uint32 bot)",
+                     "bool RandomPlayerbotMgr::ProcessBot(Player* bot)")
+    direct = between(random, "void RandomPlayerbotMgr::Remove(Player* bot)",
+                     "CreatureData const* RandomPlayerbotMgr::GetCreatureDataByEntry")
+    assert population.index("if (LogoutPlayerBot(guid, [&]") < population.index('SetEventValue(bot, "add", 0, 0)') < population.index("++removed;")
+    assert population.count("currentBots.erase(bot)") == 1 and "return removed;" in population
+    assert "return toLogout.size();" not in population
+    assert expiry.index("LogoutPlayerBot(botGUID, [&]") < expiry.index("clearSchedule();")
+    assert expiry.count('SetEventValue(bot, "add", 0, 0)') == 1
+    assert direct.index("auto clearEvents =") < direct.index("LogoutPlayerBot(owner, clearEvents)")
+    assert "if (retirement)\n        clearEvents();" in direct
+    assert 'if (!LogoutPlayerBot(guid))\n            return "bot logout not completed;' in mgr
+    core = args.core.resolve() / "src/server/game/Entities/Player"
+    fixture = Path(__file__).with_name("pb59_bot_retirement_body.cpp")
+    with tempfile.TemporaryDirectory(prefix="pb59-retirement-") as tmp:
+        work = Path(tmp)
+        (work / "retirement_native.inc").write_text(body, encoding="utf-8")
+        binary = work / "retirement"
+        command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",
+                   "-I", str(core), "-I", str(work), str(fixture), "-o", str(binary)]
+        if args.sanitizers:
+            command.append("-fsanitize=address,undefined")
+        subprocess.run(command, check=True)
+        subprocess.run([str(binary)], check=True)
+    print("PASS: exact synthetic retirement bodies and scheduler source contracts")
+
+
+if __name__ == "__main__":
+    main()
