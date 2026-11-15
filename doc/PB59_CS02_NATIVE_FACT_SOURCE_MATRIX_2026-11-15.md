@@ -2,6 +2,16 @@
 
 Owner: CosmicCuddle. Coordination #59. This is a plan. It does not wire a command or change a shared file.
 
+## v4
+
+Playable classes follow `CLASSMASK_ALL_PLAYABLE`: 1 through 9, and 11. Class 10 is a validation failure and does not shift. `SourceEligibility` accepts only Unknown, KnownUnavailable, and KnownEligible. Any other value, including 255, is `CopyStatus::Invalid`.
+
+`SelectFromFacts` bounds the fact list and classifies every fact before it cross-matches a native row. A match is entry, signed random property, item level, and slot. `slotLists` is per slot and defaults to Unknown. A native no-set requires every eligible slot to be Complete and the copied rows to be that same set. `completeMask` or `hasNativeSource` alone does not strip.
+
+`categoryLimit` is the EQUIP cap. `categoryHaveLimit` is the HAVE cap. MaxCount and HAVE use retained bags, bank, equipped copies, and gems. A missing record or any unknown count preserves. The shared solver is not given the HAVE cap. The variant solver applies the two caps separately and returns Incomplete when a required count is unknown or when allocation fails.
+
+Darkmoon cards stay Unknown while availability or the proc is unknown. Item level 66, required level 60, and unique trinket are fixture fields from coordination #64 comment `6900198011`. They are not a score and `requestForceBis` does not accept them.
+
 ## v3
 
 `SourceEligibility` is Unknown, KnownUnavailable, or KnownEligible. The default is Unknown. Known-unavailable and known-incapable rows are omitted and can leave a complete source. An unloaded template, unknown capability, unknown eligibility, a zero entry, or a zero item level makes the copy Incomplete and clears it. `SelectFromFacts` runs that copy when `hasNativeSource` is set, before scoring, and preserves unless the fact list is the same set of variants. A complete empty known source can still be a genuine no-set when bags are Enough. An unknown row cannot.

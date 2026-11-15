@@ -7,11 +7,13 @@
 #ifndef PLAYERBOTS_AUTOGEAR_VARIANT_SOLVER_H
 #define PLAYERBOTS_AUTOGEAR_VARIANT_SOLVER_H
 
+#include "AutoGearSelectionTypes.h"
 #include "AutoGearSetSolver.h"
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <new>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -34,7 +36,9 @@ namespace PlayerbotsAutoGearVariant
         std::uint32_t itemLevel = 0;
         std::uint32_t score = 0;
         std::uint32_t limitCategory = 0;
+        // EQUIP limit. HAVE is separate and counts possession, not just the set.
         std::uint32_t categoryLimit = 0;
+        std::uint32_t categoryHaveLimit = 0;
         std::uint32_t maxCount = 0;
         Kind kind = Kind::Count;
         bool uniqueEquipped = false;
@@ -56,6 +60,15 @@ namespace PlayerbotsAutoGearVariant
         std::uint32_t requiredMask = 0;
         PlayerbotsAutoGearWeapons::Capabilities weapons{};
         bool known = false;
+        std::span<PlayerbotsAutoGearSelection::RetainedCount const> entryHeld{};
+        std::span<PlayerbotsAutoGearSelection::RetainedCount const> categoryHeld{};
+        enum class AllocationFault : std::uint8_t
+        {
+            None,
+            Allocate,
+            Search
+        };
+        AllocationFault allocationFault = AllocationFault::None;
     };
 
     enum class Status
@@ -101,10 +114,20 @@ namespace PlayerbotsAutoGearVariant
             (policy.weapons.rangedRequired && !(policy.eligibleMask & (1u << Ranged))))
             return {};
 
+        try
+        {
+        if (policy.allocationFault == Policy::AllocationFault::Allocate)
+            throw std::bad_alloc();
+
         std::array<std::vector<Candidate>, Slots> lists;
         std::size_t seen = 0;
         std::unordered_map<std::uint32_t, Candidate> templates;
-        std::unordered_map<std::uint32_t, std::uint32_t> categoryLimits;
+        struct CategoryCaps
+        {
+            std::uint32_t equip = 0;
+            std::uint32_t have = 0;
+        };
+        std::unordered_map<std::uint32_t, CategoryCaps> categoryLimits;
         for (unsigned slot = 0; slot < Slots; ++slot)
         {
             if (!(policy.eligibleMask & (1u << slot)))
@@ -119,13 +142,32 @@ namespace PlayerbotsAutoGearVariant
                     return {Status::Incomplete};
                 ++seen;
                 bool const weaponSlot = slot == Main || slot == Off || slot == Ranged;
+                bool const categoryLimited = candidate.categoryLimit != 0 || candidate.categoryHaveLimit != 0;
                 if (!candidate.metadataKnown || candidate.entryId == 0 ||
                     (havePrevious && !IdentityBefore(previous, candidate)) || candidate.itemLevel == 0 ||
-                    (candidate.limitCategory == 0) != (candidate.categoryLimit == 0) ||
+                    (candidate.limitCategory == 0) == categoryLimited ||
                     (weaponSlot && candidate.kind >= Kind::Count) || (!weaponSlot && candidate.kind != Kind::Count) ||
                     (candidate.exclusiveMainhand && candidate.kind != Kind::OneHand &&
                         candidate.kind != Kind::TwoHand))
                     return {};
+                if (candidate.maxCount != 0)
+                {
+                    PlayerbotsAutoGearSelection::RetainedCount const* held =
+                        PlayerbotsAutoGearSelection::FindEntryCount(policy.entryHeld, candidate.entryId);
+                    std::uint32_t owned = 0;
+                    if (!held || !PlayerbotsAutoGearSelection::CountsKnown(*held) ||
+                        !PlayerbotsAutoGearSelection::CountTotal(*held, owned))
+                        return {Status::Incomplete};
+                }
+                if (candidate.categoryHaveLimit != 0)
+                {
+                    PlayerbotsAutoGearSelection::RetainedCount const* held =
+                        PlayerbotsAutoGearSelection::FindCategoryCount(policy.categoryHeld, candidate.limitCategory);
+                    std::uint32_t owned = 0;
+                    if (!held || !PlayerbotsAutoGearSelection::CountsKnown(*held) ||
+                        !PlayerbotsAutoGearSelection::CountTotal(*held, owned))
+                        return {Status::Incomplete};
+                }
                 havePrevious = true;
                 previous = candidate;
                 auto [meta, inserted] = templates.emplace(candidate.entryId, candidate);
@@ -133,13 +175,16 @@ namespace PlayerbotsAutoGearVariant
                 if (!inserted &&
                     (old.itemLevel != candidate.itemLevel || old.uniqueEquipped != candidate.uniqueEquipped ||
                         old.maxCount != candidate.maxCount || old.limitCategory != candidate.limitCategory ||
-                        old.categoryLimit != candidate.categoryLimit || old.kind != candidate.kind ||
+                        old.categoryLimit != candidate.categoryLimit ||
+                        old.categoryHaveLimit != candidate.categoryHaveLimit || old.kind != candidate.kind ||
                         old.exclusiveMainhand != candidate.exclusiveMainhand))
                     return {};
                 if (candidate.limitCategory)
                 {
-                    auto [category, fresh] = categoryLimits.emplace(candidate.limitCategory, candidate.categoryLimit);
-                    if (!fresh && category->second != candidate.categoryLimit)
+                    CategoryCaps const caps{candidate.categoryLimit, candidate.categoryHaveLimit};
+                    auto [category, fresh] = categoryLimits.emplace(candidate.limitCategory, caps);
+                    if (!fresh &&
+                        (category->second.equip != caps.equip || category->second.have != caps.have))
                         return {};
                 }
                 if (candidate.eligible && candidate.itemLevel <= policy.cap)
@@ -173,9 +218,27 @@ namespace PlayerbotsAutoGearVariant
         auto compatible = [&](Candidate const& candidate)
         {
             unsigned entryCount = 1;
-            unsigned categoryCount = 1;
+            unsigned categoryEquipCount = 1;
+            unsigned categoryHaveCount = 1;
             std::uint32_t entryLimit = entryLimitOf(candidate);
-            std::uint32_t limit = candidate.categoryLimit;
+            std::uint32_t equipLimit = candidate.categoryLimit;
+            std::uint32_t haveLimit = candidate.categoryHaveLimit;
+            std::uint32_t ownedEntry = 0;
+            std::uint32_t ownedCategory = 0;
+            if (candidate.maxCount != 0)
+            {
+                PlayerbotsAutoGearSelection::RetainedCount const* held =
+                    PlayerbotsAutoGearSelection::FindEntryCount(policy.entryHeld, candidate.entryId);
+                if (!held || !PlayerbotsAutoGearSelection::CountTotal(*held, ownedEntry))
+                    return false;
+            }
+            if (candidate.categoryHaveLimit != 0)
+            {
+                PlayerbotsAutoGearSelection::RetainedCount const* held =
+                    PlayerbotsAutoGearSelection::FindCategoryCount(policy.categoryHeld, candidate.limitCategory);
+                if (!held || !PlayerbotsAutoGearSelection::CountTotal(*held, ownedCategory))
+                    return false;
+            }
             for (Candidate const* other : picked)
             {
                 if (!other)
@@ -189,13 +252,27 @@ namespace PlayerbotsAutoGearVariant
                 }
                 if (candidate.limitCategory && candidate.limitCategory == other->limitCategory)
                 {
-                    ++categoryCount;
-                    limit = std::min(limit, other->categoryLimit);
+                    if (candidate.categoryLimit != 0)
+                        ++categoryEquipCount;
+                    if (candidate.categoryHaveLimit != 0)
+                        ++categoryHaveCount;
+                    if (other->categoryLimit != 0)
+                        equipLimit = std::min(equipLimit, other->categoryLimit);
+                    if (other->categoryHaveLimit != 0)
+                        haveLimit = std::min(haveLimit, other->categoryHaveLimit);
                 }
             }
             if (entryLimit != 0 && entryCount > entryLimit)
                 return false;
-            return !candidate.limitCategory || categoryCount <= limit;
+            if (candidate.maxCount != 0 &&
+                (entryCount > candidate.maxCount || ownedEntry > candidate.maxCount - entryCount))
+                return false;
+            if (candidate.categoryLimit != 0 && categoryEquipCount > equipLimit)
+                return false;
+            if (candidate.categoryHaveLimit != 0 &&
+                (categoryHaveCount > haveLimit || ownedCategory > haveLimit - categoryHaveCount))
+                return false;
+            return true;
         };
         auto search = [&](auto&& self, unsigned depth, std::uint64_t score) -> void
         {
@@ -266,10 +343,17 @@ namespace PlayerbotsAutoGearVariant
             if (!required)
                 visit(nullptr);
         };
+        if (policy.allocationFault == Policy::AllocationFault::Search)
+            throw std::bad_alloc();
         search(search, 0, 0);
         if (exhausted)
             return {Status::Incomplete, {}, {}, 0, result.visited};
         return result;
+        }
+        catch (std::bad_alloc const&)
+        {
+            return {Status::Incomplete};
+        }
     }
 }
 

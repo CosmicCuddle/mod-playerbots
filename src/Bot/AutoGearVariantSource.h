@@ -26,6 +26,7 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t entryId = 0;
         std::int32_t randomProperty = 0;
         std::uint32_t itemLevel = 0;
+        std::uint8_t slot = 0;
         bool templateLoaded = false;
         SourceEligibility eligibility = SourceEligibility::Unknown;
         bool staticCapabilityKnown = false;
@@ -37,8 +38,21 @@ namespace PlayerbotsAutoGearSelection
         Copied,
         Bounded,
         Incomplete,
-        IncompleteVariants
+        IncompleteVariants,
+        Invalid
     };
+
+    inline constexpr bool ValidSourceEligibility(SourceEligibility eligibility)
+    {
+        switch (eligibility)
+        {
+            case SourceEligibility::Unknown:
+            case SourceEligibility::KnownUnavailable:
+            case SourceEligibility::KnownEligible:
+                return true;
+        }
+        return false;
+    }
 
     struct CopiedSource
     {
@@ -60,6 +74,13 @@ namespace PlayerbotsAutoGearSelection
         }
         for (SourceRow const& row : nativeRows)
         {
+            if (!ValidSourceEligibility(row.eligibility))
+            {
+                copied.rows.clear();
+                copied.status = CopyStatus::Invalid;
+                copied.sourceComplete = false;
+                return copied;
+            }
             bool const malformed = !row.templateLoaded || !row.staticCapabilityKnown || row.entryId == 0 ||
                                    row.itemLevel == 0 || row.eligibility == SourceEligibility::Unknown;
             if (malformed)

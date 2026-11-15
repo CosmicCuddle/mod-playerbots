@@ -107,6 +107,14 @@ int main()
     ok = Check(incapableCopy.rows.empty() && incapableCopy.sourceComplete,
             "known-incapable is not unknown") &&
          ok;
+    SourceRow invalidEligibility = incapable;
+    invalidEligibility.staticCapable = true;
+    invalidEligibility.eligibility = static_cast<SourceEligibility>(255);
+    std::array<SourceRow, 1> invalidRows{{invalidEligibility}};
+    CopiedSource const invalidCopy = CopyBoundedSource(invalidRows, 4);
+    ok = Check(invalidCopy.status == CopyStatus::Invalid && invalidCopy.rows.empty() && !invalidCopy.sourceComplete,
+            "eligibility 255 is invalid, not eligible") &&
+         ok;
 
     SourceRow propA = loaded;
     propA.eligibility = SourceEligibility::KnownEligible;
@@ -204,10 +212,58 @@ int main()
 
     PlanInput knownEmpty = unknownPlan;
     knownEmpty.nativeRows = onlyLoaded;
+    Plan const unprovenEmpty = SelectFromFacts(knownEmpty, counting);
+    ok = Check(unprovenEmpty.outcome.disposition == Disposition::Preserve &&
+               unprovenEmpty.outcome.action != GearAction::StripToBags && !unprovenEmpty.sourceComplete,
+            "a complete flag without a per-slot list does not strip") &&
+         ok;
+    knownEmpty.slotLists[4] = PlanInput::SlotListState::Complete;
     Plan const knownEmptyResult = SelectFromFacts(knownEmpty, counting);
     ok = Check(knownEmptyResult.outcome.disposition == Disposition::GenuineNoSet &&
                knownEmptyResult.outcome.action == GearAction::StripToBags && knownEmptyResult.sourceComplete,
-            "a known-empty native source can still be complete") &&
+            "a proven empty slot list can still be a no-set") &&
+         ok;
+
+    SourceRow levelRow = propA;
+    levelRow.slot = 4;
+    levelRow.itemLevel = 60;
+    std::array<SourceRow, 1> levelRows{{levelRow}};
+    ItemFact levelFact = KnownChest();
+    levelFact.id = 100;
+    levelFact.randomProperty = 1;
+    levelFact.itemLevel = 61;
+    std::array<ItemFact, 1> levelFacts{{levelFact}};
+    PlanInput levelPlan = knownEmpty;
+    levelPlan.nativeRows = levelRows;
+    levelPlan.facts = levelFacts;
+    Plan const levelMismatch = SelectFromFacts(levelPlan, counting);
+    ok = Check(levelMismatch.outcome.disposition == Disposition::Preserve && !levelMismatch.sourceComplete,
+            "entry and variant are not enough when the item level differs") &&
+         ok;
+    levelFacts[0].itemLevel = 60;
+    levelPlan.facts = levelFacts;
+    Plan const levelMatch = SelectFromFacts(levelPlan, counting);
+    ok = Check(levelMatch.outcome.disposition == Disposition::Commit && levelMatch.solved.items[4] == 100 &&
+               levelMatch.sourceComplete,
+            "a per-slot list matches entry, variant, and item level") &&
+         ok;
+
+    std::array<ItemFact, 2> tooMany{{levelFact, levelFact}};
+    tooMany[0].itemLevel = 60;
+    tooMany[1].id = 101;
+    tooMany[1].itemLevel = 60;
+    PlanInput boundedFacts = levelPlan;
+    boundedFacts.facts = tooMany;
+    boundedFacts.candidateBudget = 1;
+    int boundedScores = 0;
+    auto boundedScorer = [&](std::uint32_t, std::int32_t, std::uint32_t) -> std::uint32_t
+    {
+        ++boundedScores;
+        return 1;
+    };
+    Plan const boundedPlan = SelectFromFacts(boundedFacts, boundedScorer);
+    ok = Check(boundedPlan.outcome.disposition == Disposition::Preserve && boundedScores == 0,
+            "facts are bounded before they are matched to native rows") &&
          ok;
 
     ItemFact extra = KnownChest();

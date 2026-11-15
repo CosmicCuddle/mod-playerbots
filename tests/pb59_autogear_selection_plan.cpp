@@ -306,51 +306,40 @@ int main()
     Plan const pairedPlan = SelectFromFacts(weaponIn, ScoreOf);
     ok = Check(pairedPlan.solved.items[15] == 32 && pairedPlan.solved.items[16] == 33, "legal weapon pair") && ok;
 
-    // SYNTHETIC Darkmoon card: entry 910001, item level 60, dummy +30 attack power.
-    // These numbers are not read from Michael's database.
-    ItemFact card = Fact(910001, 60, 12);
-    card.armorSubtype = 0;
-    card.darkmoonCard = true;
-    card.requestForceBis = true;
-    ItemFact otherCard = Fact(910002, 60, 12);
-    otherCard.armorSubtype = 0;
-    std::vector<ItemFact> cards{card, otherCard};
-    PlanInput trinket = Chest(66, cards, 60);
-    trinket.facts = cards;
-    trinket.eligibleMask = 1u << 12;
-    trinket.requiredMask = 1u << 12;
-    trinket.completeMask = 1u << 12;
-    Plan const cardWins = SelectFromFacts(trinket, ScoreOf);
-    ok = Check(cardWins.outcome.disposition == Disposition::Commit && cardWins.solved.items[12] == 910001,
-            "synthetic card wins on its supplied score") &&
-         ok;
-
-    ItemFact weakCard = Fact(910001, 60, 12);
-    weakCard.armorSubtype = 0;
-    weakCard.darkmoonCard = true;
-    weakCard.requestForceBis = true;
-    ItemFact stronger = Fact(910003, 60, 12);
-    stronger.armorSubtype = 0;
-    // Reuse 910003 as the non-card with the higher synthetic score.
-    std::vector<ItemFact> notForced{weakCard, stronger};
-    // Both currently score 80. Lower the card by giving the non-card the id that scores 80
-    // and the card id 910002 (score 10) while still requesting force.
-    notForced[0].id = 910002;
-    notForced[1].id = 910003;
-    trinket.facts = notForced;
-    Plan const cardLoses = SelectFromFacts(trinket, ScoreOf);
-    ok = Check(cardLoses.solved.items[12] == 910003, "force flag does not beat a higher score") && ok;
-
-    ItemFact overCard = Fact(910001, 67, 12);
-    overCard.armorSubtype = 0;
-    overCard.darkmoonCard = true;
-    overCard.requestForceBis = true;
-    std::vector<ItemFact> over{overCard};
-    trinket.facts = over;
-    Plan const cardOver = SelectFromFacts(trinket, ScoreOf);
-    ok = Check(cardOver.outcome.disposition == Disposition::GenuineNoSet && cardOver.solved.items[12] == 0,
-            "over-cap synthetic card is not forced") &&
-         ok;
+    // Darkmoon availability and procs stay unknown. Base stats below are the
+    // tooltip fixture from coordination #64 comment 6900198011. They are not a
+    // score and requestForceBis does not accept the card.
+    struct TooltipBase
+    {
+        std::uint32_t id;
+        std::uint32_t stamina;
+        std::uint32_t allResist;
+    };
+    TooltipBase const cards[] = {{19287, 15, 0}, {19288, 0, 0}, {19289, 0, 0}, {19290, 15, 10}};
+    for (TooltipBase const& tooltip : cards)
+    {
+        ItemFact card = Fact(tooltip.id, 66, 12);
+        card.armorSubtype = 0;
+        card.requiredLevel = 60;
+        card.uniqueEquipped = true;
+        card.darkmoonCard = true;
+        card.requestForceBis = true;
+        ok = Check(card.itemLevel == 66 && card.requiredLevel == 60 && card.uniqueEquipped && tooltip.stamina <= 15 &&
+                   Classify(card, Mage(60), 66) == FactDecision::Unknown,
+                "darkmoon base stats do not make availability or a proc known") &&
+             ok;
+        std::vector<ItemFact> oneCard{card};
+        PlanInput trinket = Chest(66, oneCard, 60);
+        trinket.facts = oneCard;
+        trinket.eligibleMask = 1u << 12;
+        trinket.requiredMask = 1u << 12;
+        trinket.completeMask = 1u << 12;
+        Plan const held = SelectFromFacts(trinket, ScoreOf);
+        ok = Check(held.outcome.disposition == Disposition::Preserve &&
+                   held.outcome.action != GearAction::StripToBags && held.solved.items[12] == 0,
+                "an incomplete darkmoon card is not forced and does not strip") &&
+             ok;
+    }
 
     PlanInput incomplete = Chest(66, tier0, 60);
     incomplete.completeMask = 0;
@@ -521,6 +510,16 @@ int main()
                Classify(one[0], class255, 66) == FactDecision::Invalid && ClassBit(255) == 0,
             "class 255 is invalid before any shift") &&
          ok;
+    BotView class10 = Mage(60);
+    class10.classId = 10;
+    shifts = 0;
+    PlanInput class10In = Chest(66, one, 60);
+    class10In.bot = class10;
+    Plan const class10Plan = SelectFromFacts(class10In, shiftScorer);
+    ok = Check(class10Plan.outcome.disposition == Disposition::Preserve && shifts == 0 &&
+               Classify(one[0], class10, 66) == FactDecision::Invalid && ClassBit(10) == 0,
+            "class 10 is not a playable class and does not shift") &&
+         ok;
     BotView spec255 = Mage(60);
     spec255.specTab = 255;
     ok = Check(Classify(one[0], spec255, 66) == FactDecision::Invalid, "spec 255 is invalid") && ok;
@@ -564,6 +563,60 @@ int main()
     Plan const scoreAlloc = SelectFromFacts(alloc, shiftScorer);
     ok = Check(scoreAlloc.outcome.disposition == Disposition::Preserve && shifts == 0,
             "a scoring allocation failure preserves") &&
+         ok;
+
+    ItemFact counted = Fact(66, 60, 4);
+    counted.maxCount = 1;
+    std::vector<ItemFact> countedFacts{counted};
+    PlanInput countedIn = Chest(66, countedFacts, 60);
+    shifts = 0;
+    Plan const unknownCounts = SelectFromFacts(countedIn, shiftScorer);
+    ok = Check(unknownCounts.outcome.disposition == Disposition::Preserve && shifts == 0,
+            "unknown retained counts preserve before scoring") &&
+         ok;
+    RetainedCount held;
+    held.entryId = 66;
+    held.bagsKnown = true;
+    held.bankKnown = true;
+    held.equippedKnown = true;
+    countedIn.retained = std::span<RetainedCount const>(&held, 1);
+    shifts = 0;
+    Plan const unknownGems = SelectFromFacts(countedIn, shiftScorer);
+    ok = Check(unknownGems.outcome.disposition == Disposition::Preserve && shifts == 0,
+            "an unknown gem count preserves") &&
+         ok;
+    held.gemsKnown = true;
+    Plan const room = SelectFromFacts(countedIn, ScoreOf);
+    ok = Check(room.outcome.disposition == Disposition::Commit && room.solved.items[4] == 66,
+            "a known empty possession still allows one copy") &&
+         ok;
+    held.bags = 1;
+    Plan const alreadyHeld = SelectFromFacts(countedIn, ScoreOf);
+    ok = Check(alreadyHeld.outcome.disposition == Disposition::GenuineNoSet && alreadyHeld.solved.items[4] == 0,
+            "a known full MaxCount omits the item") &&
+         ok;
+    ItemFact haveItem = Fact(66, 60, 4);
+    haveItem.limitCategory = 9;
+    haveItem.categoryLimit = 2;
+    haveItem.categoryHaveLimit = 1;
+    std::vector<ItemFact> haveFacts{haveItem};
+    PlanInput haveIn = Chest(66, haveFacts, 60);
+    RetainedCount categoryHeld;
+    categoryHeld.limitCategory = 9;
+    categoryHeld.bagsKnown = true;
+    categoryHeld.bankKnown = true;
+    categoryHeld.equippedKnown = true;
+    categoryHeld.gemsKnown = true;
+    categoryHeld.bags = 1;
+    haveIn.retained = std::span<RetainedCount const>(&categoryHeld, 1);
+    Plan const haveBlocks = SelectFromFacts(haveIn, ScoreOf);
+    ok = Check(haveBlocks.outcome.disposition == Disposition::GenuineNoSet && haveBlocks.solved.items[4] == 0,
+            "HAVE blocks a copy that EQUIP would still allow") &&
+         ok;
+    categoryHeld.bags = 0;
+    Plan const haveAllows = SelectFromFacts(haveIn, ScoreOf);
+    ok = Check(haveAllows.outcome.disposition == Disposition::Commit && haveAllows.solved.items[4] == 66,
+            "HAVE and EQUIP are separate limits") &&
          ok;
 
     if (!ok)

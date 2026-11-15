@@ -2,6 +2,7 @@
 #include "AutoGearVariantSolver.h"
 #include <array>
 #include <iostream>
+#include <span>
 #include <vector>
 
 using PlayerbotsAutoGearWeapons::Bit;
@@ -50,6 +51,7 @@ bool SolveBoth(std::vector<Spec> const& specs, std::uint32_t cap, std::uint32_t 
 {
     std::array<std::vector<PlayerbotsAutoGearSet::Candidate>, PlayerbotsAutoGearSet::Slots> oldItems;
     std::array<std::vector<PlayerbotsAutoGearVariant::Candidate>, PlayerbotsAutoGearSet::Slots> newItems;
+    std::vector<PlayerbotsAutoGearSelection::RetainedCount> held;
     for (Spec const& spec : specs)
     {
         PlayerbotsAutoGearSet::Candidate old;
@@ -77,6 +79,25 @@ bool SolveBoth(std::vector<Spec> const& specs, std::uint32_t cap, std::uint32_t 
         row.metadataKnown = true;
         row.eligible = true;
         newItems[spec.slot].push_back(row);
+        if (spec.maxCount != 0)
+        {
+            bool found = false;
+            for (PlayerbotsAutoGearSelection::RetainedCount const& rowHeld : held)
+            {
+                if (rowHeld.entryId == spec.entry)
+                    found = true;
+            }
+            if (!found)
+            {
+                PlayerbotsAutoGearSelection::RetainedCount rowHeld;
+                rowHeld.entryId = spec.entry;
+                rowHeld.bagsKnown = true;
+                rowHeld.bankKnown = true;
+                rowHeld.equippedKnown = true;
+                rowHeld.gemsKnown = true;
+                held.push_back(rowHeld);
+            }
+        }
     }
     std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> oldDomains{};
     std::array<PlayerbotsAutoGearVariant::Domain, PlayerbotsAutoGearSet::Slots> newDomains{};
@@ -99,6 +120,7 @@ bool SolveBoth(std::vector<Spec> const& specs, std::uint32_t cap, std::uint32_t 
     newPolicy.requiredMask = required;
     newPolicy.weapons = weapons;
     newPolicy.known = true;
+    newPolicy.entryHeld = held;
     PlayerbotsAutoGearSet::Result const oldResult =
         PlayerbotsAutoGearSet::Solve(oldDomains, oldPolicy, budget, 100000);
     variant = PlayerbotsAutoGearVariant::Solve(newDomains, newPolicy, budget, 100000);
@@ -261,6 +283,105 @@ int main()
         return solved;
     }();
     ok = Check(bad.status == PlayerbotsAutoGearVariant::Status::Invalid, "kind 255 is invalid before a shift") && ok;
+
+    std::vector<Spec> three{{1, 0, 7, 60, 10, false}, {2, 0, 7, 60, 10, false}, {3, 0, 7, 60, 10, false}};
+    SolveBoth(three, 60, 1u << 10, 1u << 10, {}, 1000, oldResult, variant);
+    ok = Check(SameAsShared(oldResult, variant) && variant.entries[10] == 1,
+            "a three-way score tie keeps the lowest entry") &&
+         ok;
+
+    using PlayerbotsAutoGearSelection::RetainedCount;
+    auto solveVariant = [&](std::vector<PlayerbotsAutoGearVariant::Candidate> const& slot10,
+                            std::vector<PlayerbotsAutoGearVariant::Candidate> const& slot11,
+                            std::span<RetainedCount const> entries, std::span<RetainedCount const> categories,
+                            PlayerbotsAutoGearVariant::Policy::AllocationFault fault)
+    {
+        std::array<PlayerbotsAutoGearVariant::Domain, PlayerbotsAutoGearSet::Slots> domains{};
+        domains[10] = {slot10, true};
+        if (!slot11.empty())
+            domains[11] = {slot11, true};
+        PlayerbotsAutoGearVariant::Policy policy;
+        policy.cap = 60;
+        policy.eligibleMask = slot11.empty() ? (1u << 10) : fingers;
+        policy.requiredMask = policy.eligibleMask;
+        policy.known = true;
+        policy.entryHeld = entries;
+        policy.categoryHeld = categories;
+        policy.allocationFault = fault;
+        return PlayerbotsAutoGearVariant::Solve(domains, policy, 1000, 100000);
+    };
+    PlayerbotsAutoGearVariant::Candidate equipHave;
+    equipHave.entryId = 7;
+    equipHave.itemLevel = 60;
+    equipHave.score = 10;
+    equipHave.limitCategory = 4;
+    equipHave.categoryLimit = 2;
+    equipHave.categoryHaveLimit = 1;
+    equipHave.metadataKnown = true;
+    equipHave.eligible = true;
+    RetainedCount bags;
+    bags.limitCategory = 4;
+    bags.bagsKnown = true;
+    bags.bankKnown = true;
+    bags.equippedKnown = true;
+    bags.gemsKnown = true;
+    bags.bags = 1;
+    std::array<PlayerbotsAutoGearVariant::Candidate, 1> haveItems{{equipHave}};
+    std::array<RetainedCount, 1> bagRows{{bags}};
+    PlayerbotsAutoGearVariant::Result const haveBlocks =
+        solveVariant(std::vector<PlayerbotsAutoGearVariant::Candidate>(haveItems.begin(), haveItems.end()), {}, {},
+            bagRows, PlayerbotsAutoGearVariant::Policy::AllocationFault::None);
+    ok = Check(haveBlocks.status == PlayerbotsAutoGearVariant::Status::NoSet,
+            "HAVE one already in bags blocks EQUIP two") &&
+         ok;
+    bagRows[0].bags = 0;
+    PlayerbotsAutoGearVariant::Result const haveAllows =
+        solveVariant(std::vector<PlayerbotsAutoGearVariant::Candidate>(haveItems.begin(), haveItems.end()), {}, {},
+            bagRows, PlayerbotsAutoGearVariant::Policy::AllocationFault::None);
+    ok = Check(haveAllows.status == PlayerbotsAutoGearVariant::Status::SuitableSet && haveAllows.entries[10] == 7,
+            "EQUIP two still allows the item when HAVE has room") &&
+         ok;
+
+    PlayerbotsAutoGearVariant::Candidate limited = equipHave;
+    limited.limitCategory = 0;
+    limited.categoryLimit = 0;
+    limited.categoryHaveLimit = 0;
+    limited.maxCount = 1;
+    limited.randomProperty = 1;
+    PlayerbotsAutoGearVariant::Candidate otherSlot = limited;
+    otherSlot.randomProperty = 2;
+    otherSlot.score = 12;
+    RetainedCount unknownGems;
+    unknownGems.entryId = 7;
+    unknownGems.bagsKnown = true;
+    unknownGems.bankKnown = true;
+    unknownGems.equippedKnown = true;
+    std::array<RetainedCount, 1> gemRows{{unknownGems}};
+    std::vector<PlayerbotsAutoGearVariant::Candidate> left{limited};
+    std::vector<PlayerbotsAutoGearVariant::Candidate> right{otherSlot};
+    PlayerbotsAutoGearVariant::Result const gemsUnknown =
+        solveVariant(left, right, gemRows, {}, PlayerbotsAutoGearVariant::Policy::AllocationFault::None);
+    ok = Check(gemsUnknown.status == PlayerbotsAutoGearVariant::Status::Incomplete && gemsUnknown.entries[10] == 0,
+            "an unknown gem count is incomplete, not no set") &&
+         ok;
+    gemRows[0].gemsKnown = true;
+    PlayerbotsAutoGearVariant::Result const oneCopy =
+        solveVariant(left, right, gemRows, {}, PlayerbotsAutoGearVariant::Policy::AllocationFault::None);
+    ok = Check(oneCopy.status == PlayerbotsAutoGearVariant::Status::NoSet,
+            "MaxCount one cannot fill two required slots") &&
+         ok;
+
+    PlayerbotsAutoGearVariant::Result const allocateFault =
+        solveVariant(left, {}, gemRows, {}, PlayerbotsAutoGearVariant::Policy::AllocationFault::Allocate);
+    PlayerbotsAutoGearVariant::Result const searchFault =
+        solveVariant(left, {}, gemRows, {}, PlayerbotsAutoGearVariant::Policy::AllocationFault::Search);
+    PlayerbotsAutoGearVariant::Result const noFault =
+        solveVariant(left, {}, gemRows, {}, PlayerbotsAutoGearVariant::Policy::AllocationFault::None);
+    ok = Check(allocateFault.status == PlayerbotsAutoGearVariant::Status::Incomplete && allocateFault.score == 0 &&
+               searchFault.status == PlayerbotsAutoGearVariant::Status::Incomplete &&
+               noFault.status == PlayerbotsAutoGearVariant::Status::SuitableSet && noFault.entries[10] == 7,
+            "allocation faults in the variant solver preserve an incomplete result") &&
+         ok;
 
     if (!ok)
         return 1;

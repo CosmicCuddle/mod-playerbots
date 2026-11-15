@@ -9,6 +9,7 @@
 
 #include "AutoGearWeaponDomain.h"
 #include <cstdint>
+#include <span>
 
 // Pure selection facts. Callers copy them from item templates and from the
 // existing scorer. Nothing here reads a database, a config file, or a Player.
@@ -69,8 +70,13 @@ namespace PlayerbotsAutoGearSelection
         bool exclusiveMainhand = false;
         std::uint8_t armorSubtype = 0;
         bool uniqueEquipped = false;
+        // MaxCount is how many of this entry may be possessed.
+        std::uint32_t maxCount = 0;
         std::uint32_t limitCategory = 0;
+        // EQUIP limit. This is not the possession limit.
         std::uint32_t categoryLimit = 0;
+        // HAVE limit. Bags, bank, equipped copies, and gems all count.
+        std::uint32_t categoryHaveLimit = 0;
         bool hasGem = false;
         std::uint32_t gemItemLevel = 0;
         bool hasEnchant = false;
@@ -78,6 +84,10 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t setId = 0;
         bool setPermitted = true;
         bool darkmoonCard = false;
+        // Tooltip base stats are not availability or a proc. Both stay unknown
+        // until installed evidence exists. requestForceBis does not fill them.
+        bool darkmoonAvailabilityKnown = false;
+        bool darkmoonProcKnown = false;
         bool requestForceBis = false;
         // Template was actually loaded. False is Unknown, not "no such item".
         bool sourceKnown = false;
@@ -90,17 +100,18 @@ namespace PlayerbotsAutoGearSelection
         bool blockedOnlyByCurrentGear = false;
     };
 
-    // WotLK classes are 1..11. Anything else returns 0 and does not shift.
-    inline constexpr std::uint32_t ClassBit(std::uint8_t classId)
-    {
-        if (classId < 1 || classId > 11)
-            return 0;
-        return std::uint32_t{1} << (classId - 1);
-    }
-
+    // Playable WotLK classes are 1..9 and 11. Class 10 is not in
+    // CLASSMASK_ALL_PLAYABLE and must not shift.
     inline constexpr bool ValidWotlkClass(std::uint8_t classId)
     {
-        return classId >= 1 && classId <= 11;
+        return (classId >= 1 && classId <= 9) || classId == 11;
+    }
+
+    inline constexpr std::uint32_t ClassBit(std::uint8_t classId)
+    {
+        if (!ValidWotlkClass(classId))
+            return 0;
+        return std::uint32_t{1} << (classId - 1);
     }
 
     inline constexpr bool ValidSpecTab(std::uint8_t specTab)
@@ -140,6 +151,59 @@ namespace PlayerbotsAutoGearSelection
                 return true;
         }
         return false;
+    }
+
+    // Counts already possessed outside the set being searched.
+    struct RetainedCount
+    {
+        std::uint32_t entryId = 0;
+        std::uint32_t limitCategory = 0;
+        bool bagsKnown = false;
+        bool bankKnown = false;
+        bool equippedKnown = false;
+        bool gemsKnown = false;
+        std::uint32_t bags = 0;
+        std::uint32_t bank = 0;
+        std::uint32_t equipped = 0;
+        std::uint32_t gems = 0;
+    };
+
+    inline constexpr bool CountsKnown(RetainedCount const& row)
+    {
+        return row.bagsKnown && row.bankKnown && row.equippedKnown && row.gemsKnown;
+    }
+
+    inline constexpr bool CountTotal(RetainedCount const& row, std::uint32_t& total)
+    {
+        total = 0;
+        std::uint32_t const parts[] = {row.bags, row.bank, row.equipped, row.gems};
+        for (std::uint32_t part : parts)
+        {
+            if (total > 0xFFFFFFFFu - part)
+                return false;
+            total += part;
+        }
+        return true;
+    }
+
+    inline RetainedCount const* FindEntryCount(std::span<RetainedCount const> retained, std::uint32_t entryId)
+    {
+        for (RetainedCount const& row : retained)
+        {
+            if (row.entryId == entryId && row.limitCategory == 0)
+                return &row;
+        }
+        return nullptr;
+    }
+
+    inline RetainedCount const* FindCategoryCount(std::span<RetainedCount const> retained, std::uint32_t category)
+    {
+        for (RetainedCount const& row : retained)
+        {
+            if (row.entryId == 0 && row.limitCategory == category)
+                return &row;
+        }
+        return nullptr;
     }
 }
 

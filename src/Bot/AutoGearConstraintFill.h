@@ -60,8 +60,11 @@ namespace PlayerbotsAutoGearSelection
             return FactDecision::Invalid;
         if (!fact.equipKnown)
             return FactDecision::Unknown;
-        if ((fact.limitCategory == 0) != (fact.categoryLimit == 0) || fact.armorSubtype > 31)
+        bool const categoryLimited = fact.categoryLimit != 0 || fact.categoryHaveLimit != 0;
+        if ((fact.limitCategory == 0) == categoryLimited || fact.armorSubtype > 31)
             return FactDecision::Invalid;
+        if (fact.darkmoonCard && (!fact.darkmoonAvailabilityKnown || !fact.darkmoonProcKnown))
+            return FactDecision::Unknown;
         if (fact.exclusiveMainhand && fact.kind != Kind::OneHand && fact.kind != Kind::TwoHand)
             return FactDecision::Invalid;
         if (WeaponSlot(fact.slot) == (fact.kind == Kind::Count))
