@@ -10,7 +10,6 @@
 #include "BisListMgr.h"
 #include "BudgetValues.h"
 #include "Event.h"
-#include "ObjectAccessor.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -18,47 +17,15 @@
 #include "Trainer.h"
 #include <limits>
 
-#if __has_include("IndividualProgression.h")
-#include "IndividualProgression.h"
-#define PLAYERBOTS_AUTOGEAR_HAS_IP 1
-#else
-#define PLAYERBOTS_AUTOGEAR_HAS_IP 0
-#endif
-
 namespace
 {
-    bool ResolveCommandSenderAutoGearCap(Event const& event, uint32& hardCap)
+    bool ResolveCommandSenderAutoGearCap(Event const& /*event*/, uint32& hardCap)
     {
         hardCap = 0;
-        if (!sPlayerbotAIConfig.AutoGearIPCapEnable)
-            return true;
-
-        Player* sender = ObjectAccessor::FindPlayer(event.GetOwnerGuid());
-        if (!sender || !sender->IsInWorld() || !sender->GetSession() || sender->GetSession()->IsHeadless())
-            return false;
-
-#if PLAYERBOTS_AUTOGEAR_HAS_IP
-        uint8 const rawStage = sIndividualProgression->GetPlayerProgressionFromQuests(sender);
-        // Paid effective-stage resolution can hit the Auth DB on an account-cache
-        // miss at Wrath entry. Keep map-thread commands closed until IP exposes
-        // a cache-only effective-stage read for this boundary.
-        if (rawStage >= PlayerbotsAutoGearCap::WrathEntryStage && sIndividualProgression->IsPaidExpansionActive())
-            return false;
-
-        PlayerbotsAutoGearCap::Policy const policy{sPlayerbotAIConfig.AutoGearIPCompletionCaps,
-            sPlayerbotAIConfig.AutoGearIPEraEntryFloors, sPlayerbotAIConfig.AutoGearIPEraCeilings};
-        auto const decision = PlayerbotsAutoGearCap::Resolve(
-            rawStage,
-            sIndividualProgression->GetEffectiveProgression(sender), policy,
-            sPlayerbotAIConfig.AutoGearScoreLimit > 0
-                ? static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit) : 0);
-        if (!decision.valid)
-            return false;
-        hardCap = decision.itemLevelCap;
-        return true;
-#else
-        return false;
-#endif
+        // A foreign-map sender cannot be dereferenced from the bot's map thread.
+        // Until IP publishes a cache-only, GUID-keyed snapshot, enabling this
+        // option refuses commands before any gear mutation.
+        return !sPlayerbotAIConfig.AutoGearIPCapEnable;
     }
 }
 
