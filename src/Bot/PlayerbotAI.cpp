@@ -550,6 +550,23 @@ void PlayerbotAI::UpdateAIGroupMaster()
     }
 }
 
+bool PlayerbotAI::IsTimedLogoutReady()
+{
+    auto* session = bot ? bot->GetSession() : nullptr;
+    if (!session || !session->IsHeadless() || session->GetPlayer() != bot ||
+        session->PlayerLogout() || !session->IsLoggingOut())
+        return false;
+    if (session->ShouldLogOut(time(nullptr)))
+        return true;
+    if (!master || !master->IsInWorld() || !master->GetSession() || !master->GetSession()->GetPlayer())
+        return true;
+    if (bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || bot->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
+        session->HasPermission(rbac::RBAC_PERM_INSTANT_LOGOUT))
+        return true;
+    return master->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || master->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
+        master->GetSession()->HasPermission(rbac::RBAC_PERM_INSTANT_LOGOUT);
+}
+
 void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal)
 {
 
@@ -588,45 +605,13 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     HandleCommands();
 
-    // logout if logout timer is ready or if instant logout is possible
+    // Never destroy a headless session from its map/AI update stack.
+    // The world-side consumer resolves the exact registered holder and
+    // re-evaluates the countdown/instant conditions before retirement.
     if (bot->GetSession()->IsLoggingOut())
     {
-        WorldSession* botWorldSessionPtr = bot->GetSession();
-        bool logout = botWorldSessionPtr->ShouldLogOut(time(nullptr));
-
-        if (!master || !master->IsInWorld() || !master->GetSession() || !master->GetSession()->GetPlayer())
-            logout = true;
-
-        if (bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || bot->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
-            botWorldSessionPtr->HasPermission(rbac::RBAC_PERM_INSTANT_LOGOUT))
-        {
-            logout = true;
-        }
-
-        if (master && master->IsInWorld() &&
-            (master->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) || master->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
-             (master->GetSession() &&
-              master->GetSession()->HasPermission(rbac::RBAC_PERM_INSTANT_LOGOUT))))
-        {
-            logout = true;
-        }
-
-        if (logout)
-        {
-            PlayerbotMgr* masterBotMgr = nullptr;
-            if (master)
-                masterBotMgr = GET_PLAYERBOT_MGR(master);
-            if (masterBotMgr)
-            {
-                masterBotMgr->LogoutPlayerBot(bot->GetGUID());
-            }
-            else
-            {
-                sRandomPlayerbotMgr.LogoutPlayerBot(bot->GetGUID());
-            }
-            return;
-        }
-
+        if (IsTimedLogoutReady())
+            PlayerbotHolder::RequestTimedBotLogout(bot);
         SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
         return;
     }
