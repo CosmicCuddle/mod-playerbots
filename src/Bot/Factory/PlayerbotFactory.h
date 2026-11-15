@@ -97,6 +97,8 @@ public:
         ObjectGuid itemGuid;
         uint16 source;
         uint16 destination;
+        uint32 count;
+        ObjectGuid destinationBagGuid; // Empty for the backpack.
     };
     // Call on the bot-owning thread. Does not move items; output is empty on failure.
     static InventoryResult PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves);
