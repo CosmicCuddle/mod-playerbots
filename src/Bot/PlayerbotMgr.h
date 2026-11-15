@@ -11,6 +11,8 @@
 #include "Player.h"
 #include "PlayerbotAIBase.h"
 #include "AutoGearRecoveryRegistry.h"
+#include "AutoGearPendingSessionOwner.h"
+#include "WorldSession.h"
 #include <functional>
 
 class ChatHandler;
@@ -24,9 +26,17 @@ typedef std::map<std::string, std::set<std::string> > PlayerBotErrorMap;
 
 struct PendingBotLogin
 {
-    uint32 masterAccountId = 0;
-    WorldSession* session = nullptr;
-    bool failed = false;  // torn down by UpdatePendingLogins(), never inside the session's own callback
+    using Owner = PB59::PendingSessionOwner<WorldSession>;
+    PendingBotLogin(uint32 account, std::uint64_t masterPlayer, std::uint64_t masterSession,
+        std::unique_ptr<WorldSession> session)
+        : masterAccountId(account), masterPlayerIncarnation(masterPlayer),
+          masterSessionIncarnation(masterSession), owner(std::move(session)) { }
+
+    uint32 const masterAccountId;
+    std::uint64_t const masterPlayerIncarnation;
+    std::uint64_t const masterSessionIncarnation;
+    std::uint64_t botPlayerIncarnation = 0;
+    Owner owner;
 };
 
 enum class BotRetirementResult { Refused, Completed, RecoveryRequired };
@@ -57,7 +67,8 @@ public:
     static void ClearPendingLogins();   // shutdown, outside any callback
 
     void LogoutAllBots();
-    void OnBotLogin(Player* const bot);
+    void OnBotLogin(Player* const bot, PendingBotLogin::Owner& pendingOwner);
+    static bool CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sessionIncarnation);
 
     std::vector<std::string> HandlePlayerbotCommand(char const* args, Player* master = nullptr);
     std::string const ProcessBotCommand(std::string const cmd, ObjectGuid guid, ObjectGuid masterguid, bool admin,
@@ -78,8 +89,8 @@ protected:
 
     PB59::RecoveryRegistry::HolderLifetime _pb59HolderLifetime;
     PlayerBotMap playerBots;
-    static void AbandonPendingLogin(ObjectGuid guid);
-    static std::unordered_map<ObjectGuid, PendingBotLogin> botLoading;
+    static std::unordered_map<ObjectGuid, PendingBotLogin>& botLoading;
+    static bool _pendingLoginsStopping;
 };
 
 class PlayerbotMgr : public PlayerbotHolder
