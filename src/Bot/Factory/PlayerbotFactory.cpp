@@ -8,6 +8,7 @@
 #include "AutoGearProgressionCap.h"
 #include "AutoGearSlotPolicy.h"
 #include <algorithm>
+#include <array>
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
 #include "AiFactory.h"
@@ -4063,6 +4064,27 @@ void PlayerbotFactory::DestroyEquippedGear(Player* bot)
         if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
             bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
     }
+}
+
+PlayerbotsAutoGearSample::Result PlayerbotFactory::CaptureEquipmentSample(Player* sender)
+{
+    if (!sender || !sender->IsInWorld() || !sender->GetSession() || sender->GetSession()->IsHeadless())
+        return {};
+
+    std::array<PlayerbotsAutoGearSample::Slot, EQUIPMENT_SLOT_END> slots{};
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+            continue;
+        Item* item = sender->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+        ItemTemplate const* itemTemplate = item->GetTemplate();
+        slots[slot] = {true, true, itemTemplate != nullptr,
+            itemTemplate && itemTemplate->Quality == ITEM_QUALITY_HEIRLOOM,
+            itemTemplate ? itemTemplate->ItemLevel : 0};
+    }
+    return PlayerbotsAutoGearSample::Average(slots);
 }
 
 InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves)

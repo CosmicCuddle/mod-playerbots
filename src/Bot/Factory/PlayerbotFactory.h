@@ -8,6 +8,7 @@
 #define PLAYERBOTS_PLAYERBOTFACTORY_H
 
 #include "InventoryAction.h"
+#include "AutoGearEquipmentSample.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include <string>
@@ -92,6 +93,8 @@ public:
     // Call on the bot-owning thread. Does not move items; output is empty on failure.
     static InventoryResult PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves);
     static InventoryResult ValidateEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove> const& moves);
+    // Sender-owning thread only; publication/freshness must be supplied separately.
+    static PlayerbotsAutoGearSample::Result CaptureEquipmentSample(Player* sender);
     static void AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance = false,
                         bool applyFinishers = true, uint32 maxRawItemLevel = 0);
     void InitPetTalents();

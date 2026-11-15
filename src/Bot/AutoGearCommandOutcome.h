@@ -25,8 +25,9 @@ namespace PlayerbotsAutoGearCommand
         RequestStrip
     };
 
-    // Planning only. Mutation still needs owner-thread execution and authority
-    // held valid through commit; RequestStrip never authorizes deletion itself.
+    // Planning only. Final matching Known B authorizes one bounded synchronous
+    // bot-owner-thread command; later C is diagnostic, not a lease or correction.
+    // RequestStrip never authorizes deletion itself.
     constexpr NextStep ResolveNextStep(bool authorityValid, PreparationResult result, bool searchComplete = false)
     {
         if (!authorityValid)
