@@ -54,11 +54,10 @@ namespace
         Difficulty difficulty = player->GetDifficulty(false);
         GetDownscaledMapDifficultyData(entry->MapID, difficulty);
 
-        uint32 selectedDungeonId = 0;
-        // GetDungeon currently reads mutable Core LFG group state without a visible lock.
-        // Keep the feature OFF until that access is validated for map-thread teleports.
-        if (Group* group = player->GetGroup(); group && group->isLFGGroup())
-            selectedDungeonId = sLFGMgr->GetDungeon(group->GetGUID());
+        // A selected LFG dungeon needs a map-thread-safe Core snapshot. Until
+        // then, resolve only unambiguous physical map/difficulty rows; ordinary
+        // entrances still work, while seasonal bypasses remain unavailable.
+        uint32 const selectedDungeonId = 0;
 
         std::vector<PlayerbotsDungeonBracket::Row> rows;
         for (uint32 id = 0; id < sLFGDungeonStore.GetNumRows(); ++id)
@@ -70,8 +69,7 @@ namespace
             bool const physical = dungeon->TypeID == lfg::LFG_TYPE_DUNGEON ||
                 dungeon->TypeID == lfg::LFG_TYPE_HEROIC;
             bool const seasonal = (dungeon->Flags & lfg::LFG_FLAG_SEASONAL) != 0;
-            bool const active = seasonal && dungeon->ID == selectedDungeonId &&
-                sLFGMgr->IsSeasonActive(dungeon->ID);
+            bool const active = false;
             rows.push_back({dungeon->ID, dungeon->MapID, dungeon->Difficulty, dungeon->MinLevel,
                 dungeon->MaxLevel, physical, seasonal, active});
         }
