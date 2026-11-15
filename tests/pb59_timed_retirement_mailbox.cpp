@@ -31,6 +31,8 @@ int main()
     assert(!m.Finish({a,fresh->ticket}));
     assert(m.Finish(*fresh)&&!m.Take());
     assert(m.Request(2,3,4)==S::Accepted);
+    auto blocked=m.Take();assert(blocked&&blocked->identity==b&&m.Finish(*blocked,true));
+    assert(m.Request(2,3,4)==S::Blocked&&!m.Take()&&m.Outstanding()==1);
     m.ForgetHolder(5);assert(m.Outstanding()==0&&m.Request(2,3,4)==S::Missing);
     assert(m.Request(1,20,30)==S::Accepted);
     m.Stop();assert(m.Request(1,20,30)==S::Stopped&&!m.Register(b));
