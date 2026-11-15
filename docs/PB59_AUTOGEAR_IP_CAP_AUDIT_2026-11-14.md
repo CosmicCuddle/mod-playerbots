@@ -24,6 +24,8 @@ The factory's `ilvl` argument is converted to a mixed gear-score limit using the
 
 ## Policy and remaining evidence
 
+The resolver rejects an effective stage above the raw completion stage, matching snapshot API v1's validity rule. Fixtures include invalid raw12/effective13 and valid raw13/effective12 inputs. The published snapshot provider draft is IP `ec5b7fb6` (PR #185). Integration still needs a contract that serializes authorization with gear mutation: a second snapshot read alone does not prevent invalidation after that read and before deletion on another map thread. Per-character invalidation revisions also need to be exposed if equal snapshots are intended to mean the same publication. These source-review findings are recorded in coordination Issue #59; the enabled command path continues to deny.
+
 Stage 0 item level 66 and stage 1 item level 78 are provisional candidates. CS01 proposed further Vanilla and later-era candidates in Issue #59; none are production-approved. The resolver implements `min(max(completionCap(raw), entryFloor(effectiveEra)), eraCeiling(effectiveEra))`, then the stricter nonzero configured/requested limit. The parser-backed default table has 19 stage entries, with stages 2-18 zero; TBC/Wrath era ceilings are zero. Missing entries fail closed when enabled.
 
 Tests still needed: every command spelling and numeric boundary, `reset` denial before destruction, `match`, BiS fallback and individual item levels, grey/white factory fallback, global cap interaction including `0`, human sender versus bot/master, GM/unknown sender, Altbot/AddClass/RNDBOT, no-IP build, paid effective-stage boundary, and future TBC/Wrath stages. Native build, gameplay tests, and deployment have not run in this workspace.

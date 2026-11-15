@@ -24,6 +24,9 @@ constexpr Policy incomplete{std::span<std::uint32_t const>(approvedOnly), {0, 0,
 static_assert(!Resolve(8, 8, incomplete, 0).valid);
 static_assert(!Resolve(0, 13, incomplete, 0).valid);
 static_assert(!Resolve(13, 19, policy, 0).valid);
+static_assert(!Resolve(0, 8, policy, 0).valid);
+static_assert(!Resolve(12, 13, policy, 0).valid);
+static_assert(Resolve(13, 12, policy, 0).valid);
 constexpr Policy inverted{std::span<std::uint32_t const>(completion), {0, 200, 200}, {92, 164, 290}};
 static_assert(!Resolve(13, 12, inverted, 0).valid);
 static_assert(AllowsRawItemLevel(66, 66));

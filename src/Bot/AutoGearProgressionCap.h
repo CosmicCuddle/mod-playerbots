@@ -36,7 +36,7 @@ namespace PlayerbotsAutoGearCap
         std::uint32_t configuredCap, std::uint32_t requestedCap = 0)
     {
         std::size_t const era = effectiveStage < TbcEntryStage ? 0 : effectiveStage < WrathEntryStage ? 1 : 2;
-        if (rawStage > LastSupportedStage || effectiveStage > LastSupportedStage ||
+        if (rawStage > LastSupportedStage || effectiveStage > rawStage ||
             rawStage >= policy.completionCaps.size() || !policy.completionCaps[rawStage] ||
             !policy.eraCeilings[era] || policy.eraEntryFloors[era] > policy.eraCeilings[era])
             return {false, 0};
