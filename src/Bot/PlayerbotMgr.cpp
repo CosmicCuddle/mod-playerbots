@@ -70,7 +70,11 @@ private:
 };
 
 std::unordered_set<ObjectGuid> BotInitGuard::botsBeingInitialized;
-std::unordered_map<ObjectGuid, PendingBotLogin> PlayerbotHolder::botLoading;
+// Explicit shutdown drains this store; static destruction must not implicitly
+// delete a still-attached session after the world/DB services are gone.
+std::unordered_map<ObjectGuid, PendingBotLogin>& PlayerbotHolder::botLoading =
+    *new std::unordered_map<ObjectGuid, PendingBotLogin>();
+bool PlayerbotHolder::_pendingLoginsStopping = false;
 
 PlayerbotHolder::PlayerbotHolder() : PlayerbotAIBase(false) {}
 class PlayerbotLoginQueryHolder : public LoginQueryHolder
@@ -90,7 +94,7 @@ static std::string PersonalBotAccountRejection(uint32 accountId, ObjectGuid guid
 
 void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId)
 {
-    if (botLoading.find(playerGuid) != botLoading.end())
+    if (_pendingLoginsStopping || botLoading.find(playerGuid) != botLoading.end())
         return;
 
     // has bot already been added?
@@ -167,132 +171,213 @@ void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId
         return;
     }
 
-    WorldSession* botSession =
-        new WorldSession(accountId, "", 0x0, nullptr, SEC_PLAYER, EXPANSION_WRATH_OF_THE_LICH_KING, time_t(0),
-                         sWorld->GetDefaultDbcLocale(), 0, false, false, 0);
+    // Personal login must remain bound to the original active master, not
+    // silently attach to a replacement account session or the random holder.
+    if (masterAccountId && (!masterPlayer || !masterSession ||
+        !masterPlayer->GetPB59OwnerIncarnation() || !masterSession->GetPB59SessionIncarnation()))
+        return;
 
-    botLoading.emplace(playerGuid, PendingBotLogin{masterAccountId, botSession, false});
+    auto session = std::make_unique<WorldSession>(accountId, "", 0x0, nullptr, SEC_PLAYER,
+        EXPANSION_WRATH_OF_THE_LICH_KING, time_t(0), sWorld->GetDefaultDbcLocale(), 0, false, false, 0);
+    auto const sessionId = session->GetPB59SessionIncarnation();
+    if (!sessionId || !session->IsHeadless())
+        return;
+    auto [pendingIt, inserted] = botLoading.try_emplace(playerGuid, masterAccountId,
+        masterAccountId ? masterPlayer->GetPB59OwnerIncarnation() : 0,
+        masterAccountId ? masterSession->GetPB59SessionIncarnation() : 0, std::move(session));
+    if (!inserted)
+        return;
 
-    botSession->AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder))
-        .AfterComplete(
-            [botSession](SQLQueryHolderBase const& queryHolder)
+    // Capture only the value identity. Pending/queued owner retains the session
+    // until the exact holder publishes it or cleanup completes.
+    try
+    {
+        pendingIt->second.owner.Get()->AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder))
+            .AfterComplete([playerGuid, sessionId](SQLQueryHolderBase const& queryHolder)
             {
+                using Phase = PendingBotLogin::Owner::Phase;
+                auto it = botLoading.find(playerGuid);
+                if (it == botLoading.end() || !it->second.owner.Matches(sessionId) ||
+                    !it->second.owner.Busy() || it->second.owner.State() != Phase::Loading)
+                    return;
+                auto& pending = it->second;
                 PlayerbotLoginQueryHolder const& holder = static_cast<PlayerbotLoginQueryHolder const&>(queryHolder);
-                uint32 masterAccountId = holder.GetMasterAccountId();
-
-                if (masterAccountId)
+                if (_pendingLoginsStopping || holder.GetGuid() != playerGuid ||
+                    holder.GetMasterAccountId() != pending.masterAccountId)
                 {
-                    // verify and find current world session of master
-                    WorldSession* masterSession = sWorldSessionMgr->FindSession(masterAccountId);
-                    Player* masterPlayer = masterSession ? masterSession->GetPlayer() : nullptr;
-
-                    if (masterPlayer)
+                    pending.owner.Fail();
+                    return;
+                }
+                PlayerbotHolder* target = &RandomPlayerbotMgr::instance();
+                if (pending.masterAccountId)
+                {
+                    WorldSession* masterSession = sWorldSessionMgr->FindSession(pending.masterAccountId);
+                    Player* master = masterSession ? masterSession->GetPlayer() : nullptr;
+                    if (!master || masterSession->GetPB59SessionIncarnation() != pending.masterSessionIncarnation ||
+                        master->GetPB59OwnerIncarnation() != pending.masterPlayerIncarnation)
                     {
-                        if (PlayerbotHolder* mgr = PlayerbotsMgr::instance().GetPlayerbotMgr(masterPlayer))
-                        {
-                            mgr->HandlePlayerBotLoginCallback(holder, botSession);
-                            return;
-                        }
-
-                        // Master lost its manager while the holder was in flight
-                        AbandonPendingLogin(holder.GetGuid());
+                        pending.owner.Fail();
                         return;
                     }
+                    target = PlayerbotsMgr::instance().GetPlayerbotMgr(master);
                 }
-
-                RandomPlayerbotMgr::instance().HandlePlayerBotLoginCallback(holder, botSession);
+                if (!target)
+                {
+                    pending.owner.Fail();
+                    return;
+                }
+                target->HandlePlayerBotLoginCallback(holder, pending.owner.Get());
             });
-}
-
-void PlayerbotHolder::AbandonPendingLogin(ObjectGuid guid)
-{
-    auto itr = botLoading.find(guid);
-    if (itr != botLoading.end())
-        itr->second.failed = true;
+    }
+    catch (...)
+    {
+        pendingIt->second.owner.Fail();
+    }
 }
 
 void PlayerbotHolder::UpdatePendingLogins()
 {
-    if (botLoading.empty())
-        return;
-
-    // Callbacks erase or flag their own entry, so iterate over a snapshot of the keys
-    std::vector<ObjectGuid> guids;
-    guids.reserve(botLoading.size());
+    using Phase = PendingBotLogin::Owner::Phase;
+    // A callback can insert another entry. Snapshot exact IDs, not raw pointers
+    // or iterators, and never erase a busy owner.
+    std::vector<std::pair<ObjectGuid, std::uint64_t>> keys;
+    keys.reserve(botLoading.size());
     for (auto const& [guid, pending] : botLoading)
-        guids.push_back(guid);
-
-    for (ObjectGuid const& guid : guids)
+        keys.emplace_back(guid, pending.owner.Identity());
+    for (auto const& [guid, sessionId] : keys)
     {
-        auto itr = botLoading.find(guid);
-        if (itr == botLoading.end())
+        auto it = botLoading.find(guid);
+        if (it == botLoading.end() || !it->second.owner.Matches(sessionId) || it->second.owner.Busy())
             continue;
-
-        WorldSession* session = itr->second.session;
-        if (!itr->second.failed)
-            session->ProcessQueryCallbacks();  // may complete the login (entry erased) or flag it failed
-
-        itr = botLoading.find(guid);
-        if (itr == botLoading.end() || !itr->second.failed)
-            continue;
-
-        // Safe here: the processor has returned, nothing of the session is on the stack
-        session->LogoutPlayer(true);
-        delete session;
-        botLoading.erase(itr);
+        auto& owner = it->second.owner;
+        if (_pendingLoginsStopping || owner.QueueDropped())
+            owner.Fail();
+        if (owner.Begin(Phase::Loading))
+        {
+            try { owner.Get()->ProcessQueryCallbacks(); }
+            catch (...) { owner.Fail(); }
+            owner.End();
+        }
+        if (owner.State() == Phase::Failed)
+        {
+            if (owner.CloseFailed([](WorldSession& session) { session.LogoutPlayer(true); }))
+            {
+                // The owner remained busy throughout native logout/deletion.
+                // Re-find after callbacks, which may have rehashed the map.
+                auto current = botLoading.find(guid);
+                if (current != botLoading.end() && current->second.owner.Identity() == sessionId &&
+                    current->second.owner.State() == Phase::Closed)
+                    botLoading.erase(current);
+            }
+            else
+                LOG_ERROR("playerbots", "Pending bot {} session {} cleanup unresolved; retained, no blind retry",
+                    guid.ToString(), sessionId);
+        }
     }
 }
 
 void PlayerbotHolder::ClearPendingLogins()
 {
-    for (auto const& [guid, pending] : botLoading)
-    {
-        pending.session->LogoutPlayer(true);
-        delete pending.session;
-    }
-    botLoading.clear();
-}
-
-bool PlayerbotHolder::IsAccountLinked(uint32 accountId, uint32 linkedAccountId)
-{
-    PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACCOUNT_LINK);
-    stmt->SetData(0, accountId);
-    stmt->SetData(1, linkedAccountId);
-    return PlayerbotsDatabase.Query(stmt) != nullptr;
+    _pendingLoginsStopping = true;
+    // No new requests or queued publication after the shutdown fence.
+    for (auto& [guid, pending] : botLoading)
+        pending.owner.Fail();
+    UpdatePendingLogins();
+    if (!botLoading.empty())
+        LOG_ERROR("playerbots", "{} pending bot sessions remain unresolved at shutdown", botLoading.size());
 }
 
 void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder const& holder, WorldSession* botSession)
 {
-    uint32 botAccountId = holder.GetAccountId();
-
-    botSession->HandlePlayerLoginFromDB(holder);  // will delete lqh
-
+    using Phase = PendingBotLogin::Owner::Phase;
+    auto const guid = holder.GetGuid();
+    auto const masterAccountId = holder.GetMasterAccountId();
+    auto it = botLoading.find(guid);
+    if (!botSession || it == botLoading.end() || it->second.owner.Get() != botSession ||
+        !it->second.owner.Busy() || it->second.owner.State() != Phase::Loading)
+        return;
+    auto& pending = it->second;
+    auto const sessionId = pending.owner.Identity();
+    botSession->HandlePlayerLoginFromDB(holder);
     Player* bot = botSession->GetPlayer();
-    if (!bot)
+    if (!bot || bot->GetGUID() != guid || !bot->GetPB59OwnerIncarnation() ||
+        ObjectAccessor::FindConnectedPlayer(guid) != bot || _pendingLoginsStopping)
     {
-        // Debug log
-        LOG_DEBUG("mod-playerbots", "Bot player could not be loaded for account ID: {}", botAccountId);
-        // This runs inside botSession's own callback processor, so the teardown is deferred to UpdatePendingLogins()
-        AbandonPendingLogin(holder.GetGuid());
+        pending.owner.Fail();
         return;
     }
-
-    uint32 masterAccountId = holder.GetMasterAccountId();
-    WorldSession* masterSession = masterAccountId ? sWorldSessionMgr->FindSession(masterAccountId) : nullptr;
-
-    // Check if masterSession->GetPlayer() is valid
-    Player* masterPlayer = masterSession ? masterSession->GetPlayer() : nullptr;
-    if (masterSession && !masterPlayer)
-    {
-        LOG_DEBUG("mod-playerbots", "Master session found but no player is associated for master account ID: {}",
-                  masterAccountId);
-    }
-
+    auto const playerId = bot->GetPB59OwnerIncarnation();
     sRandomPlayerbotMgr.OnPlayerLogin(bot);
-    auto op = std::make_unique<OnBotLoginOperation>(bot->GetGUID(), masterAccountId);
-    PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(op));
+    // Revalidate after the login hook; it must not authorize a replacement.
+    if (pending.owner.State() != Phase::Loading || _pendingLoginsStopping ||
+        ObjectAccessor::FindConnectedPlayer(guid) != bot || botSession->GetPlayer() != bot ||
+        bot->GetPB59OwnerIncarnation() != playerId)
+    {
+        pending.owner.Fail();
+        return;
+    }
+    pending.botPlayerIncarnation = playerId;
+    auto marker = std::make_shared<int>(0);
+    auto op = std::make_unique<OnBotLoginOperation>(guid, sessionId, marker);
+    if (!pending.owner.MarkQueued(marker) ||
+        !PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(op)))
+        pending.owner.Fail();
+    // No erase here: the queue owns only its marker, not the WorldSession.
+    (void)masterAccountId;
+}
 
-    PlayerbotHolder::botLoading.erase(holder.GetGuid());
+bool PlayerbotHolder::CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sessionId)
+{
+    using Phase = PendingBotLogin::Owner::Phase;
+    auto it = botLoading.find(guid);
+    if (it == botLoading.end() || !it->second.owner.Matches(sessionId))
+        return false;
+    auto& pending = it->second;
+    auto& owner = pending.owner;
+    if (_pendingLoginsStopping)
+    {
+        owner.Fail();
+        return false;
+    }
+    if (!owner.Begin(Phase::Queued))
+        return false;
+    bool published = false;
+    try
+    {
+        WorldSession* session = owner.Get();
+        Player* bot = session->GetPlayer();
+        PlayerbotHolder* target = &RandomPlayerbotMgr::instance();
+        if (pending.masterAccountId)
+        {
+            WorldSession* masterSession = sWorldSessionMgr->FindSession(pending.masterAccountId);
+            Player* master = masterSession ? masterSession->GetPlayer() : nullptr;
+            target = master && masterSession->GetPB59SessionIncarnation() == pending.masterSessionIncarnation &&
+                master->GetPB59OwnerIncarnation() == pending.masterPlayerIncarnation ?
+                PlayerbotsMgr::instance().GetPlayerbotMgr(master) : nullptr;
+        }
+        if (target && bot && ObjectAccessor::FindConnectedPlayer(guid) == bot &&
+            bot->GetGUID() == guid && bot->GetPB59OwnerIncarnation() == pending.botPlayerIncarnation)
+            target->OnBotLogin(bot, owner);
+        published = owner.State() == Phase::Released;
+    }
+    catch (...)
+    {
+        // If the holder was already published, do not delete its session.
+        // Post-publication callback recovery belongs to the native holder phase.
+        published = owner.State() == Phase::Released;
+        LOG_ERROR("playerbots", "Queued login {} session {} interrupted; published {}", guid.ToString(), sessionId, published);
+    }
+    if (!published)
+        owner.Fail();
+    owner.End();
+    if (published)
+    {
+        auto current = botLoading.find(guid);
+        if (current != botLoading.end() && current->second.owner.Identity() == sessionId &&
+            current->second.owner.State() == Phase::Released)
+            botLoading.erase(current);
+    }
+    return published;
 }
 
 void PlayerbotHolder::UpdateSessions()
@@ -631,16 +716,31 @@ Player* PlayerbotHolder::GetPlayerBot(ObjectGuid::LowType lowGuid) const
     return (it == playerBots.end()) ? 0 : it->second;
 }
 
-void PlayerbotHolder::OnBotLogin(Player* const bot)
+void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pendingOwner)
 {
-    // Prevent duplicate login
-    if (playerBots.find(bot->GetGUID()) != playerBots.end())
-    {
+    if (!bot || !pendingOwner.CanPublish(bot->GetSession()))
         return;
-    }
+    auto const guid = bot->GetGUID();
+    auto const playerId = bot->GetPB59OwnerIncarnation();
+    auto holderLife = _pb59HolderLifetime.Observe();
+    if (playerBots.find(guid) != playerBots.end())
+        return;
 
     PlayerbotsMgr::instance().AddPlayerbotData(bot, true);
-    playerBots[bot->GetGUID()] = bot;
+    if (!holderLife->Alive() || ObjectAccessor::FindConnectedPlayer(guid) != bot ||
+        bot->GetPB59OwnerIncarnation() != playerId || !pendingOwner.CanPublish(bot->GetSession()) ||
+        pendingOwner.Get()->GetPlayer() != bot || _pendingLoginsStopping)
+        return;
+    auto [position, inserted] = playerBots.emplace(guid, bot);
+    if (!inserted)
+        return;
+    // No callback between map insertion and release: the existing holder
+    // now owns the session under its legacy retirement contract.
+    if (!pendingOwner.ReleasePublished(bot->GetSession()))
+    {
+        playerBots.erase(position);
+        return;
+    }
 
     OnBotLoginInternal(bot);
 
