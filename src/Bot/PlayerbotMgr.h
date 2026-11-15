@@ -90,6 +90,8 @@ protected:
     BotRetirementResult TryLogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement = {},
         bool timedLogout = false);
     BotRetirementResult TryDisablePlayerBot(ObjectGuid guid);
+    bool RegisterTimedBot(Player* bot);
+    void ForgetTimedBot(ObjectGuid guid, std::uint64_t player, std::uint64_t session);
     virtual void OnBotLoginInternal(Player* const bot) = 0;
 
     PB59::RecoveryRegistry::HolderLifetime _pb59HolderLifetime;
