@@ -789,8 +789,11 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
         record.MarkStep(Journal::Step::BeforeIdentityRetire);
         PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
         record.MarkStep(Journal::Step::BeforeGroupQueue);
-        auto cleanupOp = std::make_unique<BotLogoutGroupCleanupOperation>(guid);
-        PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(cleanupOp));
+        auto cleanupOp = std::make_unique<BotLogoutGroupCleanupOperation>(guid, ownerIncarnation, sessionIncarnation);
+        // Identity retirement already mutated state; queue refusal is not a
+        // completed logout and must retain the journal for reconciliation.
+        if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(cleanupOp)))
+            return partial();
         if (!current())
             return partial();
 
