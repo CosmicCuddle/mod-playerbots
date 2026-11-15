@@ -28,6 +28,8 @@ struct PendingBotLogin
     bool failed = false;  // torn down by UpdatePendingLogins(), never inside the session's own callback
 };
 
+enum class BotRetirementResult { Refused, Completed, RecoveryRequired };
+
 class PlayerbotHolder : public PlayerbotAIBase
 {
 public:
@@ -69,7 +71,8 @@ public:
 protected:
     // Synchronous existing scheduler bookkeeping, only after retirement admission.
     // The callback must not delete/transfer the bot or initiate another retirement.
-    bool LogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement);
+    BotRetirementResult TryLogoutPlayerBot(ObjectGuid guid, std::function<void()> const& beforeRetirement = {});
+    BotRetirementResult TryDisablePlayerBot(ObjectGuid guid);
     virtual void OnBotLoginInternal(Player* const bot) = 0;
 
     PlayerBotMap playerBots;
