@@ -192,6 +192,12 @@ int main()
     WorldSession headless(8888);headless.HandlePlayerLoginFromDB({master.player.guid});assert(headless.loads==0&&!headless.PlayerLoading());
     offlineMgr.offline[7000]=&master.session;headless.HandlePlayerLoginFromDB({{7000}});assert(headless.loads==0);offlineMgr.offline.clear();
     headless.HandlePlayerLoginFromDB({{7000}});assert(headless.loads==1);client.HandlePlayerLoginFromDB({{7000}});assert(client.loads==1);
+    // Registered character with missing session is not safe to replace.
+    unpublished.player.session=nullptr;packet.guid=unpublished.player.guid;deny();assert(random.calls==before);
+    client.HandlePlayerLoginFromDB({unpublished.player.guid});assert(client.loads==1&&!client.PlayerLoading());unpublished.player.session=&unpublished.session;
+    // A purported Completed result is insufficient if the character is still registered.
+    Bot lingering(3002,4002,5002);lingering.session.timer=false;lingering.Register(random);packet.guid=lingering.player.guid;client.legit.insert(packet.guid);
+    random.retainRegistration=true;deny();assert(random.calls==++before&&ObjectAccessor::FindConnectedPlayer(packet.guid)==&lingering.player);random.retainRegistration=false;
     // Existing real client is left to normal Core admission; no bot retirement.
     packet.guid=master.player.guid;assert(secure.CanPacketReceive(&client,packet)&&random.calls==before);
     Bot stopped(6,7,8);stopped.Register(random);H::StopTimedBotLogouts();stopped.Request();H::ProcessTimedBotLogouts();assert(random.calls==before&&mailbox.Outstanding()==2);
