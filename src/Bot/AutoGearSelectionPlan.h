@@ -26,8 +26,11 @@ namespace PlayerbotsAutoGearSelection
         std::size_t candidateBudget = 1000;
         std::size_t nodeBudget = 100000;
         bool authorityValid = false;
-        BagSpace bags = BagSpace::Enough;
+        // Unknown until a real storage preflight says otherwise.
+        BagSpace bags = BagSpace::Unknown;
         RecoveryReason technical = RecoveryReason::None;
+        // Pure selection never sets this. Recovery stays unauthorized.
+        bool mutationStarted = false;
     };
 
     struct Plan
@@ -35,6 +38,9 @@ namespace PlayerbotsAutoGearSelection
         Outcome outcome{};
         PlayerbotsAutoGearSet::Result solved{};
         std::uint32_t cap = 0;
+        std::size_t factsSupplied = 0;
+        std::size_t factsAccepted = 0;
+        bool sourceComplete = false;
     };
 
     template <class Scorer>
@@ -42,15 +48,28 @@ namespace PlayerbotsAutoGearSelection
     {
         using PlayerbotsAutoGearCommand::PreparationResult;
         Plan plan;
+        plan.factsSupplied = in.facts.size();
+        auto finish = [&](bool authority, PreparationResult prepared, bool searchComplete, RecoveryReason technical)
+        {
+            plan.outcome = MapOutcome(authority, prepared, searchComplete, in.bags, technical, in.mutationStarted);
+            return plan;
+        };
         if (in.technical != RecoveryReason::None)
-        {
-            plan.outcome = MapOutcome(false, PreparationResult::NotPrepared, false, in.bags, in.technical);
-            return plan;
-        }
+            return finish(false, PreparationResult::NotPrepared, false, in.technical);
         if (!in.authorityValid || in.cap.preserve || in.cap.cap == 0)
+            return finish(false, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
+        if (!in.bot.levelKnown || !in.bot.classKnown || !in.bot.specKnown || !in.bot.roleKnown)
+            return finish(true, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
+        if ((in.eligibleMask & PlayerbotsAutoGearSet::WeaponMask) != 0 && !in.bot.weaponsKnown)
+            return finish(true, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
+        // Bound before any candidate allocation or scoring.
+        if (in.facts.size() > in.candidateBudget)
+            return finish(true, PreparationResult::NotPrepared, false, RecoveryReason::None);
+        for (ItemFact const& fact : in.facts)
         {
-            plan.outcome = MapOutcome(false, PreparationResult::InvalidPolicy, false, in.bags, RecoveryReason::None);
-            return plan;
+            FactDecision const decision = Classify(fact, in.bot, in.cap.cap);
+            if (decision == FactDecision::Unknown || decision == FactDecision::Invalid)
+                return finish(true, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
         }
 
         std::vector<AcceptedCandidate> accepted;
@@ -58,21 +77,16 @@ namespace PlayerbotsAutoGearSelection
         for (ItemFact const& fact : in.facts)
         {
             PreparedFact const prepared = PrepareFact(fact, in.bot, in.cap.cap, scorer);
-            if (prepared.decision == FactDecision::Invalid)
-            {
-                plan.outcome = MapOutcome(true, PreparationResult::InvalidPolicy, false, in.bags, RecoveryReason::None);
-                return plan;
-            }
             if (prepared.decision == FactDecision::Accept)
                 accepted.push_back(AcceptedCandidate{fact.slot, prepared.candidate});
         }
+        plan.factsAccepted = accepted.size();
 
-        DomainSet const domains = CollectDomains(accepted, in.eligibleMask, in.completeMask);
+        DomainSet const domains = CollectDomains(accepted, in.eligibleMask, in.completeMask, in.candidateBudget);
+        if (domains.status == DomainSet::Status::Bounded)
+            return finish(true, PreparationResult::NotPrepared, false, RecoveryReason::None);
         if (domains.status != DomainSet::Status::Ok)
-        {
-            plan.outcome = MapOutcome(true, PreparationResult::InvalidPolicy, false, in.bags, RecoveryReason::None);
-            return plan;
-        }
+            return finish(true, PreparationResult::InvalidPolicy, false, RecoveryReason::None);
 
         std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> views{};
         bool searchComplete = true;
@@ -102,6 +116,7 @@ namespace PlayerbotsAutoGearSelection
         plan.solved = PlayerbotsAutoGearSet::Solve(views, policy, in.candidateBudget, in.nodeBudget);
         if (plan.solved.status == PlayerbotsAutoGearSet::Status::Incomplete)
             searchComplete = false;
+        plan.sourceComplete = searchComplete && plan.solved.status != PlayerbotsAutoGearSet::Status::Incomplete;
 
         PreparationResult prepared = PreparationResult::InvalidPolicy;
         switch (plan.solved.status)
@@ -119,8 +134,7 @@ namespace PlayerbotsAutoGearSelection
                 prepared = PreparationResult::InvalidPolicy;
                 break;
         }
-        plan.outcome = MapOutcome(true, prepared, searchComplete, in.bags, RecoveryReason::None);
-        return plan;
+        return finish(true, prepared, searchComplete, RecoveryReason::None);
     }
 }
 

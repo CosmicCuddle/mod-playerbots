@@ -27,7 +27,9 @@ namespace PlayerbotsAutoGearSelection
         enum class Status : std::uint8_t
         {
             Ok,
-            Invalid
+            Invalid,
+            // More eligible items than the caller bounded. Not a partial set.
+            Bounded
         };
 
         Status status = Status::Invalid;
@@ -35,21 +37,32 @@ namespace PlayerbotsAutoGearSelection
         std::array<bool, PlayerbotsAutoGearSet::Slots> complete{};
     };
 
-    // Groups an already copied, already constrained candidate list. No item
-    // lookup. A slot is complete only when the caller says its universe was
-    // fully supplied. Duplicate ids are invalid, not an empty set.
+    // Groups an already copied candidate list. No item lookup. The slot is
+    // range-checked before any shift. A complete bit outside the eligible
+    // combat mask is invalid. Overflow returns Bounded and keeps every slot
+    // empty, so a short list is never reported as the whole universe.
     inline DomainSet CollectDomains(std::span<AcceptedCandidate const> accepted, std::uint32_t eligibleMask,
-        std::uint32_t completeMask)
+        std::uint32_t completeMask, std::size_t bound)
     {
         DomainSet domains;
-        if (eligibleMask & ~PlayerbotsAutoGearSet::CombatMask)
+        if ((eligibleMask & ~PlayerbotsAutoGearSet::CombatMask) != 0)
             return domains;
+        if ((completeMask & ~eligibleMask) != 0)
+            return domains;
+        if (accepted.size() > bound)
+        {
+            domains.status = DomainSet::Status::Bounded;
+            return domains;
+        }
         for (auto const& acceptedFact : accepted)
         {
-            bool const inMask = (eligibleMask & (std::uint32_t{1} << acceptedFact.slot)) != 0;
+            if (acceptedFact.slot >= PlayerbotsAutoGearSet::Slots)
+                return domains;
+            std::uint32_t const bit = std::uint32_t{1} << acceptedFact.slot;
+            bool const inMask = (eligibleMask & bit) != 0;
             bool const known = acceptedFact.candidate.metadataKnown && acceptedFact.candidate.eligible &&
                                acceptedFact.candidate.id != 0 && acceptedFact.candidate.itemLevel != 0;
-            if (acceptedFact.slot >= PlayerbotsAutoGearSet::Slots || !inMask || !known)
+            if (!inMask || !known)
                 return domains;
             domains.slots[acceptedFact.slot].push_back(acceptedFact.candidate);
         }
@@ -63,7 +76,7 @@ namespace PlayerbotsAutoGearSelection
                 if (list[i].id <= list[i - 1].id)
                     return DomainSet{};
             }
-            if (eligibleMask & (std::uint32_t{1} << slot))
+            if ((eligibleMask & (std::uint32_t{1} << slot)) != 0)
                 domains.complete[slot] = (completeMask & (std::uint32_t{1} << slot)) != 0;
         }
         domains.status = DomainSet::Status::Ok;

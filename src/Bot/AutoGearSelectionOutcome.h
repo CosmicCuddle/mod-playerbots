@@ -61,32 +61,35 @@ namespace PlayerbotsAutoGearSelection
         RecoveryRequest recovery{};
     };
 
-    // GenuineNoSet strips only when the bags can take every combat item.
-    // Full bags stay GenuineNoSet and preserve. A technical reason is a
-    // typed recovery request and never a strip.
+    // StripToBags moves combat gear into empty storage. Body and tabard stay
+    // equipped. There is no deletion action. Full or unknown bags are a
+    // technical failure and preserve. A recovery reason is recorded only
+    // after a mutation has already started. Pure selection passes false.
     constexpr Outcome MapOutcome(bool authorityValid, PlayerbotsAutoGearCommand::PreparationResult prepared,
-        bool searchComplete, BagSpace bags, RecoveryReason technical)
+        bool searchComplete, BagSpace bags, RecoveryReason technical, bool mutationStarted)
     {
-        using PlayerbotsAutoGearCommand::PreparationResult;
         using PlayerbotsAutoGearCommand::ResolveNextStep;
         if (technical != RecoveryReason::None)
         {
-            GearAction const action =
-                technical == RecoveryReason::InspectUnknown ? GearAction::Preserve : GearAction::Restore;
-            return {Disposition::TechnicalFailure, action, RecoveryRequest{technical}};
+            bool const moved = technical == RecoveryReason::MoveFailed || technical == RecoveryReason::ContextLost;
+            bool const mayRestore = mutationStarted && moved;
+            if (!mayRestore)
+                return {Disposition::TechnicalFailure, GearAction::Preserve, {}};
+            return {Disposition::TechnicalFailure, GearAction::Restore, RecoveryRequest{technical}};
         }
 
         auto const step = ResolveNextStep(authorityValid, prepared, searchComplete);
         if (step == PlayerbotsAutoGearCommand::NextStep::CommitPreparedSet)
+        {
+            if (bags != BagSpace::Enough)
+                return {Disposition::TechnicalFailure, GearAction::Preserve, {}};
             return {Disposition::Commit, GearAction::CommitSet, {}};
+        }
         if (step == PlayerbotsAutoGearCommand::NextStep::RequestStrip)
         {
             if (bags == BagSpace::Enough)
                 return {Disposition::GenuineNoSet, GearAction::StripToBags, {}};
-            if (bags == BagSpace::Full)
-                return {Disposition::GenuineNoSet, GearAction::Preserve, {}};
-            return {Disposition::TechnicalFailure, GearAction::Preserve,
-                RecoveryRequest{RecoveryReason::InspectUnknown}};
+            return {Disposition::TechnicalFailure, GearAction::Preserve, {}};
         }
         return {};
     }

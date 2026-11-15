@@ -21,23 +21,25 @@ Delivered on `feature/cs02-pb59-autogear-selection-20261115`, still based on `69
 | Cap, command-parity, and population tests | `tests/pb59_autogear_selection_cap.cpp` |
 | Selection, constraint, Darkmoon, and outcome tests | `tests/pb59_autogear_selection_plan.cpp` |
 
-`ComposeCap` uses stage 0 = 66 and stage 1 = 78. A lower configured value can tighten those. A higher configured value cannot raise them. Stages 2 to 7 preserve unless that stage's configured completion entry is non-zero, and then the stricter of that entry, a non-zero `AutoGearScoreLimit`, a typed item level, and the sender average wins. Stages 8 and above preserve even if a config entry is present. A missing player, missing progression context, missing or zero sender sample, or a present typed item level of 0 preserves. A usable cap is never 0.
+CS01 review `6898131567` is applied on this branch, still based on `69943153`. It is not rebased onto PB `881256249e`.
 
-`ExistingScore` returns the caller-supplied scorer unchanged. The intended later scorer is `StatsWeightCalculator::CalculateItem`. This phase does not call it and does not change its weights. Set permission, gems, and enchants are eligibility gates. They do not add a second bonus.
+`ComposeCap` calls `PlayerbotsAutoGearCap::Resolve`. `CapMode::Leveling` requires the sender average. `Endgame` and `Match` do not. The recorded proposal 0=66, 1=78, 2=78, 3=83, 4=83, 5=83, 6=88, 7=92 is `ProposedVanillaCompletionAwaitingOwnerReview`. Stages 0 and 1 are confirmed. Stages 2 to 7 are proposed and are not a hidden default. A zero completion entry still preserves. The era ceiling in the caller's policy still clamps.
 
-Darkmoon facts are ordinary candidates. `requestForceBis` is ignored. The fixtures use synthetic ids 910001, 910002, and 910003. Those stats are not the owner's database.
+`CollectDomains` range-checks the slot before any shift. Slots 19, 31, 32, and 255 are invalid. A complete-mask bit outside the eligible combat mask is invalid. Overflow is `Bounded` and stores nothing.
 
-`AllowsPopulationTierSync` is true only for `RandomBot`. Alt bot, AddClass, and unknown are denied. The predicate does not write progression.
+`Unknown` is not `Unavailable`. An unknown spec, role, capability, item source, or equip result preserves. It does not become a genuine no-set. Scoring starts only after that preflight, and only when the fact list is within budget.
 
-`MapOutcome` reuses `ResolveNextStep`. A complete no-set with room in the bags is `GenuineNoSet` / `StripToBags`. Full bags stay `GenuineNoSet` and preserve. `RecoveryRequest` is a plain reason code. Nothing in these headers calls `_StoreItem`, `_EquipItem`, `RelocatePB59InventoryLinks`, or `ReconcilePB59VisibleEquipment`.
+Bags default to `Unknown`. Full or unknown bags are `TechnicalFailure` and preserve. `StripToBags` is a move of combat items into empty storage. Body and tabard stay out of the domain. Nothing is deleted. `SelectFromFacts` does not authorize recovery.
 
-Local runs after the final source edit: GCC 13 and Clang 18, each `checks=37` for the cap fixture and `checks=34` for the plan fixture. GCC ASan+UBSan passed the same two counts. Clang ASan+UBSan did not link: `libclang_rt.asan-x86_64.a` is not installed. No hosted CI was started from here.
+The two plans are `doc/PB59_CS02_NATIVE_FACT_SOURCE_MATRIX_2026-11-15.md` and `doc/PB59_CS02_COMMAND_WIRING_PLAN_2026-11-15.md`.
 
-Still unresolved: numeric caps for stages 2 to 7, the real Darkmoon rows, whether a configured stage 2 to 7 value is the one the owner wants, joint set-bonus search beyond the existing scorer, and every integration point below.
+Darkmoon fixtures stay synthetic. The real rows are coordination #64.
+
+Local runs after these corrections: GCC 13 and Clang 18 each report `checks=42` for the cap fixture and `checks=50` for the plan fixture. GCC ASan+UBSan reports the same two counts. Clang ASan+UBSan still cannot link: `libclang_rt.asan-x86_64.a` is not installed. No hosted CI was started from here.
 
 ## Integration still waiting on Maintenance
 
-Do not do these until Maintenance says the shared files are free:
+The wiring order is `doc/PB59_CS02_COMMAND_WIRING_PLAN_2026-11-15.md`. TrainerAction is coordinate-first for that wiring as well. Do not do these until Maintenance says the shared files are free:
 
 - Replace `ResolveCommandSenderAutoGearCap` in `src/Ai/Base/Actions/TrainerAction.cpp` so plain, reset, match, quality, numeric, and both BiS forms call `ResolveCommandEligibility`. Do not delete gear there yet.
 - Pass `StatsWeightCalculator::CalculateItem` into `SelectFromFacts` from the factory path. That requires `src/Bot/Factory/PlayerbotFactory.cpp`, which is COORDINATE FIRST.

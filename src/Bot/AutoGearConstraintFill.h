@@ -35,75 +35,61 @@ namespace PlayerbotsAutoGearSelection
         return (mask & PlayerbotsAutoGearWeapons::Bit(kind)) != 0;
     }
 
-    // Class, spec, role, weapon, armor, slot, unique, category, gem, enchant
-    // and set permission. requestForceBis does not accept an item. The score
-    // copied here is the wrapped existing score, unchanged.
-    template <class Scorer>
-    PreparedFact PrepareFact(ItemFact const& fact, BotView const& bot, std::uint32_t cap, Scorer const& scorer)
+    // Does not score and does not allocate. Unknown is not Unavailable.
+    // requestForceBis does not accept an item. The slot is rejected before
+    // any shift.
+    inline FactDecision Classify(ItemFact const& fact, BotView const& bot, std::uint32_t cap)
     {
         using PlayerbotsAutoGearWeapons::Kind;
-        PreparedFact prepared;
-        // Read and discard. A force request must not change this result.
-        bool const ignoredForce = fact.requestForceBis;
-        (void)ignoredForce;
+        (void)fact.requestForceBis;
         (void)fact.darkmoonCard;
 
-        if (!fact.metadataKnown || fact.id == 0 || fact.itemLevel == 0 || fact.slot >= PlayerbotsAutoGearSet::Slots ||
-            bot.classId == 0 || bot.level == 0 || cap == 0)
-        {
-            prepared.decision = FactDecision::Invalid;
-            return prepared;
-        }
-        if ((fact.limitCategory == 0) != (fact.categoryLimit == 0))
-        {
-            prepared.decision = FactDecision::Invalid;
-            return prepared;
-        }
+        if (fact.slot >= PlayerbotsAutoGearSet::Slots || cap == 0)
+            return FactDecision::Invalid;
+        if (!fact.sourceKnown || !fact.metadataKnown || fact.id == 0 || fact.itemLevel == 0)
+            return FactDecision::Unknown;
+        bool const botKnown = bot.levelKnown && bot.level != 0 && bot.classKnown && bot.classId != 0 && bot.specKnown &&
+                              bot.roleKnown;
+        if (!botKnown)
+            return FactDecision::Unknown;
+        if (!fact.equipKnown)
+            return FactDecision::Unknown;
+        if ((fact.limitCategory == 0) != (fact.categoryLimit == 0) || fact.armorSubtype > 31)
+            return FactDecision::Invalid;
         if (fact.exclusiveMainhand && fact.kind != Kind::OneHand && fact.kind != Kind::TwoHand)
-        {
-            prepared.decision = FactDecision::Invalid;
-            return prepared;
-        }
+            return FactDecision::Invalid;
         if (WeaponSlot(fact.slot) == (fact.kind == Kind::Count))
-        {
-            prepared.decision = FactDecision::Invalid;
-            return prepared;
-        }
+            return FactDecision::Invalid;
         if ((fact.hasGem && fact.gemItemLevel == 0) || (fact.hasEnchant && fact.enchantItemLevel == 0))
-        {
-            prepared.decision = FactDecision::Invalid;
-            return prepared;
-        }
-        if (fact.armorSubtype > 31)
-        {
-            prepared.decision = FactDecision::Invalid;
-            return prepared;
-        }
+            return FactDecision::Invalid;
 
-        auto skip = [&]()
-        {
-            prepared.decision = FactDecision::Skip;
-            return prepared;
-        };
-
+        if (!fact.equipAllowed)
+            return FactDecision::Unavailable;
         if (fact.itemLevel > cap || fact.requiredLevel > bot.level)
-            return skip();
+            return FactDecision::Unavailable;
         if (!PlayerbotsAutoGearSlots::SearchAtLevel(bot.level, fact.slot, SelectionSlots))
-            return skip();
+            return FactDecision::Unavailable;
         if (fact.classMask != 0 && (fact.classMask & ClassBit(bot.classId)) == 0)
-            return skip();
-        if (fact.specRestricted && (!bot.specKnown || fact.specTab != bot.specTab))
-            return skip();
+            return FactDecision::Unavailable;
+        if (fact.specRestricted && fact.specTab != bot.specTab)
+            return FactDecision::Unavailable;
         if (fact.role != Role::Any && fact.role != bot.role)
-            return skip();
-        if (fact.armorSubtype != 0 && (bot.armorMask & (std::uint32_t{1} << fact.armorSubtype)) == 0)
-            return skip();
+            return FactDecision::Unavailable;
+        if (fact.armorSubtype != 0)
+        {
+            if (!bot.armorKnown)
+                return FactDecision::Unknown;
+            if ((bot.armorMask & (std::uint32_t{1} << fact.armorSubtype)) == 0)
+                return FactDecision::Unavailable;
+        }
         if (fact.hasGem && fact.gemItemLevel > cap)
-            return skip();
+            return FactDecision::Unavailable;
         if (fact.hasEnchant && fact.enchantItemLevel > cap)
-            return skip();
+            return FactDecision::Unavailable;
         if (fact.setId != 0 && !fact.setPermitted)
-            return skip();
+            return FactDecision::Unavailable;
+        if (WeaponSlot(fact.slot) && !bot.weaponsKnown)
+            return FactDecision::Unknown;
 
         constexpr auto oneHand = PlayerbotsAutoGearWeapons::Bit(Kind::OneHand);
         constexpr auto twoHand = PlayerbotsAutoGearWeapons::Bit(Kind::TwoHand);
@@ -118,14 +104,23 @@ namespace PlayerbotsAutoGearSelection
         constexpr auto relic = PlayerbotsAutoGearWeapons::Bit(Kind::Relic);
         constexpr auto rangedKinds = bow | gun | crossbow | wand | thrown | relic;
         if (fact.slot == PlayerbotsAutoGearSet::Main && !KindAllowed(bot.weapons.mainhand & mainKinds, fact.kind))
-            return skip();
+            return FactDecision::Unavailable;
         if (fact.slot == PlayerbotsAutoGearSet::Off &&
             (fact.exclusiveMainhand || !KindAllowed(bot.weapons.offhand & offKinds, fact.kind)))
-            return skip();
+            return FactDecision::Unavailable;
         if (fact.slot == PlayerbotsAutoGearSet::Ranged && !KindAllowed(bot.weapons.ranged & rangedKinds, fact.kind))
-            return skip();
+            return FactDecision::Unavailable;
+        return FactDecision::Accept;
+    }
 
-        prepared.decision = FactDecision::Accept;
+    // Scores only an accepted fact. Classify has already rejected unknowns.
+    template <class Scorer>
+    PreparedFact PrepareFact(ItemFact const& fact, BotView const& bot, std::uint32_t cap, Scorer const& scorer)
+    {
+        PreparedFact prepared;
+        prepared.decision = Classify(fact, bot, cap);
+        if (prepared.decision != FactDecision::Accept)
+            return prepared;
         prepared.candidate.id = fact.id;
         prepared.candidate.itemLevel = fact.itemLevel;
         prepared.candidate.score = ExistingScore(fact.id, fact.randomProperty, fact.slot, scorer);

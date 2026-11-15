@@ -22,10 +22,16 @@ namespace PlayerbotsAutoGearSelection
         BisNumeric
     };
 
-    // Every chat form uses ComposeCap. The form does not change the math.
-    // Callers set a typed item level only for Numeric and BisNumeric, and
-    // they pass the fixed-denominator sender average for every form,
-    // including Match. Quality stays outside this cap.
+    // Every known form calls ComposeCap. Match does not require the sender
+    // average. Leveling does. The caller says whether the sender is still
+    // leveling; this function does not infer that from level 60.
+    constexpr CapMode ModeForForm(CommandForm form, bool senderIsLeveling)
+    {
+        if (form == CommandForm::Match)
+            return CapMode::Match;
+        return senderIsLeveling ? CapMode::Leveling : CapMode::Endgame;
+    }
+
     constexpr bool KnownCommandForm(CommandForm form)
     {
         switch (form)

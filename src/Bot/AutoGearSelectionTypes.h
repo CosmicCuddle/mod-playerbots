@@ -26,19 +26,28 @@ namespace PlayerbotsAutoGearSelection
     enum class FactDecision : std::uint8_t
     {
         Accept,
-        Skip,
+        // The fact is known and the item does not fit. It may be omitted.
+        Unavailable,
+        // Spec, role, capability, level, class, source, or equip result is
+        // missing. This must not be treated as Unavailable.
+        Unknown,
         Invalid
     };
 
     struct BotView
     {
-        std::uint8_t classId = 0;
-        std::uint8_t specTab = 0;
-        bool specKnown = false;
-        Role role = Role::Any;
+        bool levelKnown = false;
         std::uint32_t level = 0;
-        // Bit (1u << armor subclass). Zero means the bot has no armor skill.
+        bool classKnown = false;
+        std::uint8_t classId = 0;
+        bool specKnown = false;
+        std::uint8_t specTab = 0;
+        bool roleKnown = false;
+        Role role = Role::Any;
+        bool armorKnown = false;
+        // Bit (1u << armor subclass). Meaningful only when armorKnown.
         std::uint32_t armorMask = 0;
+        bool weaponsKnown = false;
         PlayerbotsAutoGearWeapons::Capabilities weapons{};
     };
 
@@ -70,7 +79,12 @@ namespace PlayerbotsAutoGearSelection
         bool setPermitted = true;
         bool darkmoonCard = false;
         bool requestForceBis = false;
+        // Template was actually loaded. False is Unknown, not "no such item".
+        bool sourceKnown = false;
         bool metadataKnown = false;
+        // Result of the bot's real equip check. False equipKnown is Unknown.
+        bool equipKnown = false;
+        bool equipAllowed = false;
     };
 
     inline constexpr std::uint32_t ClassBit(std::uint8_t classId)

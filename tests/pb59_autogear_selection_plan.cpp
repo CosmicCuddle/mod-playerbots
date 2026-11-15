@@ -1,3 +1,5 @@
+#include "AutoGearCandidateDomain.h"
+#include "AutoGearConstraintFill.h"
 #include "AutoGearSelectionOutcome.h"
 #include "AutoGearSelectionPlan.h"
 #include "AutoGearScoreFill.h"
@@ -96,7 +98,10 @@ ItemFact Fact(std::uint32_t id, std::uint32_t itemLevel, std::uint8_t slot)
     fact.itemLevel = itemLevel;
     fact.requiredLevel = 1;
     fact.slot = slot;
+    fact.sourceKnown = true;
     fact.metadataKnown = true;
+    fact.equipKnown = true;
+    fact.equipAllowed = true;
     fact.randomProperty = 4;
     if (slot == 4)
         fact.armorSubtype = 1;
@@ -106,12 +111,17 @@ ItemFact Fact(std::uint32_t id, std::uint32_t itemLevel, std::uint8_t slot)
 BotView Mage(std::uint32_t level)
 {
     BotView bot;
-    bot.classId = 8;
+    bot.levelKnown = true;
     bot.level = level;
-    bot.role = Role::Caster;
+    bot.classKnown = true;
+    bot.classId = 8;
     bot.specKnown = true;
     bot.specTab = 1;
+    bot.roleKnown = true;
+    bot.role = Role::Caster;
+    bot.armorKnown = true;
     bot.armorMask = std::uint32_t{1} << 1;
+    bot.weaponsKnown = true;
     bot.weapons.mainhand = Bit(Kind::OneHand) | Bit(Kind::TwoHand);
     bot.weapons.offhand = Bit(Kind::OneHand) | Bit(Kind::Shield) | Bit(Kind::Holdable);
     return bot;
@@ -133,6 +143,7 @@ PlanInput Chest(std::uint32_t cap, std::vector<ItemFact> const& facts, std::uint
     in.completeMask = 1u << 4;
     in.authorityValid = true;
     in.bags = BagSpace::Enough;
+    in.candidateBudget = 1000;
     return in;
 }
 }
@@ -259,9 +270,10 @@ int main()
          ok;
     uniqueIn.bags = BagSpace::Full;
     Plan const fullBags = SelectFromFacts(uniqueIn, ScoreOf);
-    ok = Check(fullBags.outcome.disposition == Disposition::GenuineNoSet &&
-               fullBags.outcome.action == GearAction::Preserve,
-            "full bags do not destroy") &&
+    ok = Check(fullBags.outcome.disposition == Disposition::TechnicalFailure &&
+               fullBags.outcome.action == GearAction::Preserve &&
+               fullBags.outcome.recovery.reason == RecoveryReason::None,
+            "full bags are a technical preserve, not a strip") &&
          ok;
 
     ItemFact exclusive = Fact(30, 60, 15);
@@ -363,12 +375,21 @@ int main()
     failed.technical = RecoveryReason::MoveFailed;
     Plan const moved = SelectFromFacts(failed, ScoreOf);
     ok = Check(moved.outcome.disposition == Disposition::TechnicalFailure &&
-               moved.outcome.action == GearAction::Restore &&
-               moved.outcome.recovery.reason == RecoveryReason::MoveFailed,
-            "move failure requests restore") &&
+               moved.outcome.action == GearAction::Preserve &&
+               moved.outcome.recovery.reason == RecoveryReason::None,
+            "pure selection does not authorize recovery") &&
+         ok;
+    Outcome const afterMutation = MapOutcome(true, PlayerbotsAutoGearCommand::PreparationResult::NotPrepared, false,
+        BagSpace::Enough, RecoveryReason::MoveFailed, true);
+    ok = Check(afterMutation.action == GearAction::Restore &&
+               afterMutation.recovery.reason == RecoveryReason::MoveFailed,
+            "restore is recorded only after a mutation") &&
          ok;
     failed.technical = RecoveryReason::ContextLost;
-    ok = Check(SelectFromFacts(failed, ScoreOf).outcome.action == GearAction::Restore, "context loss restores") && ok;
+    ok = Check(SelectFromFacts(failed, ScoreOf).outcome.action == GearAction::Preserve &&
+               SelectFromFacts(failed, ScoreOf).outcome.recovery.reason == RecoveryReason::None,
+            "context loss does not authorize recovery") &&
+         ok;
     failed.technical = RecoveryReason::InspectUnknown;
     Plan const unknown = SelectFromFacts(failed, ScoreOf);
     ok = Check(unknown.outcome.disposition == Disposition::TechnicalFailure &&
@@ -387,6 +408,87 @@ int main()
     ok = Check(empty.outcome.disposition == Disposition::GenuineNoSet &&
                empty.outcome.action == GearAction::StripToBags,
             "complete empty domain strips to bags") &&
+         ok;
+
+    PlanInput unknownBags = Chest(66, none, 60);
+    unknownBags.bags = BagSpace::Unknown;
+    Plan const unknownStrip = SelectFromFacts(unknownBags, ScoreOf);
+    ok = Check(unknownStrip.outcome.disposition == Disposition::TechnicalFailure &&
+               unknownStrip.outcome.action == GearAction::Preserve,
+            "unknown bags do not strip") &&
+         ok;
+    ok = Check(PlanInput{}.bags == BagSpace::Unknown, "bags default to unknown") && ok;
+
+    AcceptedCandidate badSlot;
+    badSlot.candidate.id = 1;
+    badSlot.candidate.itemLevel = 1;
+    badSlot.candidate.metadataKnown = true;
+    badSlot.candidate.eligible = true;
+    std::uint8_t const badSlots[] = {19, 31, 32, 255};
+    for (std::uint8_t slot : badSlots)
+    {
+        badSlot.slot = slot;
+        DomainSet const rejected = CollectDomains(std::span<AcceptedCandidate const>(&badSlot, 1), 1u << 4, 1u << 4, 8);
+        ok = Check(rejected.status == DomainSet::Status::Invalid, "out of range slot is invalid") && ok;
+    }
+    AcceptedCandidate goodSlot = badSlot;
+    goodSlot.slot = 4;
+    DomainSet const badComplete =
+        CollectDomains(std::span<AcceptedCandidate const>(&goodSlot, 1), 1u << 4, 1u << 31, 8);
+    ok = Check(badComplete.status == DomainSet::Status::Invalid, "complete mask bit 31 is invalid") && ok;
+    std::uint32_t const bodyMask = (1u << 4) | (1u << 3);
+    DomainSet const bodyBit = CollectDomains(std::span<AcceptedCandidate const>(&goodSlot, 1), bodyMask, 1u << 4, 8);
+    ok = Check(bodyBit.status == DomainSet::Status::Invalid, "body slot cannot enter the domain") && ok;
+
+    std::vector<ItemFact> four{Fact(65, 60, 4), Fact(66, 60, 4), Fact(40, 60, 4), Fact(50, 60, 4)};
+    PlanInput covered = Chest(66, four, 60);
+    covered.candidateBudget = 4;
+    int scores = 0;
+    auto counting = [&](std::uint32_t id, std::int32_t prop, std::uint32_t slot)
+    {
+        ++scores;
+        return ScoreOf(id, prop, slot);
+    };
+    Plan const allFour = SelectFromFacts(covered, counting);
+    ok = Check(allFour.sourceComplete && allFour.factsAccepted == 4 && allFour.solved.items[4] == 50,
+            "every eligible item is offered to the solver") &&
+         ok;
+    scores = 0;
+    covered.candidateBudget = 2;
+    Plan const overflow = SelectFromFacts(covered, counting);
+    ok = Check(overflow.outcome.disposition == Disposition::Preserve && scores == 0 && !overflow.sourceComplete,
+            "overflow preserves before scoring") &&
+         ok;
+
+    BotView unknownSpec = Mage(60);
+    unknownSpec.specKnown = false;
+    std::vector<ItemFact> one{Fact(66, 60, 4)};
+    PlanInput specIn = Chest(66, one, 60);
+    specIn.bot = unknownSpec;
+    specIn.facts = one;
+    Plan const specUnknown = SelectFromFacts(specIn, ScoreOf);
+    ok = Check(specUnknown.outcome.disposition == Disposition::Preserve &&
+               specUnknown.outcome.disposition != Disposition::GenuineNoSet,
+            "unknown spec preserves") &&
+         ok;
+    ok = Check(Classify(one[0], unknownSpec, 66) == FactDecision::Unknown, "unknown spec is not unavailable") && ok;
+    BotView known = Mage(60);
+    ItemFact otherClass = Fact(66, 60, 4);
+    otherClass.classMask = ClassBit(1);
+    ok = Check(Classify(otherClass, known, 66) == FactDecision::Unavailable,
+            "known class mismatch is unavailable") &&
+         ok;
+    ItemFact noSource = Fact(66, 60, 4);
+    noSource.sourceKnown = false;
+    ok = Check(Classify(noSource, known, 66) == FactDecision::Unknown, "missing item source is unknown") && ok;
+
+    AcceptedCandidate first = goodSlot;
+    AcceptedCandidate second = goodSlot;
+    second.candidate.id = 2;
+    AcceptedCandidate extra[2] = {first, second};
+    DomainSet const bounded = CollectDomains(std::span<AcceptedCandidate const>(extra, 2), 1u << 4, 1u << 4, 1);
+    ok = Check(bounded.status == DomainSet::Status::Bounded && bounded.slots[4].empty(),
+            "domain overflow keeps no partial list") &&
          ok;
 
     if (!ok)

@@ -7,26 +7,38 @@
 #ifndef PLAYERBOTS_AUTOGEAR_SELECTION_CAP_H
 #define PLAYERBOTS_AUTOGEAR_SELECTION_CAP_H
 
-#include <algorithm>
+#include "AutoGearProgressionCap.h"
 #include <cstdint>
-#include <span>
 
 namespace PlayerbotsAutoGearSelection
 {
-    // Approved Vanilla completion caps. Stages 2..7 have none.
-    inline constexpr std::uint32_t ApprovedStage0Cap = 66;
-    inline constexpr std::uint32_t ApprovedStage1Cap = 78;
-    inline constexpr std::uint8_t VanillaStageCount = 8;
+    // Recorded proposal from coordination #59 (comment 6885246726).
+    // Stages 0 and 1 are owner-confirmed (66 and 78). Stages 2 to 7 are
+    // PROPOSED and await owner review. They are not a production default:
+    // pass them in a Policy only when that review accepts them. Entries
+    // after stage 7 stay 0 so Resolve fails closed.
+    inline constexpr std::uint32_t ProposedVanillaCompletionAwaitingOwnerReview[19] = {
+        66, 78, 78, 83, 83, 83, 88, 92, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+    enum class CapMode : std::uint8_t
+    {
+        // Requires the sender's fixed-denominator equipped average.
+        Leveling,
+        // Tier cap only. The average is not required.
+        Endgame,
+        // Average is not required. Whether Match should also target it
+        // awaits owner confirmation (#59 comment 6893387731).
+        Match
+    };
 
     struct CapInput
     {
         bool playerContext = false;
         bool progressionContext = false;
+        CapMode mode = CapMode::Endgame;
         std::uint8_t rawStage = 0;
         std::uint8_t effectiveStage = 0;
-        // Index is the raw stage. Zero means "not configured", never "unlimited".
-        std::span<std::uint32_t const> configuredCompletion{};
-        // Zero score limit and a missing typed item level do not raise the cap.
+        PlayerbotsAutoGearCap::Policy policy{};
         std::uint32_t scoreLimit = 0;
         bool typedItemLevelPresent = false;
         std::uint32_t typedItemLevel = 0;
@@ -40,58 +52,29 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t cap = 0;
     };
 
-    // Levelling target is the sender's fixed-denominator average, then the
-    // stricter of that average, the stage cap, a non-zero score limit and a
-    // typed item level. A missing player, a missing progression context, an
-    // unresolved stage, or a zero item level preserves. Cap 0 is never a
-    // usable "unlimited" result.
+    // Stage and era arithmetic is PlayerbotsAutoGearCap::Resolve. This
+    // function adds the leveling average and rejects a present typed 0.
+    // A zero result is preserve, never unlimited.
     constexpr CapResult ComposeCap(CapInput const& in)
     {
-        if (!in.playerContext || !in.progressionContext || in.effectiveStage > in.rawStage ||
-            in.rawStage >= VanillaStageCount)
+        if (!in.playerContext || !in.progressionContext)
+            return {};
+        if (in.typedItemLevelPresent && in.typedItemLevel == 0)
             return {};
 
-        bool haveStage = false;
-        std::uint32_t stageCap = 0;
-        if (in.rawStage == 0)
-        {
-            stageCap = ApprovedStage0Cap;
-            haveStage = true;
-        }
-        else if (in.rawStage == 1)
-        {
-            stageCap = ApprovedStage1Cap;
-            haveStage = true;
-        }
-
-        if (in.rawStage < in.configuredCompletion.size() && in.configuredCompletion[in.rawStage] != 0)
-        {
-            std::uint32_t const configured = in.configuredCompletion[in.rawStage];
-            if (!haveStage)
-            {
-                stageCap = configured;
-                haveStage = true;
-            }
-            else
-                stageCap = std::min(stageCap, configured);
-        }
-        if (!haveStage || stageCap == 0)
+        std::uint32_t const typed = in.typedItemLevelPresent ? in.typedItemLevel : 0;
+        PlayerbotsAutoGearCap::Decision const stage =
+            PlayerbotsAutoGearCap::Resolve(in.rawStage, in.effectiveStage, in.policy, in.scoreLimit, typed);
+        if (!stage.valid || stage.itemLevelCap == 0)
             return {};
 
-        std::uint32_t cap = stageCap;
-        if (in.scoreLimit != 0)
-            cap = std::min(cap, in.scoreLimit);
-        if (in.typedItemLevelPresent)
+        std::uint32_t cap = stage.itemLevelCap;
+        if (in.mode == CapMode::Leveling)
         {
-            if (in.typedItemLevel == 0)
+            if (!in.senderSampleKnown || in.senderAverage == 0)
                 return {};
-            cap = std::min(cap, in.typedItemLevel);
+            cap = cap < in.senderAverage ? cap : in.senderAverage;
         }
-        // The sender average is the levelling target. Unknown or zero does
-        // not mean "no ceiling".
-        if (!in.senderSampleKnown || in.senderAverage == 0)
-            return {};
-        cap = std::min(cap, in.senderAverage);
         if (cap == 0)
             return {};
         return {false, cap};

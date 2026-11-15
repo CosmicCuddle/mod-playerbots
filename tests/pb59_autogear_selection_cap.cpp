@@ -21,16 +21,29 @@ bool Check(bool condition, char const* text)
     return true;
 }
 
-constexpr std::array<std::uint32_t, 19> kDefault{{66, 78}};
+constexpr std::array<std::uint32_t, 19> kStage01{{66, 78}};
+constexpr std::array<std::uint32_t, 3> kFloors{{0, 0, 0}};
+constexpr std::array<std::uint32_t, 3> kCeiling78{{78, 0, 0}};
+constexpr std::array<std::uint32_t, 3> kCeiling92{{92, 0, 0}};
+
+constexpr PlayerbotsAutoGearCap::Policy PolicyFor(std::span<std::uint32_t const> caps, std::uint32_t vanillaCeiling)
+{
+    PlayerbotsAutoGearCap::Policy policy;
+    policy.completionCaps = caps;
+    policy.eraEntryFloors = kFloors;
+    policy.eraCeilings = vanillaCeiling == 92 ? kCeiling92 : kCeiling78;
+    return policy;
+}
 
 constexpr CapInput Base(std::uint8_t stage, std::uint32_t sample)
 {
     CapInput in;
     in.playerContext = true;
     in.progressionContext = true;
+    in.mode = CapMode::Leveling;
     in.rawStage = stage;
     in.effectiveStage = stage;
-    in.configuredCompletion = kDefault;
+    in.policy = PolicyFor(kStage01, 78);
     in.senderSampleKnown = true;
     in.senderAverage = sample;
     return in;
@@ -40,9 +53,13 @@ constexpr std::array<CommandForm, 7> kForms{{CommandForm::Plain, CommandForm::Re
     CommandForm::Quality, CommandForm::Numeric, CommandForm::Bis, CommandForm::BisNumeric}};
 }
 
-static_assert(ComposeCap(Base(0, 100)).cap == ApprovedStage0Cap);
+static_assert(ProposedVanillaCompletionAwaitingOwnerReview[0] == 66);
+static_assert(ProposedVanillaCompletionAwaitingOwnerReview[1] == 78);
+static_assert(ProposedVanillaCompletionAwaitingOwnerReview[2] == 78);
+static_assert(ProposedVanillaCompletionAwaitingOwnerReview[7] == 92);
+static_assert(ComposeCap(Base(0, 100)).cap == 66);
 static_assert(!ComposeCap(Base(0, 100)).preserve);
-static_assert(ComposeCap(Base(1, 100)).cap == ApprovedStage1Cap);
+static_assert(ComposeCap(Base(1, 100)).cap == 78);
 static_assert(ComposeCap(Base(0, 65)).cap == 65);
 static_assert(ComposeCap(Base(1, 77)).cap == 77);
 static_assert(ComposeCap(Base(2, 100)).preserve);
@@ -54,34 +71,47 @@ int main()
     ok = Check(ComposeCap(Base(0, 100)).cap == 66, "stage 0") && ok;
     ok = Check(ComposeCap(Base(1, 200)).cap == 78, "stage 1") && ok;
     for (std::uint8_t stage = 2; stage <= 7; ++stage)
-        ok = Check(ComposeCap(Base(stage, 300)).preserve, "unresolved stage preserves") && ok;
+        ok = Check(ComposeCap(Base(stage, 300)).preserve, "unset stage preserves") && ok;
 
-    std::array<std::uint32_t, 19> configured = kDefault;
-    configured[3] = 83;
-    configured[7] = 92;
+    std::array<std::uint32_t, 19> proposed{};
+    for (std::size_t i = 0; i < 19; ++i)
+        proposed[i] = ProposedVanillaCompletionAwaitingOwnerReview[i];
+    CapInput stage7 = Base(7, 200);
+    stage7.policy = PolicyFor(proposed, 92);
+    stage7.mode = CapMode::Endgame;
+    stage7.senderSampleKnown = false;
+    ok = Check(ComposeCap(stage7).cap == 92, "proposed stage 7 is not a hidden default") && ok;
+    stage7.policy = PolicyFor(proposed, 78);
+    ok = Check(ComposeCap(stage7).cap == 78, "era ceiling still clamps the proposal") && ok;
+
     CapInput stage3 = Base(3, 200);
-    stage3.configuredCompletion = configured;
-    ok = Check(ComposeCap(stage3).cap == 83, "configured stage 3") && ok;
+    stage3.policy = PolicyFor(proposed, 92);
+    stage3.mode = CapMode::Endgame;
+    stage3.senderSampleKnown = false;
+    ok = Check(ComposeCap(stage3).cap == 83, "proposed stage 3") && ok;
     stage3.scoreLimit = 80;
     ok = Check(ComposeCap(stage3).cap == 80, "score limit tighter than stage") && ok;
     stage3.typedItemLevelPresent = true;
     stage3.typedItemLevel = 70;
     ok = Check(ComposeCap(stage3).cap == 70, "typed tighter than score limit") && ok;
-    stage3.senderAverage = 60;
-    ok = Check(ComposeCap(stage3).cap == 60, "sample tighter than typed") && ok;
 
-    CapInput raised = Base(0, 200);
-    std::array<std::uint32_t, 19> higher = kDefault;
-    higher[0] = 90;
-    raised.configuredCompletion = higher;
-    ok = Check(ComposeCap(raised).cap == 66, "config cannot raise stage 0") && ok;
-    higher[0] = 50;
-    raised.configuredCompletion = higher;
-    ok = Check(ComposeCap(raised).cap == 50, "lower config wins") && ok;
+    CapInput leveling = Base(1, 40);
+    ok = Check(ComposeCap(leveling).cap == 40, "leveling uses the sender average") && ok;
+    leveling.senderSampleKnown = false;
+    ok = Check(ComposeCap(leveling).preserve, "leveling without a sample preserves") && ok;
+    CapInput endgame = Base(1, 40);
+    endgame.mode = CapMode::Endgame;
+    endgame.senderSampleKnown = false;
+    ok = Check(ComposeCap(endgame).cap == 78, "endgame does not require the average") && ok;
+    CapInput match = Base(1, 40);
+    match.mode = CapMode::Match;
+    match.senderSampleKnown = false;
+    ok = Check(ComposeCap(match).cap == 78, "match does not require the average") && ok;
 
     CapInput unresolved = Base(2, 100);
+    unresolved.mode = CapMode::Endgame;
     unresolved.scoreLimit = 50;
-    ok = Check(ComposeCap(unresolved).preserve, "score limit does not replace an unresolved stage") && ok;
+    ok = Check(ComposeCap(unresolved).preserve, "score limit does not replace an unset stage") && ok;
 
     CapInput missingPlayer = Base(0, 100);
     missingPlayer.playerContext = false;
@@ -89,9 +119,6 @@ int main()
     CapInput missingProgress = Base(0, 100);
     missingProgress.progressionContext = false;
     ok = Check(ComposeCap(missingProgress).preserve, "missing progression") && ok;
-    CapInput noSample = Base(0, 100);
-    noSample.senderSampleKnown = false;
-    ok = Check(ComposeCap(noSample).preserve, "missing sample") && ok;
     CapInput zeroSample = Base(0, 0);
     ok = Check(ComposeCap(zeroSample).preserve, "zero sample is not unlimited") && ok;
     CapInput zeroTyped = Base(0, 100);
@@ -101,9 +128,8 @@ int main()
     CapInput later = Base(0, 100);
     later.rawStage = 8;
     later.effectiveStage = 8;
-    std::array<std::uint32_t, 19> tbc = kDefault;
-    tbc[8] = 200;
-    later.configuredCompletion = tbc;
+    later.mode = CapMode::Endgame;
+    later.policy = PolicyFor(proposed, 92);
     ok = Check(ComposeCap(later).preserve, "stage 8 stays unresolved") && ok;
     CapInput mismatched = Base(1, 100);
     mismatched.effectiveStage = 2;
@@ -125,12 +151,10 @@ int main()
     CapResult const bisNumeric = ResolveCommandEligibility(CommandForm::BisNumeric, numeric);
     ok = Check(numericCap.cap == 50 && bisNumeric.cap == numericCap.cap, "numeric and bis numeric match") && ok;
     ok = Check(ResolveCommandEligibility(CommandForm::Plain, Base(1, 100)).cap == 78, "plain has no typed cap") && ok;
-    ok = Check(ResolveCommandEligibility(CommandForm::Reset, Base(1, 100)).cap ==
-                   ResolveCommandEligibility(CommandForm::Match, Base(1, 100)).cap &&
-               ResolveCommandEligibility(CommandForm::Quality, Base(0, 90)).cap ==
-                   ResolveCommandEligibility(CommandForm::Bis, Base(0, 90)).cap,
-            "reset match quality and bis stay on the composer") &&
-         ok;
+    ok = Check(ModeForForm(CommandForm::Match, true) == CapMode::Match, "match mode ignores leveling") && ok;
+    ok = Check(ModeForForm(CommandForm::Plain, true) == CapMode::Leveling, "plain leveling") && ok;
+    ok = Check(ModeForForm(CommandForm::Bis, false) == CapMode::Endgame, "bis endgame") && ok;
+    ok = Check(ModeForForm(CommandForm::Reset, false) == CapMode::Endgame, "reset endgame") && ok;
     ok = Check(!KnownCommandForm(static_cast<CommandForm>(255)) &&
                ResolveCommandEligibility(static_cast<CommandForm>(255), shared).preserve,
             "unknown form preserves") &&
