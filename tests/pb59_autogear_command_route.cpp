@@ -189,6 +189,26 @@ int main()
     altCommand.population = Population::AltBot;
     altCommand.altCommandAllowed = false;
     ok = Check(ResolveAutoGearRoute(altCommand, ScoreOf).rejected, "a refused alt command does not change gear") && ok;
+    // Even legacy config that previously allowed altbot gear changes must
+    // not override the owner's RNDBOT-only policy.
+    altCommand.altCommandAllowed = true;
+    altCommand.selection.facts = std::vector<ItemFact>{Fact(66, 60)};
+    RouteDecision const overridden = ResolveAutoGearRoute(altCommand, ScoreOf);
+    ok = Check(overridden.rejected && overridden.preserve && !overridden.legacyUnchanged &&
+                   !overridden.selectionRan && !overridden.deletesGear &&
+                   !overridden.writesProgression,
+            "allow-alt legacy config cannot authorize new AutoGear") && ok;
+    altCommand.ipCapEnabled = false;
+    RouteDecision const altLegacy = ResolveAutoGearRoute(altCommand, ScoreOf);
+    ok = Check(altLegacy.rejected && altLegacy.preserve && !altLegacy.legacyUnchanged &&
+                   !altLegacy.selectionRan,
+            "an altbot never receives an OFF-path legacy handoff from the route") && ok;
+    altCommand.population = Population::AddClass;
+    ok = Check(ResolveAutoGearRoute(altCommand, ScoreOf).rejected,
+            "a non-RNDBOT AddClass population fails closed") && ok;
+    altCommand.populationKnown = false;
+    ok = Check(ResolveAutoGearRoute(altCommand, ScoreOf).rejected,
+            "unknown population never reaches legacy or selection") && ok;
 
     std::vector<ItemFact> legal{Fact(66, 60)};
     RouteRequest commit = Enabled(0);
