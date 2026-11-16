@@ -41,7 +41,9 @@ def main():
     assert "botLoading.erase" not in callback
     assert callback.index("FindConnectedPlayer(guid)") < callback.index("HandlePlayerLoginFromDB(holder)")
     assert "FindOfflineSessionForCharacterGUID(guid.GetCounter())" in callback
-    assert native.index("playerBots.emplace(guid, bot)") < native.index("pendingOwner.ReleasePublished") < native.index("OnBotLoginInternal(bot)")
+    assert native.index("playerBots.emplace(guid, bot)") < native.index("publication.Publish") < native.index("OnBotLoginInternal(bot)")
+    assert "Published::Reserve(publishedId, holderLife, pendingOwner)" in native
+    assert "pendingOwner.ReleasePublished" not in native
     shutdown = between(script, "    void OnShutdown() override", "class PlayerBotsBGScript")
     assert shutdown.index("StopPendingLogins") < shutdown.index("LogoutAllBots") < shutdown.index("ClearPendingLogins")
     with tempfile.TemporaryDirectory(prefix="pb59-pending-") as tmp:
