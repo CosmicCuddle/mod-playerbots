@@ -61,9 +61,11 @@ namespace PlayerbotsAutoGearSelection
     // omitted. An empty remainder can be ProvenEmpty. A set bonus is proven
     // absent only when every set id on the list has known evidence and no bonus.
     inline ListAssessment AssessSlotList(std::span<ProvenanceRow const> rows, std::uint64_t expectedRevision,
-        bool authoritative)
+        bool authoritative, std::size_t rowBound = 64)
     {
         ListAssessment assessment;
+        if (rows.size() > rowBound)
+            return assessment;
         if (!authoritative || expectedRevision == 0)
             return assessment;
         bool setUnknown = false;

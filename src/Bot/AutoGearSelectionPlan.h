@@ -49,6 +49,8 @@ namespace PlayerbotsAutoGearSelection
         std::span<RetainedCount const> retained{};
         // Native mode requires these rows. They are not a caller-supplied verdict.
         std::uint64_t sourceRevision = 0;
+        // Counts unavailable rows as well. The quadratic proof scan does not start past this.
+        std::size_t proofRowBudget = 32;
         struct NativeSlotProof
         {
             bool authoritative = false;
@@ -112,14 +114,30 @@ namespace PlayerbotsAutoGearSelection
         return PossessionGate::Ok;
     }
 
+    struct SelectedPiece
+    {
+        std::uint32_t entryId = 0;
+        std::int32_t randomProperty = 0;
+    };
+
+    // Planning handoff only. It does not call the storage transaction.
+    struct StorageRequest
+    {
+        bool ready = false;
+        std::array<SelectedPiece, PlayerbotsAutoGearSet::Slots> pieces{};
+    };
+
     struct Plan
     {
         Outcome outcome{};
         PlayerbotsAutoGearSet::Result solved{};
+        std::array<SelectedPiece, PlayerbotsAutoGearSet::Slots> selected{};
+        StorageRequest storage{};
         std::uint32_t cap = 0;
         std::size_t factsSupplied = 0;
         std::size_t factsAccepted = 0;
         bool sourceComplete = false;
+        bool scoresTrustworthy = true;
     };
 
     template <class Scorer>
@@ -161,8 +179,19 @@ namespace PlayerbotsAutoGearSelection
             std::uint32_t room = 0;
             if (GatePossession(fact, in.retained, room) == PossessionGate::Unknown)
                 return finish(true, PreparationResult::NotPrepared, false);
-            if (fact.maxCount != 0 || fact.categoryHaveLimit != 0)
+            if (fact.maxCount != 0 || fact.categoryHaveLimit != 0 || fact.randomProperty != 0)
                 needsVariant = true;
+        }
+        if (!needsVariant)
+        {
+            for (std::size_t i = 0; i < in.facts.size(); ++i)
+            {
+                for (std::size_t j = 0; j < i; ++j)
+                {
+                    if (in.facts[i].id == in.facts[j].id && in.facts[i].randomProperty != in.facts[j].randomProperty)
+                        needsVariant = true;
+                }
+            }
         }
         std::array<ListAssessment, PlayerbotsAutoGearSet::Slots> nativeAssessments{};
         if (in.hasNativeSource)
@@ -196,13 +225,22 @@ namespace PlayerbotsAutoGearSelection
                 }
                 if (in.sourceRevision == 0)
                     return finish(true, PreparationResult::NotPrepared, false);
+                std::size_t proofRows = 0;
+                for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+                {
+                    if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
+                        continue;
+                    proofRows += in.nativeProofs[slot].rows.size();
+                }
+                if (proofRows > in.proofRowBudget)
+                    return finish(true, PreparationResult::NotPrepared, false);
                 for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
                 {
                     if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
                         continue;
                     PlanInput::NativeSlotProof const& proof = in.nativeProofs[slot];
                     nativeAssessments[slot] =
-                        AssessSlotList(proof.rows, in.sourceRevision, proof.authoritative);
+                        AssessSlotList(proof.rows, in.sourceRevision, proof.authoritative, in.proofRowBudget);
                     if (nativeAssessments[slot].verdict == ListVerdict::Invalid ||
                         nativeAssessments[slot].verdict == ListVerdict::Incomplete)
                         return finish(true, PreparationResult::NotPrepared, false);
@@ -224,7 +262,9 @@ namespace PlayerbotsAutoGearSelection
                         {
                             bool const sameFact = fact.slot == slot && fact.id == row.entryId &&
                                                       fact.randomProperty == row.randomProperty &&
-                                                      fact.itemLevel == row.itemLevel;
+                                                      fact.itemLevel == row.itemLevel && fact.setId == row.setId &&
+                                                      fact.setEvidenceKnown == row.setEvidenceKnown &&
+                                                      fact.setBonusPresent == row.setBonusPresent;
                             if (sameFact && Classify(fact, in.bot, in.cap.cap) == FactDecision::Accept)
                                 inFacts = true;
                         }
@@ -263,8 +303,23 @@ namespace PlayerbotsAutoGearSelection
             for (ItemFact const& fact : in.facts)
             {
                 PreparedFact const prepared = PrepareFact(fact, in.bot, in.cap.cap, scorer);
-                if (prepared.decision == FactDecision::Accept)
-                    accepted.push_back(AcceptedCandidate{fact.slot, prepared.candidate});
+                if (prepared.decision != FactDecision::Accept)
+                    continue;
+                AcceptedCandidate chosen;
+                chosen.slot = fact.slot;
+                chosen.candidate = prepared.candidate;
+                chosen.randomProperty = fact.randomProperty;
+                chosen.score = prepared.candidate.score;
+                chosen.scoreKnown = fact.scoreKnown;
+                chosen.setId = fact.setId;
+                chosen.setEvidenceKnown = fact.setEvidenceKnown;
+                chosen.setBonusPresent = fact.setBonusPresent;
+                chosen.maxCount = fact.maxCount;
+                chosen.categoryHaveLimit = fact.categoryHaveLimit;
+                chosen.uniqueEquipped = fact.uniqueEquipped;
+                chosen.exclusiveMainhand = fact.exclusiveMainhand;
+                chosen.kind = fact.kind;
+                accepted.push_back(chosen);
             }
         }
         catch (...)
@@ -272,6 +327,22 @@ namespace PlayerbotsAutoGearSelection
             return finish(true, PreparationResult::NotPrepared, false);
         }
         plan.factsAccepted = accepted.size();
+        for (AcceptedCandidate const& chosen : accepted)
+        {
+            if (!chosen.scoreKnown)
+                plan.scoresTrustworthy = false;
+        }
+        for (std::size_t i = 0; i < accepted.size(); ++i)
+        {
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                bool const same = accepted[i].slot == accepted[j].slot &&
+                                  accepted[i].candidate.id == accepted[j].candidate.id &&
+                                  accepted[i].randomProperty == accepted[j].randomProperty;
+                if (same && accepted[i].score != accepted[j].score)
+                    plan.scoresTrustworthy = false;
+            }
+        }
 
         std::array<PlayerbotsAutoGearSet::Domain, PlayerbotsAutoGearSet::Slots> views{};
         bool searchComplete = true;
@@ -324,30 +395,31 @@ namespace PlayerbotsAutoGearSelection
             if (in.allocationFault == PlanInput::AllocationPoint::Solve)
                 throw std::bad_alloc();
             if (!needsVariant)
+            {
                 plan.solved = PlayerbotsAutoGearSet::Solve(views, policy, in.candidateBudget, in.nodeBudget);
+                for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+                    plan.selected[slot].entryId = plan.solved.items[slot];
+            }
             else
             {
                 std::array<std::vector<PlayerbotsAutoGearVariant::Candidate>, PlayerbotsAutoGearSet::Slots> lists;
-                for (ItemFact const& fact : in.facts)
+                for (AcceptedCandidate const& chosen : accepted)
                 {
-                    PreparedFact const prepared = PrepareFact(fact, in.bot, in.cap.cap, scorer);
-                    if (prepared.decision != FactDecision::Accept)
-                        continue;
                     PlayerbotsAutoGearVariant::Candidate row;
-                    row.entryId = fact.id;
-                    row.randomProperty = fact.randomProperty;
-                    row.itemLevel = fact.itemLevel;
-                    row.score = prepared.candidate.score;
-                    row.limitCategory = fact.limitCategory;
-                    row.categoryLimit = fact.categoryLimit;
-                    row.categoryHaveLimit = fact.categoryHaveLimit;
-                    row.maxCount = fact.maxCount;
-                    row.kind = fact.kind;
-                    row.uniqueEquipped = fact.uniqueEquipped;
-                    row.exclusiveMainhand = fact.exclusiveMainhand;
+                    row.entryId = chosen.candidate.id;
+                    row.randomProperty = chosen.randomProperty;
+                    row.itemLevel = chosen.candidate.itemLevel;
+                    row.score = chosen.score;
+                    row.limitCategory = chosen.candidate.limitCategory;
+                    row.categoryLimit = chosen.candidate.categoryLimit;
+                    row.categoryHaveLimit = chosen.categoryHaveLimit;
+                    row.maxCount = chosen.maxCount;
+                    row.kind = chosen.kind;
+                    row.uniqueEquipped = chosen.uniqueEquipped;
+                    row.exclusiveMainhand = chosen.exclusiveMainhand;
                     row.metadataKnown = true;
                     row.eligible = true;
-                    lists[fact.slot].push_back(row);
+                    lists[chosen.slot].push_back(row);
                 }
                 std::array<PlayerbotsAutoGearVariant::Domain, PlayerbotsAutoGearSet::Slots> variantDomains{};
                 for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
@@ -377,6 +449,11 @@ namespace PlayerbotsAutoGearSelection
                 plan.solved.score = variant.score;
                 plan.solved.visited = variant.visited;
                 plan.solved.items = variant.entries;
+                for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+                {
+                    plan.selected[slot].entryId = variant.entries[slot];
+                    plan.selected[slot].randomProperty = variant.properties[slot];
+                }
                 switch (variant.status)
                 {
                     case PlayerbotsAutoGearVariant::Status::Invalid:
@@ -400,7 +477,7 @@ namespace PlayerbotsAutoGearSelection
             return finish(true, PreparationResult::NotPrepared, false);
         }
         if (plan.solved.status == PlayerbotsAutoGearSet::Status::Incomplete ||
-            plan.solved.status == PlayerbotsAutoGearSet::Status::Invalid)
+            plan.solved.status == PlayerbotsAutoGearSet::Status::Invalid || !plan.scoresTrustworthy)
             searchComplete = false;
         if (in.hasNativeSource)
         {
@@ -446,7 +523,17 @@ namespace PlayerbotsAutoGearSelection
                 prepared = PreparationResult::InvalidPolicy;
                 break;
         }
+        if (!plan.scoresTrustworthy)
+        {
+            searchComplete = false;
+            prepared = PreparationResult::NotPrepared;
+        }
         plan.outcome = MapOutcome(true, prepared, searchComplete, in.bags);
+        if (plan.outcome.disposition == Disposition::Commit)
+        {
+            plan.storage.ready = true;
+            plan.storage.pieces = plan.selected;
+        }
         return plan;
     }
 }

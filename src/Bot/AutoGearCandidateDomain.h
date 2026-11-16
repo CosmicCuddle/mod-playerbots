@@ -20,6 +20,17 @@ namespace PlayerbotsAutoGearSelection
     {
         std::uint8_t slot = 0;
         PlayerbotsAutoGearSet::Candidate candidate{};
+        std::int32_t randomProperty = 0;
+        std::uint32_t score = 0;
+        bool scoreKnown = false;
+        std::uint32_t setId = 0;
+        bool setEvidenceKnown = false;
+        bool setBonusPresent = false;
+        std::uint32_t maxCount = 0;
+        std::uint32_t categoryHaveLimit = 0;
+        bool uniqueEquipped = false;
+        bool exclusiveMainhand = false;
+        PlayerbotsAutoGearWeapons::Kind kind = PlayerbotsAutoGearWeapons::Kind::Count;
     };
 
     struct DomainSet

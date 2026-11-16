@@ -247,6 +247,7 @@ int main()
             "entry and variant are not enough when the item level differs") &&
          ok;
     levelFacts[0].itemLevel = 60;
+    levelFacts[0].setEvidenceKnown = true;
     levelPlan.facts = levelFacts;
     ProvenanceRow matched;
     matched.entryId = 100;

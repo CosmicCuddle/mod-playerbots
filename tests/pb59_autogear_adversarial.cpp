@@ -49,6 +49,7 @@ ItemFact Chest(std::uint32_t id, std::int32_t property, std::uint8_t slot)
     fact.metadataKnown = true;
     fact.equipKnown = true;
     fact.equipAllowed = true;
+    fact.setEvidenceKnown = true;
     return fact;
 }
 
@@ -78,17 +79,6 @@ std::uint32_t Score(std::uint32_t id, std::int32_t, std::uint32_t)
     return id == 8 ? 10u : 100u;
 }
 
-Sha256Digest DigestOf(char const* text)
-{
-    std::array<std::uint8_t, 8> bytes{};
-    std::size_t length = 0;
-    while (text[length] != 0 && length < bytes.size())
-    {
-        bytes[length] = static_cast<std::uint8_t>(text[length]);
-        ++length;
-    }
-    return HashSha256(std::span<std::uint8_t const>(bytes.data(), length));
-}
 }
 
 int main()
@@ -247,6 +237,25 @@ int main()
                           noneFit.outcome.action != GearAction::StripToBags;
     ok = Check(heldBack, "known options that cannot be worn together are not an empty strip") && ok;
 
+    std::array<std::uint8_t, 16> worldBytes{};
+    std::array<std::uint8_t, 16> spellBytes{};
+    FileChunks worldFile;
+    FileChunks spellFile;
+    auto fill = [](char const* text, std::array<std::uint8_t, 16>& storage, FileChunks& chunks)
+    {
+        std::size_t length = 0;
+        while (text[length] != 0 && length < storage.size())
+        {
+            storage[length] = static_cast<std::uint8_t>(text[length]);
+            ++length;
+        }
+        std::size_t const mid = length / 2;
+        chunks.parts[0] = std::span<std::uint8_t const>(storage.data(), mid);
+        chunks.parts[1] = std::span<std::uint8_t const>(storage.data() + mid, length - mid);
+        chunks.count = 2;
+    };
+    fill("world", worldBytes, worldFile);
+    fill("spell", spellBytes, spellFile);
     std::array<std::int32_t, 2> spellIds{{100, 200}};
     std::array<bool, 2> known{{true, true}};
     std::array<bool, 2> noProc{{true, false}};
@@ -254,8 +263,7 @@ int main()
     spells.headerIsId = true;
     spells.versionKnown = true;
     spells.digestKnown = true;
-    spells.digest = DigestOf("spell");
-    spells.expectedDigest = spells.digest;
+    spells.expectedDigest = HashFile(spellFile);
     spells.spellRows = 2;
     spells.expectedSpellRows = 2;
     spells.spellIds = spellIds;
@@ -267,35 +275,113 @@ int main()
     world.schemaNamed = true;
     world.versionKnown = true;
     world.digestKnown = true;
-    world.digest = DigestOf("world");
-    world.expectedDigest = world.digest;
+    world.expectedDigest = HashFile(worldFile);
     world.itemTemplateRows = 1;
     world.expectedItemRows = 1;
     world.itemSpellsRequired = true;
     world.validationBound = 8;
-    ok = Check(CheckExport(world, spells) == ExportVerdict::Invalid, "a required item-spell list cannot be empty") &&
+    ok = Check(CheckExport(world, worldFile, spells, spellFile) == ExportVerdict::Invalid,
+            "a required item-spell list cannot be empty") &&
          ok;
     std::array<std::int32_t, 1> negative{{-5}};
     world.itemSpellIds = negative;
-    ok = Check(CheckExport(world, spells) == ExportVerdict::Invalid, "a negative spell reference is invalid") && ok;
+    ExportVerdict const negativeRef = CheckExport(world, worldFile, spells, spellFile);
+    ok = Check(negativeRef == ExportVerdict::Unknown, "a negative item reference is not given a spell meaning") && ok;
+    std::array<std::int32_t, 1> zeroSpell{{0}};
+    spells.spellIds = zeroSpell;
+    spells.spellRows = 1;
+    spells.expectedSpellRows = 1;
+    spells.overrideKnown = std::span<bool const>(known.data(), 1);
+    spells.procKnown = spells.overrideKnown;
+    spells.sourceKnown = spells.overrideKnown;
+    ok = Check(CheckExport(world, worldFile, spells, spellFile) == ExportVerdict::Invalid,
+            "a nonpositive spell record id is invalid") &&
+         ok;
+    spells.spellIds = spellIds;
+    spells.spellRows = 2;
+    spells.expectedSpellRows = 2;
+    spells.overrideKnown = known;
+    spells.procKnown = known;
+    spells.sourceKnown = known;
     std::array<std::int32_t, 1> missing{{300}};
     world.itemSpellIds = missing;
-    ExportVerdict const missingSpell = CheckExport(world, spells);
+    ExportVerdict const missingSpell = CheckExport(world, worldFile, spells, spellFile);
     ok = Check(missingSpell == ExportVerdict::Unknown, "a spell missing from the manifest stays unknown") && ok;
     std::array<std::int32_t, 1> linked{{200}};
     world.itemSpellIds = linked;
     spells.procKnown = noProc;
-    ok = Check(CheckExport(world, spells) == ExportVerdict::Unknown, "missing proc evidence stays unknown") && ok;
+    ok = Check(CheckExport(world, worldFile, spells, spellFile) == ExportVerdict::Unknown,
+            "missing proc evidence stays unknown") &&
+         ok;
     spells.procKnown = known;
     spells.validationBound = 1;
-    ok = Check(CheckExport(world, spells) == ExportVerdict::Bounded, "an index past the bound is not scanned") && ok;
+    ok = Check(CheckExport(world, worldFile, spells, spellFile) == ExportVerdict::Bounded,
+            "an index past the bound is not scanned") &&
+         ok;
     std::array<std::int32_t, 2> unsorted{{200, 100}};
     spells.spellIds = unsorted;
     spells.validationBound = 8;
-    ok = Check(CheckExport(world, spells) == ExportVerdict::Invalid, "an unsorted spell index is invalid") && ok;
+    ok = Check(CheckExport(world, worldFile, spells, spellFile) == ExportVerdict::Invalid,
+            "an unsorted spell index is invalid") &&
+         ok;
     ok = Check(!ExportIsProductionReady(ExportVerdict::MetadataChecked) &&
                !ExportIsProductionReady(ExportVerdict::Unknown),
             "no export verdict is production ready") &&
+         ok;
+
+    int scores = 0;
+    auto counting = [&](std::uint32_t, std::int32_t, std::uint32_t) -> std::uint32_t
+    {
+        ++scores;
+        return 30;
+    };
+    std::vector<ItemFact> many;
+    std::uint32_t mask = 0;
+    unsigned const slots[] = {0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+    for (unsigned slot : slots)
+    {
+        ItemFact fact = Chest(77, static_cast<std::int32_t>(slot) - 9, static_cast<std::uint8_t>(slot));
+        many.push_back(fact);
+        mask |= 1u << slot;
+    }
+    PlanInput spread = Base();
+    spread.facts = many;
+    spread.eligibleMask = mask;
+    spread.requiredMask = mask;
+    spread.completeMask = mask;
+    Plan const handed = SelectFromFacts(spread, counting);
+    bool handoff = handed.outcome.disposition == Disposition::Commit && handed.storage.ready && scores == 14;
+    for (unsigned slot : slots)
+    {
+        std::int32_t const property = static_cast<std::int32_t>(slot) - 9;
+        handoff = handoff && handed.selected[slot].entryId == 77 && handed.selected[slot].randomProperty == property &&
+                  handed.storage.pieces[slot].entryId == 77 && handed.storage.pieces[slot].randomProperty == property &&
+                  handed.solved.items[slot] == 77;
+    }
+    ok = Check(handoff, "the same entry keeps its signed property in the plan and the storage request") && ok;
+    ok = Check(scores == 14, "each accepted fact is scored once") && ok;
+
+    ItemFact unknownScore = Chest(4, 0, 4);
+    unknownScore.scoreKnown = false;
+    std::vector<ItemFact> unknownFacts{unknownScore};
+    PlanInput unknownPlan = Base();
+    unknownPlan.facts = unknownFacts;
+    unknownPlan.eligibleMask = 1u << 4;
+    unknownPlan.requiredMask = 1u << 4;
+    unknownPlan.completeMask = 1u << 4;
+    Plan const unknown = SelectFromFacts(unknownPlan, Score);
+    ok = Check(unknown.outcome.disposition == Disposition::Preserve && !unknown.storage.ready &&
+               unknown.outcome.action != GearAction::StripToBags,
+            "an unknown score cannot authorize a commit or a strip") &&
+         ok;
+
+    ProvenanceRow same = Row(1, RowState::KnownPresent);
+    std::array<ProvenanceRow, 3> crowded{{same, same, same}};
+    ok = Check(AssessSlotList(crowded, 7, true, 2).verdict == ListVerdict::Incomplete,
+            "proof rows past the bound are not scanned") &&
+         ok;
+    ok = Check(AssessSlotList(crowded, 7, true, 8).verdict == ListVerdict::Invalid,
+            "the same rows are a duplicate once the bound allows the scan") &&
          ok;
 
     if (!ok)

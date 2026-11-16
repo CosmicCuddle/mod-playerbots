@@ -8,7 +8,7 @@ The owner will supply `acore_world` and `Spell.csv` later. This spec checks thos
 ## Provenance the export must carry
 
 - Schema name present. A missing name is Unknown.
-- SHA-256 digest known and equal to the digest published with that file. A 64-bit checksum is not accepted. A mismatch is Invalid. An unknown digest is Unknown. The world file and the spell file each have their own manifest.
+- SHA-256 of the file bytes, hashed as a stream of chunks, equal to the digest published with that file. The world file and the spell file are hashed separately. A digest copied from the other file does not pass. A nonpositive spell record id is Invalid. A negative item-spell reference is not interpreted as a spell id.
 - Version known. Unknown version is Unknown.
 - Row counts for `item_template` and the spell file, both expected and observed. A count of zero expected is Unknown. A mismatch is Invalid.
 

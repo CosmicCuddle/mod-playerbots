@@ -83,6 +83,11 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t enchantItemLevel = 0;
         std::uint32_t setId = 0;
         bool setPermitted = true;
+        // Set evidence belongs to this fact. A proof row may not disagree.
+        bool setEvidenceKnown = false;
+        bool setBonusPresent = false;
+        // False means the score was not established. It cannot authorize a strip.
+        bool scoreKnown = true;
         bool darkmoonCard = false;
         // Tooltip base stats are not availability or a proc. Both stay unknown
         // until installed evidence exists. requestForceBis does not fill them.
