@@ -257,6 +257,33 @@ public:
             }
         // Claimed work is not cancelled: it may already have mutated state.
     }
+    // Independent receipt slots can outlive their holder entries. Report
+    // them separately from registered work; never double-count an explicit
+    // request merely because its entry is still present.
+    struct ShutdownCounts
+    {
+        std::size_t timedPending = 0, timedClaimed = 0, blockedEntries = 0;
+        std::size_t explicitPending = 0, explicitClaimed = 0, explicitTerminal = 0;
+    };
+    ShutdownCounts InspectShutdown() noexcept
+    {
+        std::lock_guard guard(_lock);
+        ShutdownCounts counts;
+        for (auto const& [guid, e] : _entries)
+        {
+            if (e.phase == Phase::Blocked) ++counts.blockedEntries;
+            if (e.mode == Mode::Timed && e.phase == Phase::Pending) ++counts.timedPending;
+            if (e.mode == Mode::Timed && e.phase == Phase::Claimed) ++counts.timedClaimed;
+        }
+        for (auto const& slot : _receipts)
+        {
+            if (!slot) continue;
+            if (slot->status == ReceiptStatus::Pending) ++counts.explicitPending;
+            else if (slot->status == ReceiptStatus::Claimed) ++counts.explicitClaimed;
+            else ++counts.explicitTerminal;
+        }
+        return counts;
+    }
     std::size_t Outstanding() noexcept
     {
         std::lock_guard guard(_lock);
