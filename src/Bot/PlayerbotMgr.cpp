@@ -809,12 +809,16 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
 
         record.MarkStep(Journal::Step::BeforeIdentityRetire);
         PlayerbotIdentityGeneration::Instance().RetireLogin(guid);
-        record.MarkStep(Journal::Step::BeforeGroupQueue);
-        auto cleanupOp = std::make_unique<BotLogoutGroupCleanupOperation>(guid, ownerIncarnation, sessionIncarnation);
-        // Identity retirement already mutated state; queue refusal is not a
-        // completed logout and must retain the journal for reconciliation.
-        if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(cleanupOp)))
-            return partial();
+        // The old queued cleanup could run only after this logout had
+        // destroyed its exact session. Save the group strategy state while
+        // the admitted world-owner retirement still has the live bot/AI.
+        // This is producer completion, NOT a database commit acknowledgement.
+        record.MarkStep(Journal::Step::BeforeRepositorySave);
+        if (Group* group = bot->GetGroup(); group && !bot->InBattleground() &&
+            !bot->InBattlegroundQueue() && IsRealPlayer(botAI->GetMaster()))
+        {
+            PlayerbotRepository::instance().Save(botAI);
+        }
         if (!current())
             return partial();
 
