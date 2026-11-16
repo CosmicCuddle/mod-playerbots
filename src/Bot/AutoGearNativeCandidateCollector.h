@@ -74,7 +74,10 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t const mask = proto->AllowableClass;
         if (mask != 0 && mask != 0xFFFFFFFFu)
             row.classMask = mask;
-        bool const grouped = proto->RandomProperty != 0 || proto->RandomSuffix != 0;
+        row.propertyGroup = proto->RandomProperty;
+        row.suffixGroup = proto->RandomSuffix;
+        row.groupsKnown = true;
+        bool const grouped = row.propertyGroup != 0 || row.suffixGroup != 0;
         row.randomPropertyKnown = !grouped;
         if (proto->MaxCount > 0)
             row.maxCount = static_cast<std::uint32_t>(proto->MaxCount);

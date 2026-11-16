@@ -8,6 +8,7 @@
 #define PLAYERBOTS_AUTOGEAR_CANDIDATE_COLLECTOR_H
 
 #include "AutoGearSelectionPlan.h"
+#include "AutoGearVariantEnumeration.h"
 #include <array>
 #include <vector>
 
@@ -67,6 +68,18 @@ namespace PlayerbotsAutoGearSelection
         bool equipAllowed = false;
         bool blockedOnlyByCurrentGear = false;
         bool scoreKnown = true;
+        // Template random-property group and random-suffix group. Zero means none.
+        std::int32_t propertyGroup = 0;
+        std::int32_t suffixGroup = 0;
+        bool groupsKnown = false;
+        std::span<std::uint32_t const> enchantPool{};
+        bool poolPresent = false;
+        std::span<std::uint8_t const> membership{};
+        bool membershipKnown = false;
+        std::span<std::uint32_t const> propertyDbc{};
+        std::span<std::uint32_t const> suffixDbc{};
+        bool dbcKnown = false;
+        std::size_t variantBudget = 8;
     };
 
     // Caller-verified identity. Unlisted entries stay unknown.
@@ -84,6 +97,7 @@ namespace PlayerbotsAutoGearSelection
     {
         std::uint32_t entryId = 0;
         std::int32_t randomProperty = 0;
+        bool propertyKnown = false;
         std::uint8_t slot = 0;
         bool approved = false;
     };
@@ -131,6 +145,7 @@ namespace PlayerbotsAutoGearSelection
         bool capSupplied = false;
         CapResult resolvedCap{};
         CapMode resolvedMode = CapMode::Endgame;
+        bool bis = false;
         bool qualityLimitKnown = false;
         std::uint32_t qualityLimit = 0;
         BotView bot{};
@@ -167,6 +182,7 @@ namespace PlayerbotsAutoGearSelection
         bool nativeSourceUsed = false;
         std::uint32_t cap = 0;
         CapMode mode = CapMode::Endgame;
+        bool bis = false;
         GearAction action = GearAction::Preserve;
         Plan plan{};
         std::vector<ItemFact> facts{};
@@ -355,7 +371,7 @@ namespace PlayerbotsAutoGearSelection
             return true;
         for (ApprovedOriginal const& original : request.approvedOriginals)
         {
-            if (!original.approved || !CombatDispositionSlot(original.slot))
+            if (!original.approved || !original.propertyKnown || !CombatDispositionSlot(original.slot))
                 continue;
             bool matched = false;
             for (RetainedCount& row : result.projectedCounts)
@@ -419,28 +435,76 @@ namespace PlayerbotsAutoGearSelection
         result.deletesGear = false;
         result.nativeEquipProven = false;
         result.mode = request.resolvedMode;
+        result.bis = request.bis;
+        std::vector<CandidateTemplate> expanded;
+        bool variantGap = false;
+        for (CandidateTemplate const& sourceRow : request.rows)
+        {
+            if (!sourceRow.groupsKnown)
+            {
+                expanded.push_back(sourceRow);
+                continue;
+            }
+            if (sourceRow.propertyGroup == 0 && sourceRow.suffixGroup == 0)
+            {
+                CandidateTemplate plain = sourceRow;
+                plain.randomProperty = 0;
+                plain.randomPropertyKnown = true;
+                expanded.push_back(plain);
+                continue;
+            }
+            VariantRequest variants;
+            variants.randomProperty = sourceRow.propertyGroup;
+            variants.randomSuffix = sourceRow.suffixGroup;
+            variants.groupsKnown = true;
+            variants.pool = sourceRow.enchantPool;
+            variants.poolPresent = sourceRow.poolPresent;
+            variants.membership = sourceRow.membership;
+            variants.membershipKnown = sourceRow.membershipKnown;
+            variants.propertyDbc = sourceRow.propertyDbc;
+            variants.suffixDbc = sourceRow.suffixDbc;
+            variants.dbcKnown = sourceRow.dbcKnown;
+            variants.budget = sourceRow.variantBudget;
+            VariantResult const listed = EnumerateVariants(variants);
+            if (!listed.complete)
+            {
+                variantGap = true;
+                CandidateTemplate unknown = sourceRow;
+                unknown.randomPropertyKnown = false;
+                expanded.push_back(unknown);
+                continue;
+            }
+            for (VariantId const& variant : listed.variants)
+            {
+                CandidateTemplate copy = sourceRow;
+                copy.randomProperty = variant.signedId;
+                copy.randomPropertyKnown = true;
+                expanded.push_back(copy);
+            }
+        }
+        std::span<CandidateTemplate const> rows{expanded};
         bool const capReady = request.capSupplied && !request.resolvedCap.preserve && request.resolvedCap.cap != 0;
         result.cap = capReady ? request.resolvedCap.cap : 0;
         bool projectionOk = ProjectFinalCounts(request, result);
         bool conflict = false;
-        for (std::size_t i = 0; i < request.rows.size() && !conflict; ++i)
+        for (std::size_t i = 0; i < rows.size() && !conflict; ++i)
         {
             for (std::size_t j = 0; j < i; ++j)
             {
-                if (ConflictingTemplates(request.rows[i], request.rows[j]))
+                if (ConflictingTemplates(rows[i], rows[j]))
                     conflict = true;
             }
         }
         result.conflict = conflict;
-        bool const overBudget = request.rows.size() > request.rowBudget;
-        result.truncated = overBudget || !request.sourceExhausted || conflict;
-        std::size_t const limit = request.rows.size() < request.rowBudget ? request.rows.size() : request.rowBudget;
-        bool incomplete = !capReady || !request.qualityLimitKnown || !projectionOk || conflict;
+        bool const overBudget = rows.size() > request.rowBudget;
+        result.truncated = overBudget || !request.sourceExhausted || conflict || variantGap;
+        std::size_t const limit = rows.size() < request.rowBudget ? rows.size() : request.rowBudget;
+        bool incomplete = !capReady || !request.qualityLimitKnown || !projectionOk || conflict || variantGap;
         result.facts.reserve(limit);
         result.rows.reserve(limit);
         for (std::size_t index = 0; index < limit; ++index)
         {
-            CandidateTemplate row = request.rows[index];
+            CandidateTemplate row = rows[index];
             ApplyVerifiedIdentity(row, request.identities);
             ProvenSourceRow proven;
             proven.entry = row.entry;

@@ -14,4 +14,6 @@ The collector uses the cap and quality already resolved for the command, includi
 
 For a verified random bot, the final projected count subtracts only exact approved combat originals. Staging and unrelated rows stay. An alt bot keeps the physical count. Nothing is deleted.
 
-The instantiation `CollectNativeCandidateFacts<InventoryType, RandomItemMgr, ...>` was compiled against core `28df5c5f` with `-std=gnu++20`. The object references `RandomItemMgr::GetEquipmentNew(unsigned int, InventoryType)`.
+`EnumerateVariants` and `EnumerateInstalledPool` in `src/Bot/AutoGearVariantEnumeration.h` read the installed enchantment-template cache. Membership uses the same rule as `HasItemEnchantMod` at core `8d6ac43`: the group id must be positive and the enchant id nonzero and present. A random-property group becomes positive ids. A random-suffix group becomes negative ids. A missing group, a zero or duplicate member, a DBC mismatch, or both groups at once preserves. A budget that stops early is not a complete list. The collector does not roll or create an item.
+
+`EnumerateInstalledPool<HasItemEnchantMod>` was compiled with GCC 13 `-std=gnu++20 -Wall -Wextra`. `ItemEnchantmentMgr.h` is from core `8d6ac43`. The object references `HasItemEnchantMod(int, unsigned int)` and `RandomItemMgr::GetEnchantmentPool(unsigned int)`. The earlier `GetEquipmentNew(unsigned int, InventoryType)` instantiation still stands. Neither object is linked into worldserver.

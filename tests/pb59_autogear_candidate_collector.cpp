@@ -362,6 +362,8 @@ int main()
     physical.bags = 1;
     ApprovedOriginal original;
     original.entryId = 66;
+    original.randomProperty = 0;
+    original.propertyKnown = true;
     original.slot = 4;
     original.approved = true;
     StagingPiece staged;
@@ -389,6 +391,29 @@ int main()
     CollectorResult const altBot = CollectCandidateFacts(randomBot, ScoreOf);
     ok = Check(altBot.projectedCounts[0].equipped == 1 && altBot.projectedCounts[0].bags == 1,
             "an alt bot keeps the physical count") &&
+         ok;
+    randomBot.population = CountPopulation::RandomBot;
+    originals[0].approved = false;
+    CollectorResult const unapproved = CollectCandidateFacts(randomBot, ScoreOf);
+    ok = Check(unapproved.projectedCounts[0].equipped == 1, "an unapproved original is not subtracted") && ok;
+    originals[0].approved = true;
+    originals[0].propertyKnown = false;
+    CollectorResult const inexact = CollectCandidateFacts(randomBot, ScoreOf);
+    ok = Check(!inexact.projectionKnown || inexact.projectedCounts[0].equipped == 1,
+            "an original without a known property is not subtracted") &&
+         ok;
+
+    CollectorRequest bis = Ready(78);
+    bis.bis = true;
+    bis.qualityLimit = 4;
+    bis.resolvedMode = CapMode::Endgame;
+    std::vector<CandidateTemplate> bisRows{Legal(66, 60), Legal(67, 90)};
+    bisRows[0].quality = 4;
+    bisRows[1].quality = 5;
+    bis.rows = bisRows;
+    CollectorResult const bisPlan = CollectCandidateFacts(bis, ScoreOf);
+    ok = Check(bisPlan.bis && bisPlan.cap == 78 && bisPlan.plan.selected[4].entryId == 66 && !bisPlan.deletesGear,
+            "bis keeps the supplied cap and the supplied quality") &&
          ok;
 
     Source source;
