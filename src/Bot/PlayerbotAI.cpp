@@ -6,6 +6,8 @@
 
 #include "PlayerbotAI.h"
 #include "AiFactory.h"
+#include "TrainerAction.h"
+#include "WorldSession.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
@@ -632,6 +634,79 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
         pmo->finish();
 }
 
+namespace
+{
+    PB59::CommandOwner CapturePB59CommandOwner(Player* player)
+    {
+        if (!player || !player->GetSession() || player->GetSession()->GetPlayer() != player)
+            return {};
+        return {player->GetGUID().GetRawValue(), player->GetPB59OwnerIncarnation(),
+            player->GetSession()->GetPB59SessionIncarnation()};
+    }
+
+    ChatCommandHolder MakePB59ChatCommand(std::string const& command, Player* sender,
+        PlayerbotSecurityLevel requiredLevel, uint32 type, time_t when = 0)
+    {
+        ChatCommandHolder holder(command, sender->GetGUID(), requiredLevel, type, when);
+        if (sPlayerbotAIConfig.AutoGearIPCapEnable && PB59::ParseQueuedAutoGear(command).recognized)
+            holder.BindPB59Sender(CapturePB59CommandOwner(sender));
+        return holder;
+    }
+
+    // Map thread submits only copied identities. All foreign Player resolution,
+    // permission recheck and progression/equipment reads occur on world update.
+    class PB59AutoGearWorldOperation final : public PlayerbotOperation
+    {
+    public:
+        PB59AutoGearWorldOperation(ObjectGuid botGuid, PB59::CommandOwner botOwner,
+            ObjectGuid senderGuid, PB59::CommandOwner senderOwner, std::string command,
+            PlayerbotSecurityLevel requiredLevel)
+            : _botGuid(botGuid), _senderGuid(senderGuid), _botOwner(botOwner),
+              _senderOwner(senderOwner), _command(std::move(command)), _requiredLevel(requiredLevel) {}
+
+        ObjectGuid GetBotGuid() const override { return _botGuid; }
+        std::string GetName() const override { return "PB59 AutoGear authority"; }
+
+        bool Execute() override
+        {
+            if (!sPlayerbotAIConfig.AutoGearIPCapEnable)
+                return false;
+            auto parsed = PB59::ParseQueuedAutoGear(_command);
+            if (!parsed.recognized)
+                return false;
+            auto resolve = [](ObjectGuid guid, PB59::CommandOwner const& expected) -> Player*
+            {
+                if (!expected.Valid())
+                    return nullptr;
+                Player* player = ObjectAccessor::FindConnectedPlayer(guid);
+                if (!player || CapturePB59CommandOwner(player) != expected ||
+                    !player->IsInWorld() || player->IsBeingTeleported() || player->IsDuringRemoveFromWorld() ||
+                    player->GetSession()->IsLoggingOut() || player->GetSession()->PlayerLogout())
+                    return nullptr;
+                return player;
+            };
+            Player* bot = resolve(_botGuid, _botOwner);
+            Player* sender = resolve(_senderGuid, _senderOwner);
+            if (!bot || !sender || bot == sender || !bot->GetSession()->IsHeadless() || sender->GetSession()->IsHeadless())
+                return false;
+            PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+            if (!ai || !ai->GetSecurity()->CheckLevelFor(_requiredLevel, true, sender))
+                return false;
+            // Permission callbacks are not a lifetime pin. Re-resolve both.
+            if (resolve(_botGuid, _botOwner) != bot || resolve(_senderGuid, _senderOwner) != sender ||
+                GET_PLAYERBOT_AI(bot) != ai)
+                return false;
+            return RunPB59AutoGearWorldPlan(bot, ai, sender, parsed.argument, parsed.bis);
+        }
+
+    private:
+        ObjectGuid _botGuid, _senderGuid;
+        PB59::CommandOwner _botOwner, _senderOwner;
+        std::string _command;
+        PlayerbotSecurityLevel _requiredLevel;
+    };
+}
+
 void PlayerbotAI::HandleCommands()
 {
     ExternalEventHelper helper(aiObjectContext);
@@ -642,6 +717,24 @@ void PlayerbotAI::HandleCommands()
         if (checkTime && time(nullptr) < checkTime)
         {
             ++it;
+            continue;
+        }
+
+        if (PB59::UsesQueuedAutoGear(it->IsPB59Capped(), sPlayerbotAIConfig.AutoGearIPCapEnable, it->GetCommand()))
+        {
+            auto const senderOwner = it->GetPB59Sender();
+            auto const botOwner = CapturePB59CommandOwner(bot);
+            if (sPlayerbotAIConfig.AutoGearIPCapEnable && senderOwner.Valid() && botOwner.Valid())
+            {
+                bool const accepted = PlayerbotWorldThreadProcessor::instance().QueueOperation(
+                    std::make_unique<PB59AutoGearWorldOperation>(bot->GetGUID(), botOwner,
+                        it->GetOwnerGuid(), senderOwner, it->GetCommand(), it->GetRequiredLevel()));
+                if (!accepted)
+                    LOG_WARN("playerbots", "PB59 AutoGear authority queue full; command preserved");
+            }
+            else
+                LOG_DEBUG("playerbots", "PB59 AutoGear command lacks original identity or is disabled; preserving");
+            it = chatCommands.erase(it);
             continue;
         }
 
@@ -799,7 +892,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
         }
 
         chatCommands.push_back(
-            ChatCommandHolder(remaining, fromPlayer.GetGUID(), requiredLevel, type, time(0) + index));
+            MakePB59ChatCommand(remaining, &fromPlayer, requiredLevel, type, time(0) + index));
     }
     else if (filtered == "reset")
     {
@@ -849,7 +942,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
 
     else
     {
-        chatCommands.push_back(ChatCommandHolder(filtered, fromPlayer.GetGUID(), requiredLevel, type));
+        chatCommands.push_back(MakePB59ChatCommand(filtered, &fromPlayer, requiredLevel, type));
     }
 }
 
@@ -1139,7 +1232,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
         }
 
         chatCommands.push_back(
-            ChatCommandHolder(remaining, fromPlayer->GetGUID(), requiredLevel, type, time(nullptr) + index));
+            MakePB59ChatCommand(remaining, fromPlayer, requiredLevel, type, time(nullptr) + index));
     }
     else if (filtered == "reset")
     {
@@ -1188,7 +1281,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
     }
     else
     {
-        chatCommands.push_back(ChatCommandHolder(filtered, fromPlayer->GetGUID(), requiredLevel, type));
+        chatCommands.push_back(MakePB59ChatCommand(filtered, fromPlayer, requiredLevel, type));
     }
 }
 
