@@ -64,6 +64,7 @@ public:
     void UpdateSessions();
     void HandleBotPackets(WorldSession* session);
     static bool RetireBotForClientLogin(Player* bot); // world packet path; true only after completed retirement
+    static bool RequestExplicitBotLogout(Player* bot, Player* master); // true = accepted/coalesced, not completed
     static void RequestTimedBotLogout(Player* bot); // value-only producer from bot owner context
     static void ProcessTimedBotLogouts(); // world thread after map-worker barrier
     static void StopTimedBotLogouts();
