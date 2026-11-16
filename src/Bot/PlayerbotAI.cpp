@@ -1162,27 +1162,13 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
             return;
         }
 
-        PlayerbotMgr* masterBotMgr = GET_PLAYERBOT_MGR(master);
-        if (!masterBotMgr)
-            return;
-
-        // Only respond if this bot is in master's collection (alt/addclass)
-        if (masterBotMgr->GetPlayerBot(bot->GetGUID()))
+        // The mailbox verifies the exact registered personal master.
+        // Never inspect a foreign holder map or retire a session on this stack.
+        bool const accepted = PlayerbotHolder::RequestExplicitBotLogout(bot, master);
+        if (type == CHAT_MSG_WHISPER)
         {
-            if (type == CHAT_MSG_WHISPER)
-            {
-                std::string message = PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                    "logout_start", "I'm logging out!", {});
-                TellMaster(message);
-            }
-
-            masterBotMgr->LogoutPlayerBot(bot->GetGUID());
-        }
-        else if (type == CHAT_MSG_WHISPER)
-        {
-            std::string message = PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                "bot_rndbot_no_logout", "You can't command me to logout!", {});
-            TellMaster(message);
+            TellMaster(accepted ? "Logout requested; awaiting world-thread processing." :
+                "Logout request refused: busy or not your personal bot.");
         }
     }
     else if (filtered == "logout cancel")
