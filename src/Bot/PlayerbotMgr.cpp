@@ -297,9 +297,12 @@ void PlayerbotHolder::StopTimedBotLogouts()
     auto& mailbox = PB59::TimedRetirementMailbox::Instance();
     mailbox.Stop();
     LogExplicitLogoutReceipts();
-    auto unresolved = mailbox.Outstanding();
-    if (unresolved)
-        LOG_ERROR("playerbots", "{} timed logout requests pending/blocked at shutdown; native drain not yet implemented", unresolved);
+    auto const unresolved = mailbox.InspectShutdown();
+    if (unresolved.timedPending || unresolved.timedClaimed || unresolved.blockedEntries ||
+        unresolved.explicitPending || unresolved.explicitClaimed || unresolved.explicitTerminal)
+        LOG_ERROR("playerbots", "Bot logout shutdown: timed pending {} claimed {}, blocked entries {}, explicit pending {} claimed {} undrained terminal {}; native drain/recovery not yet implemented",
+            unresolved.timedPending, unresolved.timedClaimed, unresolved.blockedEntries,
+            unresolved.explicitPending, unresolved.explicitClaimed, unresolved.explicitTerminal);
 }
 class PlayerbotLoginQueryHolder : public LoginQueryHolder
 {
