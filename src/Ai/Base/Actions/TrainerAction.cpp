@@ -8,6 +8,9 @@
 #include "AiFactory.h"
 #include "AutoGearCommandRoute.h"
 #include "AutoGearProgressionCap.h"
+#if __has_include("PB59InventorySlotFacts.h")
+#include "AutoGearNativeStoragePreparation.h"
+#endif
 #include "BisListMgr.h"
 #include "BudgetValues.h"
 #include "Event.h"
@@ -686,6 +689,16 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     LOG_INFO("playerbots", "PB59 AutoGear world plan bot={} sender={} raw={} effective={} authority={} cap={} action={} form={}",
         bot->GetGUID().GetRawValue(), sender->GetGUID().GetRawValue(), request.rawStage, request.effectiveStage,
         request.progressionContextVerified, decision.cap, static_cast<uint32>(decision.action), static_cast<uint32>(decision.form));
+#if __has_include("PB59InventorySlotFacts.h")
+    // Only an actual proven mutation decision may enter storage preparation.
+    // The complete native effects/rollback executor is not yet connected.
+    if (decision.action == GearAction::StripToBags || decision.action == GearAction::CommitSet)
+    {
+        auto prepared = PlayerbotsAutoGearStorage::PrepareNativeStorage(*bot);
+        LOG_INFO("playerbots", "PB59 AutoGear storage preflight status={} reserved={}",
+            static_cast<uint32>(prepared.status), prepared.plan.moves.size());
+    }
+#endif
     return false;
 }
 
