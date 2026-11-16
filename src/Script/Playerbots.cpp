@@ -27,6 +27,7 @@
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
 #include "PlayerbotWorldThreadProcessor.h"
+#include "AutoGearSessionCustody.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "ServerScript.h"
@@ -560,6 +561,13 @@ public:
 
     void OnUpdate(uint32 diff) override
     {
+        // Bind only here, on the world update owner after map workers drain.
+        // No arbitrary caller can implicitly bind ownership.
+        if (!PB59::SessionCustody<WorldSession>::BindOwnerThread())
+        {
+            LOG_ERROR("playerbots", "PB59 custody world owner binding failed");
+            return;
+        }
         PlayerbotHolder::ProcessTimedBotLogouts(); // after Core waits for map workers
         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
