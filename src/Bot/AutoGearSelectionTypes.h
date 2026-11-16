@@ -8,6 +8,7 @@
 #define PLAYERBOTS_AUTOGEAR_SELECTION_TYPES_H
 
 #include "AutoGearWeaponDomain.h"
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -193,22 +194,48 @@ namespace PlayerbotsAutoGearSelection
 
     inline RetainedCount const* FindEntryCount(std::span<RetainedCount const> retained, std::uint32_t entryId)
     {
+        RetainedCount const* found = nullptr;
         for (RetainedCount const& row : retained)
         {
-            if (row.entryId == entryId && row.limitCategory == 0)
-                return &row;
+            if (row.entryId != entryId || row.limitCategory != 0)
+                continue;
+            if (found != nullptr)
+                return nullptr;
+            found = &row;
         }
-        return nullptr;
+        return found;
     }
 
     inline RetainedCount const* FindCategoryCount(std::span<RetainedCount const> retained, std::uint32_t category)
     {
+        RetainedCount const* found = nullptr;
         for (RetainedCount const& row : retained)
         {
-            if (row.entryId == 0 && row.limitCategory == category)
-                return &row;
+            if (row.entryId != 0 || row.limitCategory != category)
+                continue;
+            if (found != nullptr)
+                return nullptr;
+            found = &row;
         }
-        return nullptr;
+        return found;
+    }
+
+    // A strip moves equipped copies into bags. The total does not shrink.
+    inline bool MoveEquippedIntoBags(RetainedCount& row, std::uint32_t count)
+    {
+        if (!CountsKnown(row) || count > row.equipped || row.bags > 0xFFFFFFFFu - count)
+            return false;
+        row.equipped -= count;
+        row.bags += count;
+        return true;
+    }
+
+    inline bool AddProofCount(std::size_t& total, std::size_t more)
+    {
+        if (more > static_cast<std::size_t>(-1) - total)
+            return false;
+        total += more;
+        return true;
     }
 }
 

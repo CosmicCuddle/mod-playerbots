@@ -19,7 +19,8 @@ bool Check(bool condition, char const* text)
     return true;
 }
 
-void FillFile(char const* text, std::array<std::uint8_t, 16>& storage, FileChunks& chunks)
+void FillFile(char const* text, std::array<std::uint8_t, 16>& storage, std::array<DeclaredChunk, 2>& parts,
+    FileChunks& chunks)
 {
     std::size_t length = 0;
     while (text[length] != 0 && length < storage.size())
@@ -28,9 +29,12 @@ void FillFile(char const* text, std::array<std::uint8_t, 16>& storage, FileChunk
         ++length;
     }
     std::size_t const mid = length / 2;
-    chunks.parts[0] = std::span<std::uint8_t const>(storage.data(), mid);
-    chunks.parts[1] = std::span<std::uint8_t const>(storage.data() + mid, length - mid);
-    chunks.count = length == 0 ? 0 : 2;
+    parts[0].bytes = std::span<std::uint8_t const>(storage.data(), mid);
+    parts[0].declaredBytes = mid;
+    parts[1].bytes = std::span<std::uint8_t const>(storage.data() + mid, length - mid);
+    parts[1].declaredBytes = length - mid;
+    chunks.chunks = parts;
+    chunks.declaredCount = 2;
 }
 
 WorldManifest World()
@@ -74,7 +78,10 @@ int main()
         expectedEmpty.byte[i] = emptyKnown[i];
     ok = Check(empty == expectedEmpty, "SHA256 of an empty message matches the standard digest") && ok;
     FileChunks emptyFile;
-    ok = Check(HashFile(emptyFile) == empty, "an empty streamed file matches the one-shot digest") && ok;
+    ChunkHash const emptyHash = HashFile(emptyFile);
+    ok = Check(emptyHash.fault == ChunkFault::None && emptyHash.digest == empty,
+            "an empty streamed file matches the one-shot digest") &&
+         ok;
 
     std::array<std::int32_t, 2> ids{{100, 200}};
     std::array<bool, 2> known{{true, true}};
@@ -83,15 +90,17 @@ int main()
     std::array<std::uint8_t, 16> spellBytes{};
     FileChunks worldFile;
     FileChunks spellFile;
-    FillFile("world", worldBytes, worldFile);
-    FillFile("spell", spellBytes, spellFile);
+    std::array<DeclaredChunk, 2> worldParts{};
+    std::array<DeclaredChunk, 2> spellParts{};
+    FillFile("world", worldBytes, worldParts, worldFile);
+    FillFile("spell", spellBytes, spellParts, spellFile);
     WorldManifest world = World();
-    world.expectedDigest = HashFile(worldFile);
+    world.expectedDigest = FileDigest(worldFile);
     world.digest = world.expectedDigest;
     world.itemSpellIds = refs;
     SpellManifest spells = Spells(ids, known);
-    spells.expectedDigest = HashFile(spellFile);
-    ok = Check(HashFile(worldFile) == HashSha256(std::span<std::uint8_t const>(worldBytes.data(), 5)),
+    spells.expectedDigest = FileDigest(spellFile);
+    ok = Check(FileDigest(worldFile) == HashSha256(std::span<std::uint8_t const>(worldBytes.data(), 5)),
             "split chunks match the one-shot digest") &&
          ok;
     ExportVerdict const agreed = CheckExport(world, worldFile, spells, spellFile);
@@ -101,16 +110,16 @@ int main()
          ok;
 
     world.digest = world.expectedDigest;
-    world.expectedDigest = HashFile(spellFile);
+    world.expectedDigest = FileDigest(spellFile);
     ok = Check(CheckExport(world, worldFile, spells, spellFile) == ExportVerdict::Invalid,
             "a copied digest does not replace the world file hash") &&
          ok;
-    world.expectedDigest = HashFile(worldFile);
-    spells.expectedDigest = HashFile(worldFile);
+    world.expectedDigest = FileDigest(worldFile);
+    spells.expectedDigest = FileDigest(worldFile);
     ok = Check(CheckExport(world, worldFile, spells, spellFile) == ExportVerdict::Invalid,
             "the spell file is hashed on its own") &&
          ok;
-    spells.expectedDigest = HashFile(spellFile);
+    spells.expectedDigest = FileDigest(spellFile);
 
     world.digestKnown = false;
     ok = Check(CheckExport(world, worldFile, spells, spellFile) == ExportVerdict::Unknown,

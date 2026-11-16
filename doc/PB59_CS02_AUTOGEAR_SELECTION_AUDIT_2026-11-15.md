@@ -49,7 +49,9 @@ CS01 review `6903067303` is applied on the same head. `AssessSlotList` rejects a
 
 CS01 review `6903748406` is applied on the same head. The plan keeps the chosen entry and signed random property, and copies both into the storage request. Any fact with a random property, or two properties of one entry, uses the variant solver. Each accepted fact is scored once. An unknown or inconsistent score cannot commit or strip. Proof rows, including unavailable ones, are bounded before the duplicate scan, and set evidence has to match the fact. Export hashing is a stream over file chunks. The world file and the spell file are hashed separately. A nonpositive spell record id is invalid. A negative item reference is not treated as a spell id. `MetadataChecked` is still not production readiness.
 
-GCC 13, Clang 18, and GCC ASan+UBSan each report cap 44, plan 72, command parse 22, fact source 24, set bonus 12, variant solver 20, slot enumeration 12, retained constraints 9, solver oracle 14, export check 9, cap matrix 14, and adversarial 23. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
+CS01 review `6903969713` is applied on the same head. The export reader hashes every declared chunk and parses counts from those bytes. A storage request records the entry, signed property, slot, and revisions, and it is not ready when a revision is missing or stale. Gear moved into bags stays in the retained count. The additive solver is not described as set-optimal. Unknown set evidence preserves.
+
+GCC 13, Clang 18, and GCC ASan+UBSan each report 295 checks: cap 44, plan 72, command parse 22, fact source 24, set bonus 12, variant solver 20, slot enumeration 12, retained constraints 9, solver oracle 14, export check 9, cap matrix 14, adversarial 23, and checkpoint 8 20. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
 
 ## Integration still waiting on Maintenance
 

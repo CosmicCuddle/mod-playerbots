@@ -241,7 +241,10 @@ int main()
     std::array<std::uint8_t, 16> spellBytes{};
     FileChunks worldFile;
     FileChunks spellFile;
-    auto fill = [](char const* text, std::array<std::uint8_t, 16>& storage, FileChunks& chunks)
+    std::array<DeclaredChunk, 2> worldParts{};
+    std::array<DeclaredChunk, 2> spellParts{};
+    auto fill = [](char const* text, std::array<std::uint8_t, 16>& storage, std::array<DeclaredChunk, 2>& parts,
+                    FileChunks& chunks)
     {
         std::size_t length = 0;
         while (text[length] != 0 && length < storage.size())
@@ -250,12 +253,15 @@ int main()
             ++length;
         }
         std::size_t const mid = length / 2;
-        chunks.parts[0] = std::span<std::uint8_t const>(storage.data(), mid);
-        chunks.parts[1] = std::span<std::uint8_t const>(storage.data() + mid, length - mid);
-        chunks.count = 2;
+        parts[0].bytes = std::span<std::uint8_t const>(storage.data(), mid);
+        parts[0].declaredBytes = mid;
+        parts[1].bytes = std::span<std::uint8_t const>(storage.data() + mid, length - mid);
+        parts[1].declaredBytes = length - mid;
+        chunks.chunks = parts;
+        chunks.declaredCount = 2;
     };
-    fill("world", worldBytes, worldFile);
-    fill("spell", spellBytes, spellFile);
+    fill("world", worldBytes, worldParts, worldFile);
+    fill("spell", spellBytes, spellParts, spellFile);
     std::array<std::int32_t, 2> spellIds{{100, 200}};
     std::array<bool, 2> known{{true, true}};
     std::array<bool, 2> noProc{{true, false}};
@@ -263,7 +269,7 @@ int main()
     spells.headerIsId = true;
     spells.versionKnown = true;
     spells.digestKnown = true;
-    spells.expectedDigest = HashFile(spellFile);
+    spells.expectedDigest = FileDigest(spellFile);
     spells.spellRows = 2;
     spells.expectedSpellRows = 2;
     spells.spellIds = spellIds;
@@ -275,7 +281,7 @@ int main()
     world.schemaNamed = true;
     world.versionKnown = true;
     world.digestKnown = true;
-    world.expectedDigest = HashFile(worldFile);
+    world.expectedDigest = FileDigest(worldFile);
     world.itemTemplateRows = 1;
     world.expectedItemRows = 1;
     world.itemSpellsRequired = true;
@@ -345,6 +351,14 @@ int main()
         mask |= 1u << slot;
     }
     PlanInput spread = Base();
+    spread.senderEpoch = 1;
+    spread.senderIpRevision = 2;
+    spread.senderEquipmentRevision = 3;
+    spread.botEpoch = 4;
+    spread.botEquipmentRevision = 5;
+    spread.sessionIncarnation = 6;
+    spread.botIncarnation = 7;
+    spread.policyRevision = 8;
     spread.facts = many;
     spread.eligibleMask = mask;
     spread.requiredMask = mask;

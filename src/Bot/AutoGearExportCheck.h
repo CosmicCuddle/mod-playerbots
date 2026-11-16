@@ -244,19 +244,67 @@ namespace PlayerbotsAutoGearSelection
         std::uint64_t bits = 0;
     };
 
-    struct FileChunks
+    struct DeclaredChunk
     {
-        std::span<std::uint8_t const> parts[4]{};
-        std::uint8_t count = 0;
+        std::span<std::uint8_t const> bytes{};
+        std::size_t declaredBytes = 0;
     };
 
-    inline Sha256Digest HashFile(FileChunks const& file)
+    enum class ChunkFault : std::uint8_t
     {
-        Sha256Stream stream;
-        for (std::uint8_t i = 0; i < file.count && i < 4; ++i)
-            stream.Update(file.parts[i]);
-        return stream.Finish();
+        None,
+        Truncated,
+        Oversized,
+        Miscounted
     };
+
+    // declaredCount must equal the span length. Extra chunks are not dropped.
+    struct FileChunks
+    {
+        std::span<DeclaredChunk const> chunks{};
+        std::size_t declaredCount = 0;
+        std::size_t byteLimit = 1024 * 1024;
+    };
+
+    struct ChunkHash
+    {
+        Sha256Digest digest{};
+        ChunkFault fault = ChunkFault::None;
+        std::size_t bytesRead = 0;
+    };
+
+    inline ChunkHash HashFile(FileChunks const& file)
+    {
+        ChunkHash hashed;
+        if (file.declaredCount != file.chunks.size() || file.byteLimit == 0)
+        {
+            hashed.fault = ChunkFault::Miscounted;
+            return hashed;
+        }
+        Sha256Stream stream;
+        for (DeclaredChunk const& chunk : file.chunks)
+        {
+            if (chunk.bytes.size() != chunk.declaredBytes)
+            {
+                hashed.fault = ChunkFault::Truncated;
+                return hashed;
+            }
+            if (chunk.bytes.size() > file.byteLimit || hashed.bytesRead > file.byteLimit - chunk.bytes.size())
+            {
+                hashed.fault = ChunkFault::Oversized;
+                return hashed;
+            }
+            stream.Update(chunk.bytes);
+            hashed.bytesRead += chunk.bytes.size();
+        }
+        hashed.digest = stream.Finish();
+        return hashed;
+    }
+
+    inline Sha256Digest FileDigest(FileChunks const& file)
+    {
+        return HashFile(file).digest;
+    }
 
     // A checked manifest is still not a production gear source.
     inline constexpr bool ExportIsProductionReady(ExportVerdict)
@@ -338,11 +386,15 @@ namespace PlayerbotsAutoGearSelection
             !spells.headerIsId || !spells.versionKnown || !spells.digestKnown || spells.expectedSpellRows == 0 ||
             world.validationBound == 0 || spells.validationBound == 0)
             return ExportVerdict::Unknown;
-        Sha256Digest const worldHash = HashFile(worldFile);
-        Sha256Digest const spellHash = HashFile(spellFile);
-        if (!(worldHash == world.expectedDigest))
+        ChunkHash const worldHash = HashFile(worldFile);
+        ChunkHash const spellHash = HashFile(spellFile);
+        if (worldHash.fault == ChunkFault::Oversized || spellHash.fault == ChunkFault::Oversized)
+            return ExportVerdict::Bounded;
+        if (worldHash.fault != ChunkFault::None || spellHash.fault != ChunkFault::None)
             return ExportVerdict::Invalid;
-        if (!(spellHash == spells.expectedDigest))
+        if (!(worldHash.digest == world.expectedDigest))
+            return ExportVerdict::Invalid;
+        if (!(spellHash.digest == spells.expectedDigest))
             return ExportVerdict::Invalid;
         if (world.itemTemplateRows != world.expectedItemRows || spells.spellRows != spells.expectedSpellRows)
             return ExportVerdict::Invalid;

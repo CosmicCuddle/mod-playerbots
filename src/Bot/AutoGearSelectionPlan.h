@@ -55,7 +55,22 @@ namespace PlayerbotsAutoGearSelection
         {
             bool authoritative = false;
             std::span<ProvenanceRow const> rows{};
+            bool rowsDeclared = false;
+            std::size_t declaredRows = 0;
         };
+        std::uint64_t senderEpoch = 0;
+        std::uint64_t senderIpRevision = 0;
+        std::uint64_t senderEquipmentRevision = 0;
+        std::uint64_t botEpoch = 0;
+        std::uint64_t botEquipmentRevision = 0;
+        std::uint64_t sessionIncarnation = 0;
+        std::uint64_t botIncarnation = 0;
+        std::uint64_t policyRevision = 0;
+        bool freshnessRequired = false;
+        std::uint64_t publishedSenderEpoch = 0;
+        std::uint64_t publishedBotEpoch = 0;
+        std::uint64_t publishedPolicyRevision = 0;
+        std::uint64_t publishedSourceRevision = 0;
         std::array<NativeSlotProof, PlayerbotsAutoGearSet::Slots> nativeProofs{};
         // Fixture hook. Production callers leave this at None.
         enum class AllocationPoint : std::uint8_t
@@ -116,15 +131,27 @@ namespace PlayerbotsAutoGearSelection
 
     struct SelectedPiece
     {
+        std::uint8_t slot = 0;
         std::uint32_t entryId = 0;
         std::int32_t randomProperty = 0;
     };
 
     // Planning handoff only. It does not call the storage transaction.
+    // Retained gear that moves into bags is not deleted.
     struct StorageRequest
     {
         bool ready = false;
+        bool deletesRetainedGear = false;
         std::array<SelectedPiece, PlayerbotsAutoGearSet::Slots> pieces{};
+        std::uint64_t senderEpoch = 0;
+        std::uint64_t senderIpRevision = 0;
+        std::uint64_t senderEquipmentRevision = 0;
+        std::uint64_t botEpoch = 0;
+        std::uint64_t botEquipmentRevision = 0;
+        std::uint64_t sessionIncarnation = 0;
+        std::uint64_t botIncarnation = 0;
+        std::uint64_t policyRevision = 0;
+        std::uint64_t sourceRevision = 0;
     };
 
     struct Plan
@@ -230,7 +257,11 @@ namespace PlayerbotsAutoGearSelection
                 {
                     if ((in.eligibleMask & (std::uint32_t{1} << slot)) == 0)
                         continue;
-                    proofRows += in.nativeProofs[slot].rows.size();
+                    PlanInput::NativeSlotProof const& proof = in.nativeProofs[slot];
+                    if (proof.rowsDeclared && proof.declaredRows != proof.rows.size())
+                        return finish(true, PreparationResult::NotPrepared, false);
+                    if (!AddProofCount(proofRows, proof.rows.size()))
+                        return finish(true, PreparationResult::NotPrepared, false);
                 }
                 if (proofRows > in.proofRowBudget)
                     return finish(true, PreparationResult::NotPrepared, false);
@@ -329,7 +360,7 @@ namespace PlayerbotsAutoGearSelection
         plan.factsAccepted = accepted.size();
         for (AcceptedCandidate const& chosen : accepted)
         {
-            if (!chosen.scoreKnown)
+            if (!chosen.scoreKnown || (chosen.setId != 0 && !chosen.setEvidenceKnown))
                 plan.scoresTrustworthy = false;
         }
         for (std::size_t i = 0; i < accepted.size(); ++i)
@@ -398,7 +429,10 @@ namespace PlayerbotsAutoGearSelection
             {
                 plan.solved = PlayerbotsAutoGearSet::Solve(views, policy, in.candidateBudget, in.nodeBudget);
                 for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+                {
+                    plan.selected[slot].slot = static_cast<std::uint8_t>(slot);
                     plan.selected[slot].entryId = plan.solved.items[slot];
+                }
             }
             else
             {
@@ -451,6 +485,7 @@ namespace PlayerbotsAutoGearSelection
                 plan.solved.items = variant.entries;
                 for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
                 {
+                    plan.selected[slot].slot = static_cast<std::uint8_t>(slot);
                     plan.selected[slot].entryId = variant.entries[slot];
                     plan.selected[slot].randomProperty = variant.properties[slot];
                 }
@@ -529,10 +564,32 @@ namespace PlayerbotsAutoGearSelection
             prepared = PreparationResult::NotPrepared;
         }
         plan.outcome = MapOutcome(true, prepared, searchComplete, in.bags);
-        if (plan.outcome.disposition == Disposition::Commit)
+        plan.storage.pieces = plan.selected;
+        plan.storage.senderEpoch = in.senderEpoch;
+        plan.storage.senderIpRevision = in.senderIpRevision;
+        plan.storage.senderEquipmentRevision = in.senderEquipmentRevision;
+        plan.storage.botEpoch = in.botEpoch;
+        plan.storage.botEquipmentRevision = in.botEquipmentRevision;
+        plan.storage.sessionIncarnation = in.sessionIncarnation;
+        plan.storage.botIncarnation = in.botIncarnation;
+        plan.storage.policyRevision = in.policyRevision;
+        plan.storage.sourceRevision = in.sourceRevision;
+        bool const revisionsKnown = in.senderEpoch != 0 && in.senderIpRevision != 0 &&
+                                    in.senderEquipmentRevision != 0 && in.botEpoch != 0 &&
+                                    in.botEquipmentRevision != 0 && in.sessionIncarnation != 0 &&
+                                    in.botIncarnation != 0 && in.policyRevision != 0 &&
+                                    (!in.hasNativeSource || in.sourceRevision != 0);
+        bool const fresh = !in.freshnessRequired || (in.publishedSenderEpoch == in.senderEpoch &&
+                                                        in.publishedBotEpoch == in.botEpoch &&
+                                                        in.publishedPolicyRevision == in.policyRevision &&
+                                                        in.publishedSourceRevision == in.sourceRevision);
+        plan.storage.ready = plan.outcome.disposition == Disposition::Commit && revisionsKnown && fresh &&
+                             !plan.storage.deletesRetainedGear;
+        if (in.freshnessRequired && !fresh)
         {
-            plan.storage.ready = true;
-            plan.storage.pieces = plan.selected;
+            plan.storage.ready = false;
+            plan.sourceComplete = false;
+            plan.outcome = {};
         }
         return plan;
     }

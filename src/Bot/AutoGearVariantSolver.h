@@ -94,7 +94,7 @@ namespace PlayerbotsAutoGearVariant
                (left.entryId == right.entryId && left.randomProperty < right.randomProperty);
     }
 
-    // Prototype. Bounds match the shared solver. It does not replace that solver.
+    // Sums accepted per-item scores. Not a set-bonus optimum.
     inline Result Solve(std::array<Domain, Slots> const& domains, Policy const& policy, std::size_t candidateBudget,
         std::size_t nodeBudget)
     {
