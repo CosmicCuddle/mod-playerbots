@@ -9,9 +9,14 @@
 
 #include "Action.h"
 #include "ChatHelper.h"
+#include <string_view>
 
 class Creature;
 class PlayerbotAI;
+class Player;
+
+// Called only by the world-thread command consumer after exact identity and permission checks.
+bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std::string_view argument, bool bis);
 
 struct TrainerSpell;
 
