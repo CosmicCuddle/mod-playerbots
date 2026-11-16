@@ -61,10 +61,14 @@ namespace PlayerbotsAutoGearSelection
         bool sourceComplete = false;
     };
 
-    // Known-unavailable rows are omitted from the candidate list and do not
-    // by themselves make the source incomplete. Any unknown or malformed row
-    // does. A bounded native list is not copied at all.
-    inline CopiedSource CopyBoundedSource(std::span<SourceRow const> nativeRows, std::size_t copyBudget)
+    // This is only a bounded structural copy; per-slot source authority, native
+    // item/equip facts and source revision require separate validation by the
+    // calling planner. Known-unavailable rows remain outside candidate lists.
+    // By default, mixed signed variants retain the historical Preserve gate.
+    // Variant-aware callers may opt in only when they also use the signed-key
+    // solver and the independent exact per-slot provenance checks.
+    inline CopiedSource CopyBoundedSource(std::span<SourceRow const> nativeRows, std::size_t copyBudget,
+        bool variantAware = false)
     {
         CopiedSource copied;
         if (nativeRows.size() > copyBudget)
@@ -72,8 +76,10 @@ namespace PlayerbotsAutoGearSelection
             copied.status = CopyStatus::Bounded;
             return copied;
         }
-        for (SourceRow const& row : nativeRows)
+        bool splitVariant = false;
+        for (std::size_t i = 0; i < nativeRows.size(); ++i)
         {
+            SourceRow const& row = nativeRows[i];
             if (!ValidSourceEligibility(row.eligibility))
             {
                 copied.rows.clear();
@@ -90,21 +96,33 @@ namespace PlayerbotsAutoGearSelection
                 copied.sourceComplete = false;
                 return copied;
             }
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                SourceRow const& prior = nativeRows[j];
+                if (row.entryId != prior.entryId)
+                    continue;
+                // ItemLevel belongs to the item template, not the random roll.
+                // An exact (entry, signed variant, equipment slot) identity
+                // must appear only once, even if sources disagree on eligibility.
+                if (row.itemLevel != prior.itemLevel ||
+                    (row.randomProperty == prior.randomProperty && row.slot == prior.slot))
+                {
+                    copied.rows.clear();
+                    copied.status = CopyStatus::Invalid;
+                    copied.sourceComplete = false;
+                    return copied;
+                }
+                if (row.randomProperty != prior.randomProperty &&
+                    row.eligibility == SourceEligibility::KnownEligible &&
+                    prior.eligibility == SourceEligibility::KnownEligible &&
+                    row.staticCapable && prior.staticCapable)
+                    splitVariant = true;
+            }
             if (row.eligibility == SourceEligibility::KnownUnavailable || !row.staticCapable)
                 continue;
             copied.rows.push_back(row);
         }
-        bool splitVariant = false;
-        for (std::size_t i = 0; i < copied.rows.size(); ++i)
-        {
-            for (std::size_t j = 0; j < i; ++j)
-            {
-                if (copied.rows[i].entryId == copied.rows[j].entryId &&
-                    copied.rows[i].randomProperty != copied.rows[j].randomProperty)
-                    splitVariant = true;
-            }
-        }
-        if (splitVariant)
+        if (splitVariant && !variantAware)
         {
             copied.status = CopyStatus::IncompleteVariants;
             copied.sourceComplete = false;
