@@ -1,70 +1,28 @@
-# Proposed command hook
+# Command route hook
 
-Owner: CosmicCuddle. Coordination #59 review `6914685646`.
-This is the patch CS01 would apply. None of these files is edited on this branch.
+Owner: CosmicCuddle. Coordination #59 review `6915090769`.
+`AutoGearAction::Execute` and `BisGearAction::Execute` in `src/Ai/Base/Actions/TrainerAction.cpp` now call `PreserveAutoGearPlan` when `Playerbots.AutoGearIPCap.Enable` is on. That call builds the route inputs, calls `ResolveAutoGearRoute`, logs the typed plan, and returns without changing gear. It does not call `PlayerbotFactory::AutoGear` or `DestroyEquippedGear`.
 
-The route itself is `ResolveAutoGearRoute` in `src/Bot/AutoGearCommandRoute.h`. Flags stay off. With `Playerbots.AutoGearIPCap.Enable` off, the live command keeps today's behavior. With it on, a zero `AutoGearScoreLimit` uses the approved stage table. The table's own maximum is the era ceiling. There is no fallback ceiling of 78. A nonzero score limit can only lower the result.
+With the flag off, both functions keep the previous body. A zero score limit on that path is still the legacy unlimited item level. The stage table applies only on the ON path, inside `ResolveAutoGearRoute`.
 
-## AutoGearAction::Execute
+## Still not called
 
-File: `src/Ai/Base/Actions/TrainerAction.cpp`, function `AutoGearAction::Execute`, immediately after the alt-bot refusal and instead of `ResolveCommandSenderAutoGearCap` plus the argument switch that leads to `DestroyEquippedGear`.
-
-```cpp
-PlayerbotsAutoGearSelection::RouteRequest request;
-request.commandEnabled = sPlayerbotAIConfig.AutoGearCommand;
-request.ipCapEnabled = sPlayerbotAIConfig.AutoGearIPCapEnable;
-request.altCommandAllowed = sPlayerbotAIConfig.AutoGearCommandAltBots;
-request.bis = false;
-request.text = event.getParam();
-request.population = sRandomPlayerbotMgr.IsRandomBot(bot)
-    ? PlayerbotsAutoGearSelection::Population::RandomBot
-    : PlayerbotsAutoGearSelection::Population::AltBot;
-request.scoreLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);
-request.qualityLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
-request.rawStage = /* sender snapshot raw stage */;
-request.effectiveStage = /* sender snapshot effective stage */;
-request.senderIsLeveling = /* snapshot; do not infer this from level 60 */;
-request.firstStageAfterLeveling = /* snapshot of the first stage after leveling */;
-request.occupiedSlots = /* master's combat-slot item levels, empty slots as 0 */;
-request.senderFixedKnown = /* leveling sample present */;
-request.senderFixedAverage = /* leveling fixed-denominator average */;
-auto const decision = PlayerbotsAutoGearSelection::ResolveAutoGearRoute(request, scorer);
-if (!request.ipCapEnabled)
-    ; // keep the existing score-limit body below
-else if (decision.rejected || decision.preserve || decision.action == PlayerbotsAutoGearSelection::GearAction::Preserve)
-    return false;
-else if (decision.action == PlayerbotsAutoGearSelection::GearAction::StripToBags)
-    ; // move combat items into empty bags; do not call DestroyEquippedGear
-else
-    PlayerbotFactory::AutoGear(bot, quality, decision.cap, /*incremental*/ !reset, false, true, decision.cap);
-```
-
-`decision.deletesGear` is false. `DestroyEquippedGear` must not run on a preserve or a strip.
-
-## BisGearAction::Execute
-
-Same file, function `BisGearAction::Execute`, after the quality-floor check and instead of `ResolveCommandSenderAutoGearCap`.
-
-The same request with `request.bis = true` and `request.commandEnabled = sPlayerbotAIConfig.AutoGearBisCommand`. A fallback must not call `RunAutogearFallback` until the route returns a commit. `RunAutogearFallback` today calls `DestroyEquippedGear`; that call stays out of a preserve.
-
-## RandomPlayerbotMgr::Refresh
-
-File: `src/Bot/RandomPlayerbotMgr.cpp`, function `RandomPlayerbotMgr::Refresh`. Do not edit it here.
+`RandomPlayerbotMgr::Refresh` is not edited. A later call, after CS01 allows it, is:
 
 ```cpp
 PlayerbotsAutoGearSelection::RouteRequest request;
 request.tierSync = true;
-request.population = /* RandomBot, AltBot, AddClass, or Unknown */;
+request.ipCapEnabled = sPlayerbotAIConfig.AutoGearIPCapEnable;
+request.populationKnown = true;
+request.population = /* RandomBot, AltBot, AddClass, or Unknown from a verified check */;
+request.playerContextVerified = /* sender snapshot present */;
+request.progressionContextVerified = /* stage snapshot present */;
 request.rawStage = /* realm stage */;
 request.effectiveStage = request.rawStage;
 request.scoreLimit = static_cast<uint32>(sPlayerbotAIConfig.RandomGearScoreLimit);
 auto const decision = PlayerbotsAutoGearSelection::ResolveAutoGearRoute(request, scorer);
-if (decision.rejected || decision.writesProgression)
-    return;
 ```
 
-An alt bot is rejected. The decision never writes a progression stage and never deletes gear.
+The decision does not write a stage. An alt bot is rejected. With the feature off, the action stays Preserve and is not a commit.
 
-## Still native
-
-`AutoGearNativeAuthority.h`, the storage headers, and the factory equip call stay with CS01. The route plans a cap and a preserve, strip-to-bags, or commit. It does not equip an item and it does not move a bag.
+`PlayerbotFactory::AutoGear` and `InitEquipment` are not the commit path. A CommitSet plan carries the chosen ids and properties. Applying those items waits on the native authority, the storage move, and a selected-set executor. Until those exist, the ON path preserves.

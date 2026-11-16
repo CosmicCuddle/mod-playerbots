@@ -6,6 +6,7 @@
 
 #include "TrainerAction.h"
 #include "AiFactory.h"
+#include "AutoGearCommandRoute.h"
 #include "AutoGearProgressionCap.h"
 #include "BisListMgr.h"
 #include "BudgetValues.h"
@@ -16,6 +17,7 @@
 #include "ReputationMgr.h"
 #include "Trainer.h"
 #include <limits>
+#include <vector>
 
 namespace
 {
@@ -323,6 +325,8 @@ bool BisGearAction::RunAutogearFallback(uint16 effectiveIlvl, uint32 hardCap)
     return true;
 }
 
+static bool PreserveAutoGearPlan(Player* bot, PlayerbotAI* botAI, Event const& event, bool bis);
+
 bool BisGearAction::Execute(Event event)
 {
     if (!sPlayerbotAIConfig.AutoGearBisCommand)
@@ -354,6 +358,9 @@ bool BisGearAction::Execute(Event event)
             "bis_pvp_refused_error", "bis is PvE only, bot is configured as PvP.", {}));
         return false;
     }
+
+    if (sPlayerbotAIConfig.AutoGearIPCapEnable)
+        return PreserveAutoGearPlan(bot, botAI, event, true);
 
     uint32 hardCap = 0;
     if (!ResolveCommandSenderAutoGearCap(event, hardCap))
@@ -606,6 +613,51 @@ static uint32 GetWornItemLevelAverage(Player* player)
     return count ? sumLevel / count : 0;
 }
 
+// Read-only. The ON path records the plan and does not equip, destroy, or fall back.
+static bool PreserveAutoGearPlan(Player* bot, PlayerbotAI* botAI, Event const& event, bool bis)
+{
+    using namespace PlayerbotsAutoGearSelection;
+    RouteRequest request;
+    request.ipCapEnabled = true;
+    request.bis = bis;
+    request.text = event.getParam();
+    request.altCommandAllowed = sPlayerbotAIConfig.AutoGearCommandAltBots != 0;
+    request.qualityLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
+    request.scoreLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);
+    if (bis)
+        request.commandEnabled = sPlayerbotAIConfig.AutoGearBisCommand != 0;
+    else
+        request.commandEnabled = sPlayerbotAIConfig.AutoGearCommand != 0;
+    request.populationKnown = bot != nullptr;
+    if (bot != nullptr)
+    {
+        bool const randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
+        request.population = randomBot ? Population::RandomBot : Population::AltBot;
+    }
+    std::vector<uint32> masterSlots;
+    Player* master = botAI != nullptr ? botAI->GetMaster() : nullptr;
+    if (master != nullptr)
+    {
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+                continue;
+            uint32 level = 0;
+            Item* item = master->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (item != nullptr && item->GetTemplate() != nullptr)
+                level = item->GetTemplate()->ItemLevel;
+            masterSlots.push_back(level);
+        }
+        request.masterSampleVerified = true;
+        request.masterSlots = masterSlots;
+    }
+    auto const decision = ResolveAutoGearRoute(request, [](uint32, int32, uint32) { return 0u; });
+    LOG_INFO("playerbots", "AutoGear ON preserves bis={} cap={} action={} form={} reset={} quality={}", bis,
+        decision.cap, static_cast<uint32>(decision.action), static_cast<uint32>(decision.form), decision.reset,
+        decision.quality);
+    return false;
+}
+
 bool AutoGearAction::Execute(Event event)
 {
     if (!sPlayerbotAIConfig.AutoGearCommand)
@@ -622,6 +674,9 @@ bool AutoGearAction::Execute(Event event)
                                                                           "You cannot use autogear on alt bots.", {}));
         return false;
     }
+
+    if (sPlayerbotAIConfig.AutoGearIPCapEnable)
+        return PreserveAutoGearPlan(bot, botAI, event, false);
 
     uint32 const qualityCap = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
     uint32 hardCap = 0;

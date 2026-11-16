@@ -70,6 +70,9 @@ RouteRequest Enabled(std::uint8_t stage)
     RouteRequest request;
     request.commandEnabled = true;
     request.ipCapEnabled = true;
+    request.populationKnown = true;
+    request.playerContextVerified = true;
+    request.progressionContextVerified = true;
     request.population = Population::RandomBot;
     request.rawStage = stage;
     request.effectiveStage = stage;
@@ -94,8 +97,9 @@ int main()
         RouteRequest request = Enabled(stage);
         request.bis = true;
         RouteDecision const decision = ResolveAutoGearRoute(request, ScoreOf);
-        ok = Check(decision.ranNewPath && !decision.preserve && decision.cap == caps[stage] && !decision.deletesGear,
-                "a zero score limit uses the stage cap") &&
+        ok = Check(decision.ranNewPath && decision.preserve && decision.action == GearAction::Preserve &&
+                   decision.cap == caps[stage] && !decision.deletesGear,
+                "a zero score limit uses the stage cap and does not commit without a set") &&
              ok;
     }
     RouteRequest lowered = Enabled(7);
@@ -107,18 +111,22 @@ int main()
     raised.scoreLimit = 100;
     ok = Check(ResolveAutoGearRoute(raised, ScoreOf).cap == 66, "a score limit cannot raise the stage") && ok;
 
-    std::array<std::uint32_t, 3> occupied{{60, 0, 80}};
+    std::array<std::uint32_t, 3> senderSlots{{40, 0, 40}};
+    std::array<std::uint32_t, 3> masterSlots{{60, 0, 80}};
     RouteRequest post = Enabled(1);
     post.firstStageAfterLeveling = true;
-    post.occupiedSlots = occupied;
+    post.commandingSenderVerified = true;
+    post.commandingSenderSlots = senderSlots;
+    post.masterSampleVerified = true;
+    post.masterSlots = masterSlots;
     char const* normal[] = {"", "reset", "green", "200"};
     for (char const* text : normal)
     {
         post.text = text;
         post.bis = false;
         RouteDecision const decision = ResolveAutoGearRoute(post, ScoreOf);
-        ok = Check(decision.mode == CapMode::Leveling && decision.cap == 70 && !decision.deletesGear,
-                "a normal form keeps the occupied average") &&
+        ok = Check(decision.mode == CapMode::Leveling && decision.cap == 40 && !decision.deletesGear,
+                "a normal form uses the commanding sender average") &&
              ok;
     }
     post.bis = true;
@@ -128,16 +136,22 @@ int main()
     ok = Check(ResolveAutoGearRoute(post, ScoreOf).cap == 50, "bis numeric can only lower the stage cap") && ok;
     post.bis = false;
     post.text = "match";
-    ok = Check(ResolveAutoGearRoute(post, ScoreOf).mode == CapMode::Match &&
-               ResolveAutoGearRoute(post, ScoreOf).cap == 70,
-            "match ignores the empty slot and stays inside the stage") &&
+    RouteDecision const matched = ResolveAutoGearRoute(post, ScoreOf);
+    ok = Check(matched.mode == CapMode::Match && matched.cap == 70,
+            "match uses the bot master average and ignores the empty slot") &&
          ok;
+    post.masterSampleVerified = false;
+    ok = Check(ResolveAutoGearRoute(post, ScoreOf).preserve, "an unverified master sample preserves match") && ok;
 
     RouteRequest leveling = Enabled(0);
     leveling.senderIsLeveling = true;
+    std::array<std::uint32_t, 3> lowSender{{10, 0, 10}};
     leveling.senderFixedKnown = true;
     leveling.senderFixedAverage = 40;
-    leveling.occupiedSlots = occupied;
+    leveling.commandingSenderVerified = true;
+    leveling.commandingSenderSlots = lowSender;
+    leveling.masterSampleVerified = true;
+    leveling.masterSlots = masterSlots;
     ok = Check(ResolveAutoGearRoute(leveling, ScoreOf).cap == 40, "leveling still uses the fixed sender average") && ok;
 
     RouteRequest off = Enabled(7);
@@ -153,8 +167,16 @@ int main()
     RouteRequest rndbot = Enabled(6);
     rndbot.tierSync = true;
     RouteDecision const synced = ResolveAutoGearRoute(rndbot, ScoreOf);
-    ok = Check(synced.ranNewPath && synced.cap == 88 && !synced.writesProgression && !synced.deletesGear,
-            "only a random bot is tier synced, and its stage is not written") &&
+    ok = Check(synced.ranNewPath && synced.cap == 88 && synced.action == GearAction::Preserve &&
+               !synced.writesProgression && !synced.deletesGear,
+            "tier sync records the cap and does not commit without a set") &&
+         ok;
+    RouteRequest syncOff = Enabled(6);
+    syncOff.tierSync = true;
+    syncOff.ipCapEnabled = false;
+    RouteDecision const syncDisabled = ResolveAutoGearRoute(syncOff, ScoreOf);
+    ok = Check(!syncDisabled.ranNewPath && syncDisabled.action == GearAction::Preserve && syncDisabled.cap == 0,
+            "tier sync stays off with the feature") &&
          ok;
     RouteRequest alt = synced.cap == 88 ? Enabled(6) : Enabled(6);
     alt.tierSync = true;
@@ -189,8 +211,26 @@ int main()
     RouteRequest unknown = Enabled(0);
     unknown.selection.authorityValid = false;
     unknown.selection.facts = legal;
-    ok = Check(ResolveAutoGearRoute(unknown, ScoreOf).action == GearAction::Preserve,
+    RouteDecision const missingAuthority = ResolveAutoGearRoute(unknown, ScoreOf);
+    ok = Check(missingAuthority.action == GearAction::Preserve && missingAuthority.preserve,
             "unknown authority preserves") &&
+         ok;
+    RouteRequest unverified = Enabled(0);
+    unverified.playerContextVerified = false;
+    unverified.selection.facts = legal;
+    ok = Check(ResolveAutoGearRoute(unverified, ScoreOf).preserve, "unverified player context preserves") && ok;
+    RouteRequest noPopulation = Enabled(0);
+    noPopulation.populationKnown = false;
+    ok = Check(ResolveAutoGearRoute(noPopulation, ScoreOf).preserve, "unknown population preserves") && ok;
+    RouteRequest emptyFacts = Enabled(0);
+    RouteDecision const emptyUnknown = ResolveAutoGearRoute(emptyFacts, ScoreOf);
+    ok = Check(emptyUnknown.action == GearAction::Preserve && emptyUnknown.preserve && !emptyUnknown.selectionRan,
+            "empty facts without a proven domain preserve") &&
+         ok;
+    emptyFacts.domainProvenEmpty = true;
+    RouteDecision const emptyProven = ResolveAutoGearRoute(emptyFacts, ScoreOf);
+    ok = Check(emptyProven.action == GearAction::StripToBags && !emptyProven.preserve && !emptyProven.deletesGear,
+            "a proven empty required domain strips to bags") &&
          ok;
 
     ItemFact card = Fact(910001, 60);

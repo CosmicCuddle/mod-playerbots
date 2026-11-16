@@ -61,7 +61,7 @@ CS01 review `6913150153` is applied on the same head. A legal combination whose 
 
 CS01 review `6914685646` is applied on the same head. `ResolveAutoGearRoute` is the command route for every form. A zero score limit uses the approved stage table, and the era ceiling is that table's maximum rather than 78. A nonzero score limit only lowers the cap. The live `TrainerAction` and factory calls stay coordinate-first; the exact hook is `doc/PB59_CS02_COMMAND_ROUTE_HOOK_2026-11-16.md`.
 
-GCC 13, Clang 18, and GCC ASan+UBSan each report 404 checks: cap 52, plan 72, command parse 23, fact source 24, set bonus 12, variant solver 20, slot enumeration 12, retained constraints 9, solver oracle 14, export check 9, cap matrix 14, adversarial 23, checkpoint 8 20, export stream 16, whole-set oracle 4, checkpoint 10 26, checkpoint 11 25, and command route 29. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
+GCC 13, Clang 18, and GCC ASan+UBSan each report 410 checks: cap 52, plan 72, command parse 23, fact source 24, set bonus 12, variant solver 20, slot enumeration 12, retained constraints 9, solver oracle 14, export check 9, cap matrix 14, adversarial 23, checkpoint 8 20, export stream 16, whole-set oracle 4, checkpoint 10 26, checkpoint 11 25, and command route 35. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
 
 ## Integration still waiting on Maintenance
 

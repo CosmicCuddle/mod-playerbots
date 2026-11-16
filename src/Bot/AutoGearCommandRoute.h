@@ -25,6 +25,9 @@ namespace PlayerbotsAutoGearSelection
         bool tierSync = false;
         std::string_view text{};
         Population population = Population::Unknown;
+        bool populationKnown = false;
+        bool playerContextVerified = false;
+        bool progressionContextVerified = false;
         bool senderIsLeveling = false;
         bool firstStageAfterLeveling = false;
         std::uint8_t rawStage = 0;
@@ -32,9 +35,16 @@ namespace PlayerbotsAutoGearSelection
         // Playerbots.AutoGearScoreLimit. Zero does not invent a ceiling.
         std::uint32_t scoreLimit = 0;
         std::uint32_t qualityLimit = 3;
-        std::span<std::uint32_t const> occupiedSlots{};
+        // Commanding player's occupied combat slots. Normal forms use this.
+        bool commandingSenderVerified = false;
+        std::span<std::uint32_t const> commandingSenderSlots{};
+        // The bot's own master. Match uses this sample, not the sender sample.
+        bool masterSampleVerified = false;
+        std::span<std::uint32_t const> masterSlots{};
         bool senderFixedKnown = false;
         std::uint32_t senderFixedAverage = 0;
+        // Facts were fully enumerated and the required domain is empty.
+        bool domainProvenEmpty = false;
         PlanInput selection{};
     };
 
@@ -47,6 +57,8 @@ namespace PlayerbotsAutoGearSelection
         bool selectionRan = false;
         bool writesProgression = false;
         bool deletesGear = false;
+        bool reset = false;
+        std::uint32_t quality = 0;
         GearAction action = GearAction::Preserve;
         std::uint32_t cap = 0;
         CapMode mode = CapMode::Endgame;
@@ -56,18 +68,29 @@ namespace PlayerbotsAutoGearSelection
 
     inline void FillApprovedProgression(RouteRequest const& request, CapInput& cap)
     {
-        cap.playerContext = true;
-        cap.progressionContext = true;
+        cap.playerContext = request.playerContextVerified;
+        cap.progressionContext = request.progressionContextVerified;
         cap.rawStage = request.rawStage;
         cap.effectiveStage = request.effectiveStage;
         cap.policy = ApprovedCapPolicy();
         cap.scoreLimit = request.scoreLimit;
     }
 
-    // Occupied combat slots. A zero entry is an empty slot and is not counted.
-    inline std::uint32_t OccupiedMasterAverage(RouteRequest const& request)
+    inline bool HasSelectedEntry(Plan const& plan)
     {
-        return OccupiedAverage(request.occupiedSlots);
+        for (SelectedPiece const& piece : plan.selected)
+        {
+            if (piece.entryId != 0)
+                return true;
+        }
+        return false;
+    }
+
+    inline void PreserveDecision(RouteDecision& decision)
+    {
+        decision.action = GearAction::Preserve;
+        decision.preserve = true;
+        decision.deletesGear = false;
     }
 
     template <class Scorer>
@@ -78,9 +101,20 @@ namespace PlayerbotsAutoGearSelection
         decision.deletesGear = false;
         if (request.tierSync)
         {
-            if (!AllowsPopulationTierSync(request.population))
+            if (!request.ipCapEnabled)
+            {
+                PreserveDecision(decision);
+                return decision;
+            }
+            if (!request.populationKnown || !AllowsPopulationTierSync(request.population))
             {
                 decision.rejected = true;
+                PreserveDecision(decision);
+                return decision;
+            }
+            if (!request.playerContextVerified || !request.progressionContextVerified)
+            {
+                PreserveDecision(decision);
                 return decision;
             }
             CapInput cap;
@@ -88,20 +122,26 @@ namespace PlayerbotsAutoGearSelection
             cap.mode = CapMode::Endgame;
             CapResult const resolved = ComposeCap(cap);
             decision.ranNewPath = true;
-            decision.preserve = resolved.preserve;
             decision.cap = resolved.cap;
             decision.mode = CapMode::Endgame;
-            decision.action = resolved.preserve ? GearAction::Preserve : GearAction::CommitSet;
+            PreserveDecision(decision);
             return decision;
         }
         if (!request.commandEnabled)
         {
             decision.rejected = true;
+            PreserveDecision(decision);
+            return decision;
+        }
+        if (!request.populationKnown || request.population == Population::Unknown)
+        {
+            PreserveDecision(decision);
             return decision;
         }
         if (request.population == Population::AltBot && !request.altCommandAllowed)
         {
             decision.rejected = true;
+            PreserveDecision(decision);
             return decision;
         }
         if (!request.ipCapEnabled)
@@ -111,57 +151,76 @@ namespace PlayerbotsAutoGearSelection
             decision.cap = request.scoreLimit;
             return decision;
         }
+        if (!request.playerContextVerified || !request.progressionContextVerified)
+        {
+            decision.ranNewPath = true;
+            PreserveDecision(decision);
+            return decision;
+        }
 
         bool const postLevel = request.firstStageAfterLeveling && !request.senderIsLeveling;
-        std::uint32_t const occupied = OccupiedMasterAverage(request);
+        std::uint32_t const senderAverage = request.commandingSenderVerified
+            ? OccupiedAverage(request.commandingSenderSlots) : 0;
         ParseRequest parsed;
         parsed.featureOn = true;
         parsed.bis = request.bis;
         parsed.text = request.text;
         parsed.qualityLimit = request.qualityLimit;
         parsed.scoreLimit = request.scoreLimit;
-        parsed.progression.playerContext = true;
-        parsed.progression.progressionContext = true;
         FillApprovedProgression(request, parsed.progression);
-        parsed.evidence.masterPresent = true;
-        parsed.evidence.masterOccupied = request.occupiedSlots;
+        if (request.masterSampleVerified)
+        {
+            parsed.evidence.masterPresent = true;
+            parsed.evidence.masterOccupied = request.masterSlots;
+        }
         CommandForm const preview = FormFor(false, ArgKind::None, request.bis);
         parsed.requestedMode = ModeForForm(preview, request.senderIsLeveling, request.firstStageAfterLeveling);
-        if (postLevel && !request.bis)
-        {
-            parsed.progression.senderSampleKnown = occupied != 0;
-            parsed.progression.senderAverage = occupied;
-        }
-        else if (request.senderIsLeveling)
+        if (request.senderIsLeveling)
         {
             parsed.progression.senderSampleKnown = request.senderFixedKnown;
             parsed.progression.senderAverage = request.senderFixedAverage;
         }
         CommandDecision const command = ParseCommand(parsed);
         decision.form = FormFor(command.reset, command.argument, request.bis);
+        decision.reset = command.reset;
+        decision.quality = command.quality;
         decision.mode = ModeForForm(decision.form, request.senderIsLeveling, request.firstStageAfterLeveling);
         if (postLevel && decision.form != CommandForm::Match && decision.form != CommandForm::Bis &&
             decision.form != CommandForm::BisNumeric)
         {
             decision.mode = CapMode::Leveling;
-            parsed.progression.senderSampleKnown = occupied != 0;
-            parsed.progression.senderAverage = occupied;
+            parsed.progression.senderSampleKnown = request.commandingSenderVerified && senderAverage != 0;
+            parsed.progression.senderAverage = senderAverage;
         }
         parsed.requestedMode = decision.mode;
         CommandDecision const resolved = ParseCommand(parsed);
         decision.ranNewPath = true;
+        decision.form = FormFor(resolved.reset, resolved.argument, request.bis);
+        decision.reset = resolved.reset;
+        decision.quality = resolved.quality;
         decision.rejected = resolved.rejected;
         if (resolved.rejected)
         {
-            decision.preserve = true;
+            PreserveDecision(decision);
             return decision;
         }
-        decision.preserve = resolved.preserve;
         decision.cap = resolved.cap.cap;
         decision.mode = parsed.requestedMode;
-        if (resolved.preserve || request.selection.facts.empty())
+        if (resolved.preserve || !request.selection.authorityValid)
         {
-            decision.action = GearAction::Preserve;
+            PreserveDecision(decision);
+            return decision;
+        }
+        if (request.selection.facts.empty())
+        {
+            if (request.domainProvenEmpty && request.selection.requiredMask != 0)
+            {
+                decision.action = GearAction::StripToBags;
+                decision.preserve = false;
+                decision.deletesGear = false;
+                return decision;
+            }
+            PreserveDecision(decision);
             return decision;
         }
         PlanInput selection = request.selection;
@@ -169,8 +228,10 @@ namespace PlayerbotsAutoGearSelection
         decision.plan = SelectFromFacts(selection, scorer);
         decision.selectionRan = true;
         decision.action = decision.plan.outcome.action;
+        if (decision.action == GearAction::CommitSet && !HasSelectedEntry(decision.plan))
+            decision.action = GearAction::Preserve;
         decision.preserve = decision.action == GearAction::Preserve;
-        decision.deletesGear = decision.plan.storage.deletesRetainedGear;
+        decision.deletesGear = false;
         return decision;
     }
 }
