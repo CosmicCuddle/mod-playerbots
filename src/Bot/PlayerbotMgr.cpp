@@ -29,6 +29,7 @@
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
 #include "PlayerbotWorldThreadProcessor.h"
+#include "AutoGearPublishedSessionOwner.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
@@ -504,6 +505,8 @@ void PlayerbotHolder::HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder con
 
 bool PlayerbotHolder::CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sessionId)
 {
+    if (!PB59::SessionCustody<WorldSession>::IsOwnerThread())
+        return false;
     using Phase = PendingBotLogin::Owner::Phase;
     auto it = botLoading.find(guid);
     if (it == botLoading.end() || !it->second.owner.Matches(sessionId))
@@ -564,6 +567,8 @@ bool PlayerbotHolder::CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sess
 void PlayerbotHolder::UpdateSessions()
 {
     // Owner-context only. Never retain a holder iterator across native callbacks.
+    if (!PB59::SessionCustody<WorldSession>::IsOwnerThread())
+        return;
     auto holderLife = _pb59HolderLifetime.Observe();
     struct Identity { ObjectGuid guid; std::uint64_t player; std::uint64_t session; };
     std::vector<Identity> bots;
@@ -596,7 +601,12 @@ void PlayerbotHolder::UpdateSessions()
         // save/logout or recovery can prevent the very work needed to drain.
         // Exact identity is revalidated afterwards; this is not a lifetime
         // pin. A typed completion adapter is required before gating this pump.
-        bot->GetSession()->ProcessQueryCallbacks();
+        using Published = PB59::PublishedSessionOwner<WorldSession>;
+        Published::Identity const publishedId{id.guid.GetRawValue(), id.player, holderLife->identity, id.session};
+        // Ownership borrow is independent of equipment admission: the mixed
+        // completion pump must be able to finish pending saves/transactions.
+        if (!Published::WithPublished(publishedId, [](WorldSession& session) { session.ProcessQueryCallbacks(); }))
+            continue;
         bot = resolve();
         if (!bot)
             continue;
@@ -726,6 +736,9 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
 {
     using Result = BotRetirementResult;
     using Journal = PB59::RecoveryRegistry;
+    using Published = PB59::PublishedSessionOwner<WorldSession>;
+    if (!PB59::SessionCustody<WorldSession>::IsOwnerThread())
+        return Result::Refused;
     auto holderLife = _pb59HolderLifetime.Observe();
     if (!holderLife->Alive())
         return Result::Refused;
@@ -746,6 +759,10 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
     auto const ownerIncarnation = bot->GetPB59OwnerIncarnation();
     auto const sessionIncarnation = botWorldSessionPtr->GetPB59SessionIncarnation();
     if (!sessionIncarnation)
+        return Result::Refused;
+    Published::Identity const publishedId{guid.GetRawValue(), ownerIncarnation, holderLife->identity, sessionIncarnation};
+    auto custodyPermit = Published::TryReserveRetirement(publishedId);
+    if (!custodyPermit)
         return Result::Refused;
     auto record = Journal::Reserve(guid.GetRawValue(), ownerIncarnation, holderLife->identity, Journal::Kind::Logout);
     if (!record)
@@ -771,10 +788,11 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
             !botWorldSessionPtr->PlayerLogout() &&
             (timedLogout ? botWorldSessionPtr->IsLoggingOut() : !botWorldSessionPtr->IsLoggingOut());
     };
+    auto const operation = record.Operation();
     auto partial = [&]()
     {
         LOG_ERROR("playerbots", "Bot {} retirement incomplete; operation {} owner {} recovery required",
-            guid.ToString(), record.Operation(), ownerIncarnation);
+            guid.ToString(), operation, ownerIncarnation);
         return Result::RecoveryRequired;
     };
     if (!retirement.MarkMutation())
@@ -817,20 +835,25 @@ BotRetirementResult PlayerbotHolder::TryLogoutPlayerBot(ObjectGuid guid, std::fu
         botAI->TellMaster(message);
         if (!current())
             return partial();
-        record.MarkStep(Journal::Step::BeforeHolderErase);
-        ForgetTimedBot(guid, ownerIncarnation, sessionIncarnation);
-        RemoveFromPlayerbotsMap(guid);
-        record.MarkStep(Journal::Step::HolderErased);
-        record.MarkStep(Journal::Step::BeforeNativeLogout);
-        botWorldSessionPtr->LogoutPlayer(true);
-        record.MarkStep(Journal::Step::NativeLogoutReturned);
-        // A future native logout veto must not be followed by session deletion.
-        if (botWorldSessionPtr->GetPlayer())
+        // Independent custody must own the exact session BEFORE holder erase.
+        // The handoff retains the journal on every partial/throw path.
+        auto handoff = Published::TakeForRecovery(publishedId, custodyPermit, record);
+        if (!handoff)
             return partial();
-        record.MarkStep(Journal::Step::BeforeSessionDelete);
-        delete botWorldSessionPtr;
-        record.MarkStep(Journal::Step::SessionDeleteReturned);
-        return retirement.Complete() && record.Complete() ? Result::Completed : partial();
+        if (!handoff.Unlink([&](Published::Identity exact)
+        {
+            if (exact != publishedId || !current())
+                return false;
+            ForgetTimedBot(guid, ownerIncarnation, sessionIncarnation);
+            RemoveFromPlayerbotsMap(guid);
+            return true;
+        }))
+            return partial();
+        if (!handoff.WithSession([](WorldSession& session) { session.LogoutPlayer(true); }))
+            return partial();
+        if (!handoff.DeleteDetached())
+            return partial();
+        return retirement.Complete() ? Result::Completed : partial();
     }
     catch (...)
     {
@@ -980,17 +1003,23 @@ bool PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
         bot->GetPB59OwnerIncarnation() != playerId || !pendingOwner.CanPublish(bot->GetSession()) ||
         pendingOwner.Get()->GetPlayer() != bot || _pendingLoginsStopping)
         return false;
+    using Published = PB59::PublishedSessionOwner<WorldSession>;
+    Published::Identity const publishedId{guid.GetRawValue(), playerId, holderLife->identity, sessionId};
+    auto publication = Published::Reserve(publishedId, holderLife, pendingOwner);
+    if (!publication)
+        return false;
     auto [position, inserted] = playerBots.emplace(guid, bot);
     if (!inserted)
         return false;
     // Preallocate the exact value-only timer slot before releasing the pending
-    // session owner. No native callback between insertion, registration and release.
+    // session owner into the independent registry. No native callback between
+    // insertion, registration and ownership transfer.
     if (!RegisterTimedBot(bot))
     {
         playerBots.erase(position);
         return false;
     }
-    if (!pendingOwner.ReleasePublished(bot->GetSession()))
+    if (!publication.Publish(pendingOwner))
     {
         ForgetTimedBot(guid, playerId, pendingOwner.Identity());
         playerBots.erase(position);
