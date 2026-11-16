@@ -54,7 +54,7 @@ GCC 13, Clang 18, and GCC ASan+UBSan each passed:
 
 Review `6903067303` adds the duplicate-order checks, the variant-solver possession path, native proofs bound to the copied source, and SHA-256 export manifests. `MetadataChecked` is not production readiness. TrainerAction.cpp stays reserved for CS01.
 
-Review `6912060277` adds `tests/pb59_autogear_export_stream.cpp` (15) and `tests/pb59_autogear_whole_set_oracle.cpp` (4). The same three compilers each report 314 checks. The export path hashes with OpenSSL while it reads. Unknown set evidence still preserves. The additive solver is not set-optimal.
+Review `6912060277` adds `tests/pb59_autogear_export_stream.cpp` (16) and `tests/pb59_autogear_whole_set_oracle.cpp` (4). Review `6912559731` adds `tests/pb59_autogear_checkpoint10.cpp` (26). The same three compilers each report 341 checks. A dump is limited to the named table and columns. The gear search tries every candidate, and overflow does not hide a later legal sum. Unknown set evidence still preserves. The additive solver is not set-optimal.
 
 Clang ASan+UBSan did not link. `libclang_rt.asan` is not installed. These are model fixtures, not native proof. No hosted CI was started.
 

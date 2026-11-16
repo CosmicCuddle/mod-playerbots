@@ -33,9 +33,11 @@ The owner will supply `acore_world` and `Spell.csv` later. This spec checks thos
 
 ## Reader
 
-`AutoGearExportReader.h` and `apps/pb59/export_reader.cpp` read a file in 64-byte steps. Each step is hashed with OpenSSL `EVP_sha256` and parsed before the next step. The byte limit is checked before the addition, so a short read cannot wrap an unsigned counter. The CLI parses manifest numbers without `std::stoul`.
+`AutoGearExportReader.h` and `apps/pb59/export_reader.cpp` read a file in 64-byte steps. Each step is hashed with OpenSSL `EVP_sha256` and parsed before the next step. The byte limit is checked before the addition, so a short read cannot wrap an unsigned counter. The CLI parses manifest numbers without `std::stoul`. The format argument is required: `csv`, `normalized`, or `dump`.
 
-Accepted text is CSV with a header, quoted commas, and quoted newlines; a normalized id list beginning `# pb59-normalized 1`; or a mysqldump fragment. `ConvertDump` recognizes statements and does not execute them. Schema, `CREATE`, and comments are skipped. An extended `INSERT` contributes every tuple. Trailing junk on an id, a repeated id, or a manifest value that is not a whole 32-bit number is rejected.
+CSV is exact. The header sets the field count, the first field is `Id`, a data id is a whole positive integer, and every row has that many fields. A blank id, a carriage return, or a character after a closing quote is invalid. A doubled quote inside a quoted field is one quote. At most 32 columns, 4096 rows, and 256 bytes in a field are accepted. A duplicate id is found with a hash set, and the accepted ids stay in file order.
+
+A dump is not scanned for every `VALUES` clause. The caller names the schema, table, column list, and id column. Only an `INSERT` into that table with that column list contributes rows, so the id column does not have to be first. Other tables, other column lists, comments, and `CREATE` text are skipped. `ConvertDump` walks a caller-held span in 64-byte steps, refuses a span larger than the byte limit, and does not execute SQL. The result keeps the source digest plus the schema, table, and selected ids. A normalized id list remains the other accepted extraction.
 
 Darkmoon cards stay Unknown for availability and procs until those spell rows are in an accepted export. Item level 66, required level 60, and unique trinket may be recorded as base fields from coordination #64 comment `6900198011`. They are not a forced set.
 

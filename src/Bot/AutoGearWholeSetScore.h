@@ -8,6 +8,7 @@
 #define PLAYERBOTS_AUTOGEAR_WHOLE_SET_SCORE_H
 
 #include "AutoGearSetBonusCompare.h"
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <span>
@@ -20,7 +21,8 @@ namespace PlayerbotsAutoGearSelection
     {
         Unknown,
         Bounded,
-        Scored
+        Scored,
+        Infeasible
     };
 
     struct WholeSetScore
@@ -87,6 +89,12 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t baseScore = 0;
         std::uint32_t setId = 0;
         bool evidenceKnown = true;
+        bool uniqueEquipped = false;
+        std::uint32_t maxCount = 0;
+        std::uint32_t retained = 0;
+        bool twoHand = false;
+        bool offHand = false;
+        bool slotOptional = false;
     };
 
     struct SetDelta
@@ -106,8 +114,8 @@ namespace PlayerbotsAutoGearSelection
         std::uint8_t chosenSlots = 0;
     };
 
-    // Searches legal one-per-slot choices. A threshold delta is added only when
-    // that many pieces of the set are chosen. Unknown set evidence does not score.
+    // Every candidate in a slot is tried. A slot holds one item, or nothing when
+    // that slot is optional. Overflow drops that sum and keeps searching.
     inline WholeSetOracle SearchLegalSet(std::span<LegalPiece const> pieces, std::span<SetDelta const> deltas,
         std::size_t slotBound, std::size_t itemBound)
     {
@@ -119,20 +127,53 @@ namespace PlayerbotsAutoGearSelection
         }
         for (LegalPiece const& piece : pieces)
         {
-            if (piece.setId != 0 && !piece.evidenceKnown)
+            if (piece.id == 0 || !piece.evidenceKnown)
                 return oracle;
+        }
+        for (std::size_t i = 0; i < deltas.size(); ++i)
+        {
+            if (deltas[i].setId == 0 || deltas[i].threshold == 0)
+            {
+                oracle.status = WholeSetStatus::Bounded;
+                return oracle;
+            }
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                if (deltas[j].setId == deltas[i].setId && deltas[j].threshold == deltas[i].threshold)
+                {
+                    oracle.status = WholeSetStatus::Bounded;
+                    return oracle;
+                }
+            }
+        }
+        for (std::size_t i = 0; i < pieces.size(); ++i)
+        {
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                if (pieces[i].id != pieces[j].id)
+                    continue;
+                LegalPiece const& left = pieces[i];
+                LegalPiece const& right = pieces[j];
+                if (left.uniqueEquipped != right.uniqueEquipped || left.maxCount != right.maxCount ||
+                    left.retained != right.retained || left.twoHand != right.twoHand || left.offHand != right.offHand)
+                {
+                    oracle.status = WholeSetStatus::Bounded;
+                    return oracle;
+                }
+            }
         }
         std::array<std::uint8_t, 4> slots{};
         std::array<std::uint8_t, 4> counts{};
+        std::array<bool, 4> optional{};
         std::uint8_t slotCount = 0;
-        std::array<std::array<LegalPiece, 4>, 4> grouped{};
+        std::array<std::array<LegalPiece, 5>, 4> grouped{};
         for (LegalPiece const& piece : pieces)
         {
             int index = -1;
             for (std::uint8_t i = 0; i < slotCount; ++i)
             {
                 if (slots[i] == piece.slot)
-                    index = i;
+                    index = static_cast<int>(i);
             }
             if (index < 0)
             {
@@ -144,39 +185,106 @@ namespace PlayerbotsAutoGearSelection
                 index = slotCount;
                 slots[slotCount++] = piece.slot;
             }
-            if (counts[static_cast<std::uint8_t>(index)] == itemBound)
+            std::uint8_t const at = static_cast<std::uint8_t>(index);
+            if (counts[at] == itemBound)
             {
                 oracle.status = WholeSetStatus::Bounded;
                 return oracle;
             }
-            grouped[static_cast<std::uint8_t>(index)][counts[static_cast<std::uint8_t>(index)]++] = piece;
+            if (counts[at] != 0 && optional[at] != piece.slotOptional)
+            {
+                oracle.status = WholeSetStatus::Bounded;
+                return oracle;
+            }
+            optional[at] = piece.slotOptional;
+            grouped[at][counts[at]++] = piece;
+        }
+        for (std::uint8_t slot = 0; slot < slotCount; ++slot)
+        {
+            std::sort(grouped[slot].begin(), grouped[slot].begin() + counts[slot],
+                [](LegalPiece const& left, LegalPiece const& right) { return left.id < right.id; });
+            if (!optional[slot])
+                continue;
+            if (counts[slot] == 5)
+            {
+                oracle.status = WholeSetStatus::Bounded;
+                return oracle;
+            }
+            LegalPiece empty;
+            empty.slot = slots[slot];
+            empty.slotOptional = true;
+            grouped[slot][counts[slot]++] = empty;
         }
         std::array<LegalPiece, 4> picked{};
         bool found = false;
+        bool numericOverflow = false;
+        auto smaller = [&](std::array<LegalPiece, 4> const& candidate) -> bool
+        {
+            for (std::uint8_t i = 0; i < slotCount; ++i)
+            {
+                if (candidate[i].id != oracle.chosen[i])
+                    return candidate[i].id < oracle.chosen[i];
+            }
+            return false;
+        };
+        auto legal = [&]() -> bool
+        {
+            bool twoHand = false;
+            bool offHand = false;
+            for (std::uint8_t i = 0; i < slotCount; ++i)
+            {
+                if (picked[i].id == 0)
+                    continue;
+                if (picked[i].twoHand)
+                    twoHand = true;
+                if (picked[i].offHand)
+                    offHand = true;
+                std::uint32_t copies = 0;
+                for (std::uint8_t j = 0; j < slotCount; ++j)
+                {
+                    if (picked[j].id == picked[i].id)
+                        ++copies;
+                }
+                if (picked[i].uniqueEquipped && copies > 1)
+                    return false;
+                if (picked[i].maxCount == 0)
+                    continue;
+                if (copies > picked[i].maxCount || picked[i].retained > picked[i].maxCount - copies)
+                    return false;
+            }
+            return !(twoHand && offHand);
+        };
         auto consider = [&](auto&& self, std::uint8_t depth, std::uint32_t base) -> void
         {
             if (depth == slotCount)
             {
+                if (!legal())
+                    return;
                 std::uint32_t bonus = 0;
                 for (SetDelta const& delta : deltas)
                 {
                     std::uint32_t count = 0;
                     for (std::uint8_t i = 0; i < slotCount; ++i)
                     {
-                        if (picked[i].setId == delta.setId && delta.setId != 0)
+                        if (picked[i].id != 0 && picked[i].setId == delta.setId)
                             ++count;
                     }
-                    if (count >= delta.threshold)
+                    if (count < delta.threshold)
+                        continue;
+                    if (bonus > 0xFFFFFFFFu - delta.bonus)
                     {
-                        if (bonus > 0xFFFFFFFFu - delta.bonus)
-                            return;
-                        bonus += delta.bonus;
+                        numericOverflow = true;
+                        return;
                     }
+                    bonus += delta.bonus;
                 }
                 if (base > 0xFFFFFFFFu - bonus)
+                {
+                    numericOverflow = true;
                     return;
+                }
                 std::uint32_t const total = base + bonus;
-                if (!found || total > oracle.score)
+                if (!found || total > oracle.score || (total == oracle.score && smaller(picked)))
                 {
                     found = true;
                     oracle.score = total;
@@ -190,15 +298,21 @@ namespace PlayerbotsAutoGearSelection
             for (std::uint8_t i = 0; i < counts[depth]; ++i)
             {
                 picked[depth] = grouped[depth][i];
-                if (base > 0xFFFFFFFFu - picked[depth].baseScore)
-                    return;
-                self(self, static_cast<std::uint8_t>(depth + 1), base + picked[depth].baseScore);
+                std::uint32_t const added = picked[depth].id == 0 ? 0 : picked[depth].baseScore;
+                if (base > 0xFFFFFFFFu - added)
+                {
+                    numericOverflow = true;
+                    continue;
+                }
+                self(self, static_cast<std::uint8_t>(depth + 1), base + added);
             }
         };
         consider(consider, 0, 0);
-        if (!found && slotCount != 0)
+        if (!found)
         {
-            oracle.status = WholeSetStatus::Bounded;
+            oracle.status = numericOverflow ? WholeSetStatus::Bounded : WholeSetStatus::Infeasible;
+            oracle.score = 0;
+            oracle.additiveScore = 0;
             return oracle;
         }
         oracle.status = WholeSetStatus::Scored;

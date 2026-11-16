@@ -114,13 +114,13 @@ int main()
     Sha256Stream csvHash;
     csvHash.Update(csvBytes);
     expected.digest = csvHash.Finish();
-    ParsedExport const parsed = ReadHashedExport(csvBytes, expected, 1024);
+    ParsedExport const parsed = ReadHashedExport(csvBytes, expected, 1024, ExportFormat::Csv);
     ok = Check(parsed.verdict == ExportVerdict::MetadataChecked && parsed.derivedRows == 2 && parsed.ids.size() == 2 &&
                parsed.ids[0] == 100 && parsed.ids[1] == 200 && !parsed.productionReady,
             "row counts and ids come from the hashed bytes") &&
          ok;
     expected.rows = 9;
-    ok = Check(ReadHashedExport(csvBytes, expected, 1024).verdict == ExportVerdict::Invalid,
+    ok = Check(ReadHashedExport(csvBytes, expected, 1024, ExportFormat::Csv).verdict == ExportVerdict::Invalid,
             "a manifest row count that disagrees with the bytes is invalid") &&
          ok;
 
@@ -139,12 +139,13 @@ int main()
     }
     manifest << "\n";
     manifest.close();
-    ParsedExport const fromDisk = ReadExportFile("/tmp/pb59-synthetic.csv", expected, 1024);
+    ParsedExport const fromDisk = ReadExportFile("/tmp/pb59-synthetic.csv", expected, 1024, ExportFormat::Csv);
     ok = Check(fromDisk.verdict == ExportVerdict::MetadataChecked && fromDisk.derivedRows == 2 &&
                !fromDisk.productionReady,
             "the read-only reader checks a separate manifest") &&
          ok;
-    ok = Check(ReadExportFile("/tmp/pb59-synthetic.csv", expected, 8).verdict == ExportVerdict::Bounded,
+    ParsedExport const capped = ReadExportFile("/tmp/pb59-synthetic.csv", expected, 8, ExportFormat::Csv);
+    ok = Check(capped.verdict == ExportVerdict::Bounded,
             "an oversized file is not parsed as a success") &&
          ok;
 

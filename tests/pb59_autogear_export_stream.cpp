@@ -34,10 +34,11 @@ ExpectedManifest ManifestFor(std::string const& text, std::uint32_t rows)
     return expected;
 }
 
-ParsedExport ReadText(std::string const& text, std::uint32_t rows, std::size_t limit, ExportFormat format)
+ParsedExport ReadText(std::string const& text, std::uint32_t rows, std::size_t limit, ExportFormat format,
+    DumpContract const* contract = nullptr)
 {
     std::stringstream input(text);
-    return ReadExportStream(input, ManifestFor(text, rows), limit, format);
+    return ReadExportStream(input, ManifestFor(text, rows), limit, format, contract);
 }
 }
 
@@ -75,20 +76,28 @@ int main()
          ok;
 
     std::string const dump = "-- comment\nCREATE TABLE `spell` (id int);\n"
-                             "INSERT INTO `spell` VALUES (100,'a,b'),(200,'c');\n";
-    ParsedExport const inserted = ReadText(dump, 2, 1024, ExportFormat::Dump);
+                             "INSERT INTO `other`.`spell` (`id`) VALUES (1);\n"
+                             "INSERT INTO `acore_world`.`spell` (`id`,`name`) VALUES (100,'a,b'),(200,'c');\n";
+    DumpContract const spell{"acore_world", "spell", {"id", "name"}, "id"};
+    ParsedExport const inserted = ReadText(dump, 2, 1024, ExportFormat::Dump, &spell);
     ok = Check(inserted.verdict == ExportVerdict::MetadataChecked && inserted.ids.size() == 2 &&
-               inserted.ids[0] == 100 && inserted.ids[1] == 200 && !inserted.productionReady,
-            "an extended INSERT yields every tuple and does not run SQL") &&
+               inserted.ids[0] == 100 && inserted.ids[1] == 200 && inserted.schema == "acore_world" &&
+               inserted.table == "spell" && inserted.digest == ManifestFor(dump, 2).digest &&
+               !inserted.productionReady,
+            "only the named table is read and the source fingerprint is kept") &&
          ok;
     std::vector<std::uint8_t> const dumpBytes(dump.begin(), dump.end());
-    ParsedExport const converted = ConvertDump(dumpBytes, ManifestFor(dump, 2));
+    ParsedExport const converted = ConvertDump(dumpBytes, spell, ManifestFor(dump, 2), 1024);
     ok = Check(converted.verdict == ExportVerdict::MetadataChecked && converted.ids.size() == 2 &&
-               !converted.productionReady,
-            "the dump converter only reads and never executes SQL") &&
+               converted.table == "spell" && !converted.productionReady,
+            "the dump converter is size-limited and does not execute SQL") &&
          ok;
-    ok = Check(ReadText("INSERT INTO t VALUES (100junk);\n", 1, 1024, ExportFormat::Dump).verdict ==
-               ExportVerdict::Invalid,
+    ok = Check(ConvertDump(dumpBytes, spell, ManifestFor(dump, 2), 8).verdict == ExportVerdict::Bounded,
+            "a dump past the converter limit is not read") &&
+         ok;
+    ok = Check(ReadText("INSERT INTO `acore_world`.`spell` (`id`,`name`) VALUES (100junk,'a');\n", 1, 1024,
+                   ExportFormat::Dump, &spell)
+                   .verdict == ExportVerdict::Invalid,
             "junk after an insert id is invalid") &&
          ok;
     std::string const normalized = "# pb59-normalized 1\nId\n100\n200\n";
