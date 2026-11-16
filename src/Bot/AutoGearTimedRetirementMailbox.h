@@ -25,11 +25,12 @@ public:
                 ((!masterGuid && !masterPlayer && !masterSession) || (masterGuid && masterPlayer && masterSession));
         }
     };
-    struct Work { Identity identity; Id ticket; };
-    enum class Submit { Accepted, Coalesced, Missing, Stopped, Exhausted, Blocked };
+    enum class Mode { Timed, Explicit };
+    struct Work { Identity identity; Id ticket; Mode mode = Mode::Timed; };
+    enum class Submit { Accepted, Coalesced, Missing, Stopped, Exhausted, Blocked, Busy };
 private:
     enum class Phase { Idle, Pending, Claimed, Blocked };
-    struct Entry { Identity identity; Phase phase = Phase::Idle; Id ticket = 0; };
+    struct Entry { Identity identity; Phase phase = Phase::Idle; Id ticket = 0; Mode mode = Mode::Timed; };
     std::mutex _lock;
     std::map<Id, Entry> _entries;
     Id _cursor = 0, _lastTicket = 0;
@@ -89,6 +90,29 @@ public:
         if (e.phase != Phase::Idle) return Submit::Coalesced;
         if (_lastTicket == std::numeric_limits<Id>::max()) return Submit::Exhausted;
         e.ticket = ++_lastTicket;
+        e.mode = Mode::Timed;
+        e.phase = Phase::Pending;
+        return Submit::Accepted;
+    }
+    // Explicit logout authorization is the original personal master, not
+    // merely a matching account or the current AI master. No pointers cross.
+    Submit RequestExplicit(Id guid, Id player, Id session, Id masterGuid, Id masterPlayer, Id masterSession) noexcept
+    {
+        std::lock_guard guard(_lock);
+        if (_stopping) return Submit::Stopped;
+        auto it = _entries.find(guid);
+        if (it == _entries.end()) return Submit::Missing;
+        auto& e = it->second;
+        auto const& id = e.identity;
+        if (!masterGuid || !masterPlayer || !masterSession || id.player != player || id.session != session ||
+            id.masterGuid != masterGuid || id.masterPlayer != masterPlayer || id.masterSession != masterSession)
+            return Submit::Missing;
+        if (e.phase == Phase::Blocked) return Submit::Blocked;
+        if (e.phase != Phase::Idle)
+            return e.mode == Mode::Explicit ? Submit::Coalesced : Submit::Busy;
+        if (_lastTicket == std::numeric_limits<Id>::max()) return Submit::Exhausted;
+        e.ticket = ++_lastTicket;
+        e.mode = Mode::Explicit;
         e.phase = Phase::Pending;
         return Submit::Accepted;
     }
@@ -108,7 +132,7 @@ public:
             {
                 e.phase = Phase::Claimed;
                 _cursor = it->first;
-                return Work{e.identity, e.ticket};
+                return Work{e.identity, e.ticket, e.mode};
             }
             if (++it == _entries.end()) it = _entries.begin();
         } while (it != start);
@@ -120,7 +144,7 @@ public:
         std::lock_guard guard(_lock);
         auto it = _entries.find(work.identity.guid);
         if (it == _entries.end() || it->second.identity != work.identity ||
-            it->second.ticket != work.ticket || it->second.phase != Phase::Claimed) return false;
+            it->second.ticket != work.ticket || it->second.mode != work.mode || it->second.phase != Phase::Claimed) return false;
         it->second.phase = recoveryRequired ? Phase::Blocked : Phase::Idle;
         return true;
     }
