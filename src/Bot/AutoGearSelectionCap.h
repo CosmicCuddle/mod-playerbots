@@ -17,6 +17,31 @@ namespace PlayerbotsAutoGearSelection
     inline constexpr std::uint32_t ApprovedVanillaCompletion[19] = {
         66, 78, 78, 83, 83, 83, 88, 92, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
+    // The highest approved stage. A zero score-limit config does not replace
+    // this with a ceiling of 78. A nonzero score limit only lowers the cap.
+    constexpr std::uint32_t ApprovedVanillaEraCeiling()
+    {
+        std::uint32_t ceiling = 0;
+        for (std::uint32_t cap : ApprovedVanillaCompletion)
+        {
+            if (cap > ceiling)
+                ceiling = cap;
+        }
+        return ceiling;
+    }
+
+    inline constexpr std::array<std::uint32_t, 3> ApprovedEraFloors{{0, 0, 0}};
+    inline constexpr std::array<std::uint32_t, 3> ApprovedEraCeilings{{ApprovedVanillaEraCeiling(), 0, 0}};
+
+    constexpr PlayerbotsAutoGearCap::Policy ApprovedCapPolicy()
+    {
+        PlayerbotsAutoGearCap::Policy policy;
+        policy.completionCaps = ApprovedVanillaCompletion;
+        policy.eraEntryFloors = ApprovedEraFloors;
+        policy.eraCeilings = ApprovedEraCeilings;
+        return policy;
+    }
+
     enum class CapMode : std::uint8_t
     {
         // Requires the sender's fixed-denominator equipped average.

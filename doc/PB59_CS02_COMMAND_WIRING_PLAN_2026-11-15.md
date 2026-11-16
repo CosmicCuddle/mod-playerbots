@@ -43,10 +43,11 @@ Fill `CapInput` from the sender-thread snapshot and the equipment capture. The b
 
 The fact-source matrix in `doc/PB59_CS02_NATIVE_FACT_SOURCE_MATRIX_2026-11-15.md` is the list of which copy each input uses. The read-only field and revision contract is `doc/PB59_CS02_NATIVE_ADAPTER_CONTRACT_2026-11-15.md`. It does not attach this plan to CS01's callback or retirement branches.
 
-## Still not decided
+## Decided and still blocked
 
-- Owner review of proposed stages 2 to 7 (78, 78, 83, 83, 83, 88, 92) and of the leveling-to-endgame switch.
-- Whether Match should also target the sender average.
+Stages 2 to 7 are approved, and the first post-leveling switch is decided. The callable route is `src/Bot/AutoGearCommandRoute.h`. The live call is still blocked on the coordinate-first files. The exact hook is `doc/PB59_CS02_COMMAND_ROUTE_HOOK_2026-11-16.md`.
+
+- Match stays the master's occupied combat-slot average. Empty slots are ignored.
 - Real Darkmoon rows, requested in coordination #64.
 - Joint set-bonus search beyond the existing scorer.
 - The native `MoveExact` backend and final B. Core `b7d50628782565189332af1c490c7cf67e59b3d7` and PB `881256249e` are Maintenance's later pair. This branch does not take them until Maintenance coordinates a rebase.
