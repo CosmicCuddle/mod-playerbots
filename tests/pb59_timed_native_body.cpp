@@ -23,6 +23,7 @@ struct ObjectGuid
     std::string ToString() const { return std::to_string(value); }
 };
 #define LOG_ERROR(...) ((void)0)
+#define LOG_INFO(...) ((void)0)
 constexpr int PLAYER_FLAGS=1, PLAYER_FLAGS_RESTING=2, UNIT_STATE_IN_FLIGHT=3;
 namespace rbac { constexpr int RBAC_PERM_INSTANT_LOGOUT=4; }
 struct Player;
@@ -57,7 +58,7 @@ struct Player
     WorldSession* GetSession()const{return session;} bool IsInWorld()const{return inWorld;}
     bool HasFlag(int,int)const{return resting;} bool HasUnitState(int)const{return flight;}
 };
-struct PlayerbotAI { Player* bot; Player* master=nullptr; bool IsTimedLogoutReady(); unsigned nextAICheckDelay=0, normalTicks=0; void UpdateAI(uint32,bool); };
+struct PlayerbotAI { Player* bot; Player* master=nullptr; Player* GetMaster(){return master;} bool IsTimedLogoutReady(); unsigned nextAICheckDelay=0, normalTicks=0; void UpdateAI(uint32,bool); };
 static std::map<ObjectGuid,Player*> players;
 static std::map<Player*,PlayerbotAI*> ais;
 struct ObjectAccessor { static Player* FindConnectedPlayer(ObjectGuid g){auto i=players.find(g);return i==players.end()?nullptr:i->second;} };
@@ -77,6 +78,7 @@ struct PlayerbotHolder
     bool RegisterTimedBot(Player*);
     void ForgetTimedBot(ObjectGuid,std::uint64_t,std::uint64_t);
     static bool RetireBotForClientLogin(Player*);
+    static bool RequestExplicitBotLogout(Player*,Player*);
     static void RequestTimedBotLogout(Player*); static void ProcessTimedBotLogouts(); static void StopTimedBotLogouts();
     Player* GetPlayerBot(ObjectGuid g){auto i=bots.find(g);return i==bots.end()?nullptr:i->second;}
     BotRetirementResult TryLogoutPlayerBot(ObjectGuid g,std::function<void()> const& callback={},bool timed=false)
@@ -159,6 +161,17 @@ int main()
     { PlayerbotMgr newHolder(&master.player);managers[&master.player]=&newHolder;newHolder.bots[alt.player.guid]=&alt.player;
       H::ProcessTimedBotLogouts();assert(newHolder.calls==0&&personal.calls==0); }
     managers[&master.player]=&personal;alt.Request();H::ProcessTimedBotLogouts();assert(personal.calls==1);
+    // Explicit command requires exact original personal master, not just a
+    // matching GUID or AI association; dispatch does not require a timer.
+    Bot command(99,999,9999,&master.player);command.session.timer=false;command.Register(personal);
+    assert(!H::RequestExplicitBotLogout(&bot.player,&master.player)); // random bot
+    assert(!H::RequestExplicitBotLogout(&command.player,nullptr));
+    assert(H::RequestExplicitBotLogout(&command.player,&master.player));
+    assert(H::RequestExplicitBotLogout(&command.player,&master.player)); // coalesce
+    assert(personal.calls==1);
+    command.ai.master=nullptr;H::ProcessTimedBotLogouts();assert(personal.calls==1);
+    command.ai.master=&master.player;assert(H::RequestExplicitBotLogout(&command.player,&master.player));
+    H::ProcessTimedBotLogouts();assert(personal.calls==2&&!personal.GetPlayerBot({99}));
     // Same GUID, new session while an old request is queued.
     Bot old(3,4,5);old.Register(random);old.Request();
     { Bot replacement(3,44,55);H::ProcessTimedBotLogouts();assert(random.calls==1);
