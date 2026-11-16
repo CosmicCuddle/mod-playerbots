@@ -4,7 +4,7 @@
 #include "AutoGearStorageTransaction.h"
 #include "Bag.h"
 #include "Player.h"
-#include <array>
+#include "WorldSession.h"
 #include <utility>
 
 namespace PlayerbotsAutoGearStorage
@@ -14,7 +14,7 @@ namespace PlayerbotsAutoGearStorage
 struct NativeStoragePlan
 {
     std::uint64_t ownerIncarnation = 0;
-    PB59::Stamp equipmentStamp{};
+    std::uint64_t sessionIncarnation = 0;
     std::vector<PB59::InventorySlotFacts> equipment;
     std::vector<PB59::InventorySlotFacts> destinations;
     std::vector<ExactMove> moves;
@@ -34,8 +34,11 @@ inline std::uint16_t StoragePosition(std::uint8_t bag, std::uint8_t slot)
 
 inline bool NativeStorageCurrent(Player const& bot, NativeStoragePlan const& plan)
 {
-    if (!plan.ownerIncarnation || bot.GetPB59OwnerIncarnation() != plan.ownerIncarnation ||
-        !bot.IsPB59EquipmentCurrent(plan.equipmentStamp))
+    auto* session = bot.GetSession();
+    if (!plan.ownerIncarnation || !plan.sessionIncarnation || !session ||
+        bot.GetPB59OwnerIncarnation() != plan.ownerIncarnation ||
+        session->GetPB59SessionIncarnation() != plan.sessionIncarnation ||
+        plan.equipment.size() != EQUIPMENT_SLOT_END - 2)
         return false;
     for (auto const& expected : plan.equipment)
     {
@@ -61,13 +64,15 @@ inline NativePreparation PrepareNativeStorage(Player& bot)
         return {};
     try
     {
-        auto snapshot = bot.CapturePB59Equipment();
-        if (!snapshot || !bot.IsPB59EquipmentCurrent(snapshot->stamp))
+        // CapturePB59Equipment is intentionally HUMAN-only. Headless bots
+        // use the separate native inventory facts and exact owner/session.
+        auto* session = bot.GetSession();
+        if (!session)
             return {};
         NativeStoragePlan plan;
         plan.ownerIncarnation = bot.GetPB59OwnerIncarnation();
-        plan.equipmentStamp = snapshot->stamp;
-        if (!plan.ownerIncarnation)
+        plan.sessionIncarnation = session->GetPB59SessionIncarnation();
+        if (!plan.ownerIncarnation || !plan.sessionIncarnation)
             return {};
         for (std::uint8_t slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         {
