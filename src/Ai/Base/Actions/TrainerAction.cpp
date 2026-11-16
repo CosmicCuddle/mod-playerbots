@@ -15,6 +15,8 @@
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
+#include "ScriptMgr.h"
+#include "WorldSession.h"
 #include "Trainer.h"
 #include <limits>
 #include <vector>
@@ -613,48 +615,77 @@ static uint32 GetWornItemLevelAverage(Player* player)
     return count ? sumLevel / count : 0;
 }
 
-// Read-only. The ON path records the plan and does not equip, destroy, or fall back.
-static bool PreserveAutoGearPlan(Player* bot, PlayerbotAI* botAI, Event const& event, bool bis)
+// Direct action invocations without the original queued sender ticket cannot
+// enter the world-authority path. Never sample foreign-map live pointers here.
+static bool PreserveAutoGearPlan(Player* /*bot*/, PlayerbotAI* /*botAI*/, Event const& /*event*/, bool /*bis*/)
+{
+    LOG_DEBUG("playerbots", "PB59 AutoGear: no verified world command ticket; preserving equipment");
+    return false;
+}
+
+bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std::string_view argument, bool bis)
 {
     using namespace PlayerbotsAutoGearSelection;
+    if (!sPlayerbotAIConfig.AutoGearIPCapEnable || !bot || !ai || !sender ||
+        !bot->IsInWorld() || !sender->IsInWorld() || !bot->GetSession() || !sender->GetSession())
+        return false;
     RouteRequest request;
     request.ipCapEnabled = true;
     request.bis = bis;
-    request.text = event.getParam();
+    request.text = argument;
     request.altCommandAllowed = sPlayerbotAIConfig.AutoGearCommandAltBots != 0;
     request.qualityLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
     request.scoreLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);
-    if (bis)
-        request.commandEnabled = sPlayerbotAIConfig.AutoGearBisCommand != 0;
-    else
-        request.commandEnabled = sPlayerbotAIConfig.AutoGearCommand != 0;
-    request.populationKnown = bot != nullptr;
-    if (bot != nullptr)
+    request.commandEnabled = bis ? sPlayerbotAIConfig.AutoGearBisCommand : sPlayerbotAIConfig.AutoGearCommand;
+    if (!request.commandEnabled || (bis && (request.qualityLimit < 4 ||
+        sRandomPlayerbotMgr.IsSpecPvp(bot->GetGUID().GetCounter(), bot->getClass()))))
+        return false;
+    bool const randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
+    bool const randomAccount = sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId());
+    request.populationKnown = randomBot == randomAccount;
+    request.population = randomBot ? Population::RandomBot : Population::AltBot;
+    request.playerContextVerified = true;
+#if defined(COSMIC_PB59_AUTOGEAR_PROGRESSION_API)
+    request.progressionContextVerified = sScriptMgr->TryReadPB59AutoGearProgression(sender, request.rawStage, request.effectiveStage);
+#endif
+    request.senderIsLeveling = sender->GetLevel() < 60;
+    request.firstStageAfterLeveling = sender->GetLevel() == 60 && request.rawStage == 0;
+    std::array<uint32, EQUIPMENT_SLOT_END> senderSlots{};
+#if __has_include("EquipmentCaptureState.h")
+    if (auto facts = sender->CapturePB59Equipment())
     {
-        bool const randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
-        request.population = randomBot ? Population::RandomBot : Population::AltBot;
-    }
-    std::vector<uint32> masterSlots;
-    Player* master = botAI != nullptr ? botAI->GetMaster() : nullptr;
-    if (master != nullptr)
-    {
+        bool complete = sender->IsPB59EquipmentCurrent(facts->stamp);
         for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         {
             if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
                 continue;
-            uint32 level = 0;
-            Item* item = master->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-            if (item != nullptr && item->GetTemplate() != nullptr)
-                level = item->GetTemplate()->ItemLevel;
-            masterSlots.push_back(level);
+            auto const& item = facts->slots[slot];
+            if (!item.itemGuid)
+                continue;
+            if (!item.entry || !item.itemLevel || item.quality == ITEM_QUALITY_HEIRLOOM ||
+                item.scalingDistribution || item.scalingValue)
+                complete = false;
+            else
+                senderSlots[slot] = item.itemLevel;
         }
-        request.masterSampleVerified = true;
-        request.masterSlots = masterSlots;
+        request.commandingSenderVerified = complete;
+        request.commandingSenderSlots = senderSlots;
+        // Match is the actual bot master, not an arbitrary authorized sender.
+        // Other-master commands need the separate exact master incarnation.
+        if (ai->GetMaster() == sender && complete)
+        {
+            request.masterSampleVerified = true;
+            request.masterSlots = senderSlots;
+        }
     }
+#endif
+    // No native complete candidate domain or transaction executor yet. This
+    // real command now resolves a verified cap; selection and mutation remain
+    // unavailable. Never infer a proven empty domain from missing facts.
     auto const decision = ResolveAutoGearRoute(request, [](uint32, int32, uint32) { return 0u; });
-    LOG_INFO("playerbots", "AutoGear ON preserves bis={} cap={} action={} form={} reset={} quality={}", bis,
-        decision.cap, static_cast<uint32>(decision.action), static_cast<uint32>(decision.form), decision.reset,
-        decision.quality);
+    LOG_INFO("playerbots", "PB59 AutoGear world plan bot={} sender={} raw={} effective={} authority={} cap={} action={} form={}",
+        bot->GetGUID().GetRawValue(), sender->GetGUID().GetRawValue(), request.rawStage, request.effectiveStage,
+        request.progressionContextVerified, decision.cap, static_cast<uint32>(decision.action), static_cast<uint32>(decision.form));
     return false;
 }
 
