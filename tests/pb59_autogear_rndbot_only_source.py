@@ -18,8 +18,11 @@ for func in ("bool AutoGearAction::Execute(Event event)", "bool BisGearAction::E
 assert "request.altCommandAllowed = false;" in action
 start = route.index("RouteDecision ResolveAutoGearRoute(")
 body = route[start:]
+# TierSync deliberately checks its own ipCapEnabled first. Compare against
+# the normal command branch's legacy fallback, not the earlier tier-sync gate.
+command = body[body.index("if (!request.commandEnabled)"):]
 gate = "request.population != Population::RandomBot"
-assert gate in body
-assert body.index(gate) < body.index("if (!request.ipCapEnabled)")
-assert "decision.rejected = true;" in body[body.index(gate):body.index("if (!request.ipCapEnabled)")]
+assert gate in command
+assert command.index(gate) < command.index("if (!request.ipCapEnabled)")
+assert "decision.rejected = true;" in command[command.index(gate):command.index("if (!request.ipCapEnabled)")]
 print("AutoGear/BiS and typed route RNDBOT-only source gates: PASS")
