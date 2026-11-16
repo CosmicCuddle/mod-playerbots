@@ -21,7 +21,7 @@ bool Check(bool condition, char const* text)
     return true;
 }
 
-constexpr std::array<std::uint32_t, 19> kStage01{{66, 78}};
+constexpr auto kStage01 = std::to_array(ApprovedVanillaCompletion);
 constexpr std::array<std::uint32_t, 3> kFloors{{0, 0, 0}};
 constexpr std::array<std::uint32_t, 3> kCeiling78{{78, 0, 0}};
 constexpr std::array<std::uint32_t, 3> kCeiling92{{92, 0, 0}};
@@ -43,7 +43,7 @@ constexpr CapInput Base(std::uint8_t stage, std::uint32_t sample)
     in.mode = CapMode::Leveling;
     in.rawStage = stage;
     in.effectiveStage = stage;
-    in.policy = PolicyFor(kStage01, 78);
+    in.policy = PolicyFor(kStage01, 92);
     in.senderSampleKnown = true;
     in.senderAverage = sample;
     return in;
@@ -53,34 +53,38 @@ constexpr std::array<CommandForm, 7> kForms{{CommandForm::Plain, CommandForm::Re
     CommandForm::Quality, CommandForm::Numeric, CommandForm::Bis, CommandForm::BisNumeric}};
 }
 
-static_assert(ProposedVanillaCompletionAwaitingOwnerReview[0] == 66);
-static_assert(ProposedVanillaCompletionAwaitingOwnerReview[1] == 78);
-static_assert(ProposedVanillaCompletionAwaitingOwnerReview[2] == 78);
-static_assert(ProposedVanillaCompletionAwaitingOwnerReview[7] == 92);
+static_assert(ApprovedVanillaCompletion[0] == 66);
+static_assert(ApprovedVanillaCompletion[1] == 78);
+static_assert(ApprovedVanillaCompletion[2] == 78);
+static_assert(ApprovedVanillaCompletion[3] == 83);
+static_assert(ApprovedVanillaCompletion[6] == 88);
+static_assert(ApprovedVanillaCompletion[7] == 92);
+static_assert(ApprovedVanillaCompletion[8] == 0);
 static_assert(ComposeCap(Base(0, 100)).cap == 66);
 static_assert(!ComposeCap(Base(0, 100)).preserve);
 static_assert(ComposeCap(Base(1, 100)).cap == 78);
 static_assert(ComposeCap(Base(0, 65)).cap == 65);
 static_assert(ComposeCap(Base(1, 77)).cap == 77);
-static_assert(ComposeCap(Base(2, 100)).preserve);
-static_assert(ComposeCap(Base(7, 100)).preserve);
+static_assert(ComposeCap(Base(2, 100)).cap == 78);
+static_assert(ComposeCap(Base(7, 100)).cap == 92);
 
 int main()
 {
     bool ok = true;
     ok = Check(ComposeCap(Base(0, 100)).cap == 66, "stage 0") && ok;
     ok = Check(ComposeCap(Base(1, 200)).cap == 78, "stage 1") && ok;
+    std::uint32_t const approvedCaps[] = {78, 83, 83, 83, 88, 92};
     for (std::uint8_t stage = 2; stage <= 7; ++stage)
-        ok = Check(ComposeCap(Base(stage, 300)).preserve, "unset stage preserves") && ok;
+        ok = Check(ComposeCap(Base(stage, 300)).cap == approvedCaps[stage - 2], "approved stage cap") && ok;
 
     std::array<std::uint32_t, 19> proposed{};
     for (std::size_t i = 0; i < 19; ++i)
-        proposed[i] = ProposedVanillaCompletionAwaitingOwnerReview[i];
+        proposed[i] = ApprovedVanillaCompletion[i];
     CapInput stage7 = Base(7, 200);
     stage7.policy = PolicyFor(proposed, 92);
     stage7.mode = CapMode::Endgame;
     stage7.senderSampleKnown = false;
-    ok = Check(ComposeCap(stage7).cap == 92, "proposed stage 7 is not a hidden default") && ok;
+    ok = Check(ComposeCap(stage7).cap == 92, "approved stage 7 is 92") && ok;
     stage7.policy = PolicyFor(proposed, 78);
     ok = Check(ComposeCap(stage7).cap == 78, "era ceiling still clamps the proposal") && ok;
 
@@ -111,7 +115,7 @@ int main()
     match.matchAverage = 40;
     ok = Check(ComposeCap(match).cap == 40, "explicit match keeps its average") && ok;
 
-    CapInput unresolved = Base(2, 100);
+    CapInput unresolved = Base(8, 100);
     unresolved.mode = CapMode::Endgame;
     unresolved.scoreLimit = 50;
     ok = Check(ComposeCap(unresolved).preserve, "score limit does not replace an unset stage") && ok;
@@ -162,6 +166,23 @@ int main()
     ok = Check(ModeForForm(CommandForm::Plain, true) == CapMode::Leveling, "plain leveling") && ok;
     ok = Check(ModeForForm(CommandForm::Bis, false) == CapMode::Endgame, "bis endgame") && ok;
     ok = Check(ModeForForm(CommandForm::Reset, false) == CapMode::Endgame, "reset endgame") && ok;
+    ok = Check(ModeForForm(CommandForm::Plain, false, true) == CapMode::Leveling, "plain keeps the average") && ok;
+    ok = Check(ModeForForm(CommandForm::Reset, false, true) == CapMode::Leveling, "reset keeps the average") && ok;
+    ok = Check(ModeForForm(CommandForm::Quality, false, true) == CapMode::Leveling, "quality keeps the average") && ok;
+    ok = Check(ModeForForm(CommandForm::Numeric, false, true) == CapMode::Leveling, "numeric keeps the average") && ok;
+    ok = Check(ModeForForm(CommandForm::Bis, false, true) == CapMode::Endgame, "bis uses the stage cap") && ok;
+    CapMode const bisNumber = ModeForForm(CommandForm::BisNumeric, false, true);
+    ok = Check(bisNumber == CapMode::Endgame, "bis numeric uses the stage cap") && ok;
+    CapMode const matchAfter = ModeForForm(CommandForm::Match, false, true);
+    ok = Check(matchAfter == CapMode::Match, "match is unchanged after leveling") && ok;
+    CapInput postLevel = Base(1, 50);
+    postLevel.mode = ModeForForm(CommandForm::Plain, false, true);
+    CapInput postBis = postLevel;
+    postBis.mode = ModeForForm(CommandForm::Bis, false, true);
+    postBis.senderSampleKnown = false;
+    ok = Check(ComposeCap(postLevel).cap == 50 && ComposeCap(postBis).cap == 78,
+            "after leveling, normal matches the average and bis uses the stage") &&
+         ok;
     ok = Check(!KnownCommandForm(static_cast<CommandForm>(255)) &&
                ResolveCommandEligibility(static_cast<CommandForm>(255), shared).preserve,
             "unknown form preserves") &&

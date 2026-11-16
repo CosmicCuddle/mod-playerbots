@@ -52,6 +52,9 @@ LegalPiece Piece(std::uint32_t id, std::uint8_t slot, std::uint32_t score)
     piece.slot = slot;
     piece.baseScore = score;
     piece.evidenceKnown = true;
+    piece.slotMaskKnown = true;
+    piece.weaponKnown = true;
+    piece.allowedSlots = std::uint32_t{1} << slot;
     return piece;
 }
 
@@ -267,8 +270,9 @@ int main()
     LegalPiece overflow[] = {Piece(1, 10, 3000000000u), Piece(2, 10, 2000000000u), Piece(3, 11, 3000000000u),
         Piece(4, 11, 2000000000u)};
     WholeSetOracle const kept = SearchLegalSet(overflow, {}, 4, 4);
-    ok = Check(kept.status == WholeSetStatus::Unknown && kept.score == 0,
-            "a legal overflow preserves the whole search") &&
+    ok = Check(kept.status == WholeSetStatus::Unknown && kept.score == 0 && kept.chosen[0] == 0 &&
+               kept.chosenProperty[0] == 0 && kept.chosenSlots == 0,
+            "a legal overflow preserves the whole search and clears the choice") &&
          ok;
     LegalPiece tooBig[] = {Piece(1, 10, 3000000000u), Piece(3, 11, 3000000000u)};
     ok = Check(SearchLegalSet(tooBig, {}, 4, 4).status == WholeSetStatus::Unknown,
@@ -276,6 +280,9 @@ int main()
          ok;
 
     LegalPiece shared[] = {Piece(5, 10, 10), Piece(5, 11, 10)};
+    std::uint32_t const bothRings = (std::uint32_t{1} << 10) | (std::uint32_t{1} << 11);
+    shared[0].allowedSlots = bothRings;
+    shared[1].allowedSlots = bothRings;
     WholeSetOracle const repeated = SearchLegalSet(shared, {}, 4, 4);
     ok = Check(repeated.score == 20, "the same item may fill two slots when it is not unique") && ok;
     shared[0].uniqueEquipped = true;
@@ -403,6 +410,8 @@ int main()
     LegalPiece uniquePieces[] = {Piece(5, 10, 100), Piece(6, 10, 40), Piece(5, 11, 100), Piece(8, 11, 30)};
     uniquePieces[0].uniqueEquipped = true;
     uniquePieces[2].uniqueEquipped = true;
+    uniquePieces[0].allowedSlots = bothRings;
+    uniquePieces[2].allowedSlots = bothRings;
     WholeSetOracle const uniqueOracle = SearchLegalSet(uniquePieces, {}, 4, 4);
     ok = Check(uniqueOracle.score == variant.score && variant.score == 140, "unique gear matches the variant solver") &&
          ok;

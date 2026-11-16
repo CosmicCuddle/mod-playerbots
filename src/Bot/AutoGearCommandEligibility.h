@@ -22,14 +22,21 @@ namespace PlayerbotsAutoGearSelection
         BisNumeric
     };
 
-    // Every known form calls ComposeCap. Match does not require the sender
-    // average. Leveling does. The caller says whether the sender is still
-    // leveling; this function does not infer that from level 60.
-    constexpr CapMode ModeForForm(CommandForm form, bool senderIsLeveling)
+    // Every known form calls ComposeCap. Match is the occupied-slot average.
+    // While leveling, the other forms use that sender average. At the first
+    // stage after leveling the caller sets the flag: normal forms keep the
+    // average, and both BiS forms use the stage cap. This does not infer
+    // level 60 by itself.
+    constexpr CapMode ModeForForm(CommandForm form, bool senderIsLeveling, bool firstStageAfterLeveling = false)
     {
         if (form == CommandForm::Match)
             return CapMode::Match;
-        return senderIsLeveling ? CapMode::Leveling : CapMode::Endgame;
+        bool const bis = form == CommandForm::Bis || form == CommandForm::BisNumeric;
+        if (senderIsLeveling)
+            return CapMode::Leveling;
+        if (firstStageAfterLeveling)
+            return bis ? CapMode::Endgame : CapMode::Leveling;
+        return CapMode::Endgame;
     }
 
     constexpr bool KnownCommandForm(CommandForm form)

@@ -11,7 +11,7 @@ Parent `1365ae21705372e9f1cc0486d32ced02ca7a396d`, itself a descendant of `c694d
 4. `tests/pb59_autogear_solver_oracle.cpp` runs eight fixed-seed two-by-two domains against `AutoGearSetSolver` and an exhaustive score oracle. Unsorted and zero-entry input is Invalid. Candidate overflow, a zero node budget, and an injected allocation failure are Incomplete. Search exhaustion through `SelectFromFacts` preserves.
 5. `doc/PB59_CS02_NATIVE_ADAPTER_CONTRACT_2026-11-15.md` maps the five wiring points, the revision fields, and stale rejection. It does not edit them and it does not attach CS01's callback or retirement work.
 6. `doc/PB59_CS02_OFFLINE_EXPORT_VALIDATION_2026-11-15.md` and `AutoGearExportCheck.h` check a synthetic export. A missing spell, checksum, or header is Unknown. No Darkmoon id is forced.
-7. `tests/pb59_autogear_cap_matrix.cpp` uses approved stage 0 = 66 and stage 1 = 78. Stages 2–7 are zero placeholders. Leveling, endgame, and match stay explicit caller choices. The recorded proposal is not this table.
+7. `tests/pb59_autogear_cap_matrix.cpp` uses the approved caps: 0=66, 1=78, 2=78, 3=83, 4=83, 5=83, 6=88, 7=92. Later stages stay zero. At the first stage after leveling, normal forms keep the sender average and BiS uses the stage cap. Match stays the occupied-slot average.
 
 ## Commands
 
@@ -54,14 +54,14 @@ GCC 13, Clang 18, and GCC ASan+UBSan each passed:
 
 Review `6903067303` adds the duplicate-order checks, the variant-solver possession path, native proofs bound to the copied source, and SHA-256 export manifests. `MetadataChecked` is not production readiness. TrainerAction.cpp stays reserved for CS01.
 
-Review `6912060277` adds `tests/pb59_autogear_export_stream.cpp` (16) and `tests/pb59_autogear_whole_set_oracle.cpp` (4). Review `6912559731` adds `tests/pb59_autogear_checkpoint10.cpp` (26). Review `6913150153` adds `tests/pb59_autogear_checkpoint11.cpp` (15). The same three compilers each report 356 checks. A legal overflow is Unknown for the whole model check. That check is not the game's optimizer. A confirmed empty set stays infeasible. Unknown set evidence still preserves. The additive solver is not set-optimal.
+Review `6912060277` adds `tests/pb59_autogear_export_stream.cpp` (16) and `tests/pb59_autogear_whole_set_oracle.cpp` (4). Review `6912559731` adds `tests/pb59_autogear_checkpoint10.cpp` (26). Review `6914236136` and the 16 Nov cap approval are on this head. `tests/pb59_autogear_checkpoint11.cpp` reports 25. The same three compilers each report 375 checks. A legal overflow is Unknown for the whole model check. That check is not the game's optimizer. A confirmed empty set stays infeasible. Unknown set evidence still preserves. The additive solver is not set-optimal.
 
 Clang ASan+UBSan did not link. `libclang_rt.asan` is not installed. These are model fixtures, not native proof. No hosted CI was started.
 
 ## Blockers and open questions
 
 - Owner confirmation of the match source, the denominator, and the leveling-to-endgame switch.
-- Stages 2–7. The proposal stays labeled and is not the placeholder table.
+- Stages 2–7 are approved: 78, 83, 83, 83, 88, 92. Stages 8 and above stay unresolved.
 - Tomorrow's `acore_world` and `Spell.csv`, including Darkmoon proc and availability rows.
 - The five wiring points remain coordinate-first. The shared solver still has one category limit, so HAVE is not passed through it.
 - Restore proof stays with the native transaction owner.

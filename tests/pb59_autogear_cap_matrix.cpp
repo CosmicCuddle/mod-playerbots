@@ -19,10 +19,10 @@ bool Check(bool condition, char const* text)
     return true;
 }
 
-// Stages 2 to 7 stay unset. These zeros are placeholders, not proposed caps.
-constexpr std::array<std::uint32_t, 19> kApproved{{66, 78, 0, 0, 0, 0, 0, 0}};
+// Owner-approved 16 Nov 2026. The Vanilla ceiling covers the highest stage.
+constexpr auto kApproved = std::to_array(ApprovedVanillaCompletion);
 constexpr std::array<std::uint32_t, 3> kFloors{{0, 0, 0}};
-constexpr std::array<std::uint32_t, 3> kCeiling{{78, 0, 0}};
+constexpr std::array<std::uint32_t, 3> kCeiling{{92, 0, 0}};
 
 constexpr PlayerbotsAutoGearCap::Policy ApprovedPolicy()
 {
@@ -54,10 +54,13 @@ int main()
     endgame.rawStage = 1;
     endgame.effectiveStage = 1;
     ok = Check(ComposeCap(endgame).cap == 78, "approved stage 1 is 78") && ok;
+    std::uint32_t const approvedCaps[] = {78, 83, 83, 83, 88, 92};
     for (std::uint8_t stage = 2; stage <= 7; ++stage)
     {
-        CapInput unset = Input(stage, CapMode::Endgame);
-        ok = Check(ComposeCap(unset).preserve && kApproved[stage] == 0, "stages 2 to 7 stay unset placeholders") && ok;
+        CapInput approved = Input(stage, CapMode::Endgame);
+        ok = Check(ComposeCap(approved).cap == approvedCaps[stage - 2] && !ComposeCap(approved).preserve,
+                "approved stages 2 to 7 resolve") &&
+             ok;
     }
 
     CapInput leveling = Input(0, CapMode::Leveling);
@@ -77,9 +80,8 @@ int main()
     match.matchAverage = 50;
     ok = Check(ComposeCap(match).cap == 50, "match uses only its own supplied target") && ok;
 
-    // The recorded proposal is not consulted by this matrix.
-    ok = Check(kApproved[2] == 0 && ProposedVanillaCompletionAwaitingOwnerReview[2] != 0,
-            "the proposal is not the placeholder table") &&
+    ok = Check(kApproved[2] == 78 && kApproved[7] == 92 && kApproved[8] == 0,
+            "stages 2 to 7 are the approved caps and later stages stay unset") &&
          ok;
 
     if (!ok)

@@ -100,12 +100,25 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t allowedSlots = 0;
         std::uint32_t limitCategory = 0;
         std::uint32_t categoryLimit = 0;
+        std::uint32_t categoryRetained = 0;
+        bool slotMaskKnown = false;
+        bool weaponKnown = false;
         PlayerbotsAutoGearWeapons::Kind weapon = PlayerbotsAutoGearWeapons::Kind::Count;
     };
 
     // Equipment slots used by the model check. This is not the game's optimizer.
+    inline constexpr std::uint8_t kModelSlotCount = 19;
     inline constexpr std::uint8_t kModelMainSlot = 15;
     inline constexpr std::uint8_t kModelOffSlot = 16;
+
+    // The shift happens only after the index is inside the domain.
+    inline bool SlotBit(std::uint8_t slot, std::uint32_t& bit)
+    {
+        if (slot >= 32 || slot >= kModelSlotCount)
+            return false;
+        bit = std::uint32_t{1} << slot;
+        return true;
+    }
 
     struct SetDelta
     {
@@ -121,6 +134,7 @@ namespace PlayerbotsAutoGearSelection
         std::uint32_t additiveScore = 0;
         bool additiveSolverIsSetOptimal = false;
         std::array<std::uint32_t, 4> chosen{};
+        std::array<std::int32_t, 4> chosenProperty{};
         std::uint8_t chosenSlots = 0;
     };
 
@@ -128,11 +142,37 @@ namespace PlayerbotsAutoGearSelection
     // result is Unknown. A legal sum that does not fit is Unknown for the whole
     // search. Infeasible is a confirmed empty result, not that safety result.
     inline WholeSetOracle SearchLegalSet(std::span<LegalPiece const> pieces, std::span<SetDelta const> deltas,
-        std::size_t slotBound, std::size_t itemBound)
+        std::size_t slotBound, std::size_t itemBound, bool domainComplete = false, std::uint32_t requiredSlotMask = 0)
     {
         WholeSetOracle oracle;
         if (slotBound == 0 || slotBound > 4 || itemBound == 0 || itemBound > 4)
             return oracle;
+        std::uint32_t const domainMask = (std::uint32_t{1} << kModelSlotCount) - 1u;
+        if ((requiredSlotMask & ~domainMask) != 0)
+        {
+            oracle.status = WholeSetStatus::Bounded;
+            return oracle;
+        }
+        std::uint32_t requiredCount = 0;
+        for (std::uint8_t slot = 0; slot < kModelSlotCount; ++slot)
+        {
+            std::uint32_t bit = 0;
+            if (!SlotBit(slot, bit))
+            {
+                oracle.status = WholeSetStatus::Bounded;
+                return oracle;
+            }
+            if ((requiredSlotMask & bit) != 0)
+                ++requiredCount;
+        }
+        if (requiredCount > slotBound)
+            return oracle;
+        if (pieces.empty())
+        {
+            if (domainComplete)
+                oracle.status = WholeSetStatus::Infeasible;
+            return oracle;
+        }
         for (LegalPiece const& piece : pieces)
         {
             if (piece.id == 0 || !piece.evidenceKnown)
@@ -154,23 +194,27 @@ namespace PlayerbotsAutoGearSelection
                 }
             }
         }
-        auto allowedOf = [](LegalPiece const& piece) -> std::uint32_t
-        {
-            return piece.allowedSlots != 0 ? piece.allowedSlots : (std::uint32_t{1} << piece.slot);
-        };
         for (LegalPiece const& piece : pieces)
         {
+            std::uint32_t slotBit = 0;
+            if (!SlotBit(piece.slot, slotBit))
+            {
+                oracle.status = WholeSetStatus::Bounded;
+                return oracle;
+            }
+            if (!piece.slotMaskKnown || !piece.weaponKnown)
+                return oracle;
+            if (piece.allowedSlots == 0 || (piece.allowedSlots & slotBit) == 0)
+            {
+                oracle.status = WholeSetStatus::Bounded;
+                return oracle;
+            }
             if (piece.weapon == PlayerbotsAutoGearWeapons::Kind::TwoHand && piece.slot != kModelMainSlot)
             {
                 oracle.status = WholeSetStatus::Bounded;
                 return oracle;
             }
             if (piece.limitCategory != 0 && piece.categoryLimit == 0)
-            {
-                oracle.status = WholeSetStatus::Bounded;
-                return oracle;
-            }
-            if ((allowedOf(piece) & (std::uint32_t{1} << piece.slot)) == 0)
             {
                 oracle.status = WholeSetStatus::Bounded;
                 return oracle;
@@ -182,20 +226,26 @@ namespace PlayerbotsAutoGearSelection
             {
                 LegalPiece const& left = pieces[i];
                 LegalPiece const& right = pieces[j];
-                bool const sameIdentity = left.id == right.id && left.randomProperty == right.randomProperty;
-                if (left.limitCategory != 0 && left.limitCategory == right.limitCategory &&
-                    left.categoryLimit != right.categoryLimit)
+                bool const sameEntry = left.id == right.id;
+                bool const sameIdentity = sameEntry && left.randomProperty == right.randomProperty;
+                if (sameEntry &&
+                    (left.uniqueEquipped != right.uniqueEquipped || left.maxCount != right.maxCount ||
+                        left.retained != right.retained || left.limitCategory != right.limitCategory ||
+                        left.categoryLimit != right.categoryLimit || left.categoryRetained != right.categoryRetained ||
+                        left.weapon != right.weapon || left.allowedSlots != right.allowedSlots))
                 {
                     oracle.status = WholeSetStatus::Bounded;
                     return oracle;
                 }
-                if (!sameIdentity)
-                    continue;
-                if (left.baseScore != right.baseScore || left.setId != right.setId ||
-                    left.uniqueEquipped != right.uniqueEquipped || left.maxCount != right.maxCount ||
-                    left.retained != right.retained || left.weapon != right.weapon ||
-                    (left.allowedSlots != 0 && right.allowedSlots != 0 && left.allowedSlots != right.allowedSlots) ||
-                    (left.allowedSlots != 0 && (left.allowedSlots & (std::uint32_t{1} << right.slot)) == 0))
+                std::uint32_t rightBit = 0;
+                if (!SlotBit(right.slot, rightBit))
+                {
+                    oracle.status = WholeSetStatus::Bounded;
+                    return oracle;
+                }
+                if (sameIdentity &&
+                    (left.baseScore != right.baseScore || left.setId != right.setId ||
+                        (left.allowedSlots & rightBit) == 0))
                 {
                     oracle.status = WholeSetStatus::Bounded;
                     return oracle;
@@ -233,6 +283,24 @@ namespace PlayerbotsAutoGearSelection
             optional[at] = piece.slotOptional;
             grouped[at][counts[at]++] = piece;
         }
+        for (std::uint8_t slot = 0; slot < kModelSlotCount; ++slot)
+        {
+            std::uint32_t bit = 0;
+            if (!SlotBit(slot, bit) || (requiredSlotMask & bit) == 0)
+                continue;
+            bool present = false;
+            for (std::uint8_t i = 0; i < slotCount; ++i)
+            {
+                if (slots[i] == slot)
+                    present = true;
+            }
+            if (present)
+                continue;
+            if (!domainComplete)
+                return oracle;
+            oracle.status = WholeSetStatus::Infeasible;
+            return oracle;
+        }
         for (std::uint8_t slot = 0; slot < slotCount; ++slot)
         {
             std::sort(grouped[slot].begin(), grouped[slot].begin() + counts[slot],
@@ -269,15 +337,14 @@ namespace PlayerbotsAutoGearSelection
         std::array<LegalPiece, 4> picked{};
         bool found = false;
         bool legalOverflow = false;
-        std::array<std::int32_t, 4> chosenProperty{};
         auto smaller = [&](std::array<LegalPiece, 4> const& candidate) -> bool
         {
             for (std::uint8_t i = 0; i < slotCount; ++i)
             {
                 if (candidate[i].id != oracle.chosen[i])
                     return candidate[i].id < oracle.chosen[i];
-                if (candidate[i].randomProperty != chosenProperty[i])
-                    return candidate[i].randomProperty < chosenProperty[i];
+                if (candidate[i].randomProperty != oracle.chosenProperty[i])
+                    return candidate[i].randomProperty < oracle.chosenProperty[i];
             }
             return false;
         };
@@ -306,7 +373,9 @@ namespace PlayerbotsAutoGearSelection
                 }
                 if (picked[i].uniqueEquipped && copies > 1)
                     return false;
-                if (picked[i].limitCategory != 0 && categoryCopies > picked[i].categoryLimit)
+                if (picked[i].limitCategory != 0 &&
+                    (picked[i].categoryRetained > picked[i].categoryLimit ||
+                        categoryCopies > picked[i].categoryLimit - picked[i].categoryRetained))
                     return false;
                 if (picked[i].maxCount == 0)
                     continue;
@@ -354,7 +423,7 @@ namespace PlayerbotsAutoGearSelection
                     for (std::uint8_t i = 0; i < slotCount; ++i)
                     {
                         oracle.chosen[i] = picked[i].id;
-                        chosenProperty[i] = picked[i].randomProperty;
+                        oracle.chosenProperty[i] = picked[i].randomProperty;
                     }
                 }
                 return;
@@ -369,10 +438,8 @@ namespace PlayerbotsAutoGearSelection
         consider(consider, 0, 0);
         if (legalOverflow)
         {
+            oracle = {};
             oracle.status = WholeSetStatus::Unknown;
-            oracle.score = 0;
-            oracle.additiveScore = 0;
-            oracle.chosenSlots = 0;
             return oracle;
         }
         if (!found)

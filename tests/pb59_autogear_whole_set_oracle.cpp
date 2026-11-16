@@ -29,7 +29,15 @@ int main()
     using PlayerbotsAutoGearSelection::SearchLegalSet;
     using PlayerbotsAutoGearSelection::SetDelta;
     using PlayerbotsAutoGearSelection::WholeSetStatus;
-    LegalPiece plain[] = {{1, 10, 10, 0, true}, {2, 10, 30, 0, true}, {3, 11, 10, 0, true}, {4, 11, 40, 0, true}};
+    auto known = [](LegalPiece piece)
+    {
+        piece.slotMaskKnown = true;
+        piece.weaponKnown = true;
+        piece.allowedSlots = std::uint32_t{1} << piece.slot;
+        return piece;
+    };
+    LegalPiece plain[] = {known({1, 10, 10, 0, true}), known({2, 10, 30, 0, true}), known({3, 11, 10, 0, true}),
+        known({4, 11, 40, 0, true})};
     PlayerbotsAutoGearSelection::WholeSetOracle const additive = SearchLegalSet(plain, {}, 4, 4);
     std::vector<PlayerbotsAutoGearVariant::Candidate> low{[]
         {
@@ -92,7 +100,8 @@ int main()
             "with no set bonus the oracle matches the additive solver") &&
          ok;
 
-    LegalPiece setPieces[] = {{1, 10, 10, 7, true}, {2, 10, 50, 0, true}, {3, 11, 10, 7, true}, {4, 11, 50, 0, true}};
+    LegalPiece setPieces[] = {known({1, 10, 10, 7, true}), known({2, 10, 50, 0, true}), known({3, 11, 10, 7, true}),
+        known({4, 11, 50, 0, true})};
     SetDelta delta{7, 2, 100};
     std::span<SetDelta const> const rules(&delta, 1);
     PlayerbotsAutoGearSelection::WholeSetOracle const withDelta = SearchLegalSet(setPieces, rules, 4, 4);
@@ -105,8 +114,8 @@ int main()
             "unknown set evidence does not score") &&
          ok;
 
-    LegalPiece tooMany[] = {{1, 10, 1, 0, true}, {2, 10, 1, 0, true}, {3, 10, 1, 0, true}, {4, 10, 1, 0, true},
-        {5, 10, 1, 0, true}};
+    LegalPiece tooMany[] = {known({1, 10, 1, 0, true}), known({2, 10, 1, 0, true}), known({3, 10, 1, 0, true}),
+        known({4, 10, 1, 0, true}), known({5, 10, 1, 0, true})};
     ok = Check(SearchLegalSet(tooMany, {}, 4, 4).status == WholeSetStatus::Unknown,
             "more than the item bound is unknown, not a partial score") &&
          ok;

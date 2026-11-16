@@ -127,6 +127,11 @@ int main()
     defaults.evidence.senderFixed = fixedLevels;
     defaults.evidence.senderFixedDenominator = 3;
     ok = Check(ParseCommand(defaults).legacyIlvl == 70, "default match stays the occupied master average") && ok;
+    std::array<std::uint32_t, 3> withEmpty{{60, 0, 80}};
+    ParseRequest emptySlot = Base(false, false, "match");
+    emptySlot.evidence.masterPresent = true;
+    emptySlot.evidence.masterOccupied = withEmpty;
+    ok = Check(ParseCommand(emptySlot).legacyIlvl == 70, "match ignores an empty occupied slot") && ok;
 
     ParseRequest onMatch = defaults;
     onMatch.featureOn = true;

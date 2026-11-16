@@ -12,12 +12,9 @@
 
 namespace PlayerbotsAutoGearSelection
 {
-    // Recorded proposal from coordination #59 (comment 6885246726).
-    // Stages 0 and 1 are owner-confirmed (66 and 78). Stages 2 to 7 are
-    // PROPOSED and await owner review. They are not a production default:
-    // pass them in a Policy only when that review accepts them. Entries
-    // after stage 7 stay 0 so Resolve fails closed.
-    inline constexpr std::uint32_t ProposedVanillaCompletionAwaitingOwnerReview[19] = {
+    // Owner-approved 16 Nov 2026. Stages 0 and 1 were already 66 and 78.
+    // Stages 2 to 7 are 78, 83, 83, 83, 88, 92. Later stages stay 0.
+    inline constexpr std::uint32_t ApprovedVanillaCompletion[19] = {
         66, 78, 78, 83, 83, 83, 88, 92, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
     enum class CapMode : std::uint8_t
@@ -26,8 +23,7 @@ namespace PlayerbotsAutoGearSelection
         Leveling,
         // Tier cap only. The average is not required.
         Endgame,
-        // Average is not required. Whether Match should also target it
-        // awaits owner confirmation (#59 comment 6893387731).
+        // Master's average over occupied combat slots. Empty slots are ignored.
         Match
     };
 

@@ -49,6 +49,9 @@ LegalPiece Piece(std::uint32_t id, std::uint8_t slot, std::uint32_t score)
     piece.slot = slot;
     piece.baseScore = score;
     piece.evidenceKnown = true;
+    piece.slotMaskKnown = true;
+    piece.weaponKnown = true;
+    piece.allowedSlots = std::uint32_t{1} << slot;
     return piece;
 }
 }
@@ -173,6 +176,63 @@ int main()
     held.retained = 1;
     ok = Check(SearchLegalSet(std::span<LegalPiece const>(&held, 1), {}, 4, 4).status == WholeSetStatus::Infeasible,
             "a confirmed empty set stays infeasible") &&
+         ok;
+
+    LegalPiece shifted = Piece(1, 10, 10);
+    shifted.slot = 32;
+    ok = Check(SearchLegalSet(std::span<LegalPiece const>(&shifted, 1), {}, 4, 4).status == WholeSetStatus::Bounded,
+            "slot 32 is rejected before a shift") &&
+         ok;
+    shifted.slot = 31;
+    ok = Check(SearchLegalSet(std::span<LegalPiece const>(&shifted, 1), {}, 4, 4).status == WholeSetStatus::Bounded,
+            "a slot outside the equipment domain is rejected") &&
+         ok;
+
+    LegalPiece variants[] = {Piece(5, 10, 10), Piece(5, 11, 10)};
+    variants[0].randomProperty = 1;
+    variants[1].randomProperty = 4;
+    variants[1].maxCount = 2;
+    ok = Check(SearchLegalSet(variants, {}, 4, 4).status == WholeSetStatus::Bounded,
+            "template facts must agree across random properties") &&
+         ok;
+
+    LegalPiece identified[] = {Piece(5, 10, 10), Piece(5, 10, 40)};
+    identified[0].randomProperty = 1;
+    identified[1].randomProperty = 4;
+    WholeSetOracle const identity = SearchLegalSet(identified, {}, 4, 4);
+    ok = Check(identity.status == WholeSetStatus::Scored && identity.chosen[0] == 5 && identity.chosenProperty[0] == 4,
+            "the chosen result keeps the random property") &&
+         ok;
+
+    LegalPiece retainedCategory = Piece(8, 10, 50);
+    retainedCategory.limitCategory = 3;
+    retainedCategory.categoryLimit = 1;
+    retainedCategory.categoryRetained = 1;
+    ok = Check(SearchLegalSet(std::span<LegalPiece const>(&retainedCategory, 1), {}, 4, 4).status ==
+               WholeSetStatus::Infeasible,
+            "a retained category copy leaves nothing legal") &&
+         ok;
+
+    LegalPiece onlyHead = Piece(3, 0, 10);
+    std::uint32_t const shoulder = std::uint32_t{1} << 2;
+    ok = Check(SearchLegalSet(std::span<LegalPiece const>(&onlyHead, 1), {}, 4, 4, false, shoulder).status ==
+               WholeSetStatus::Unknown,
+            "a missing required slot without completeness preserves") &&
+         ok;
+    ok = Check(SearchLegalSet(std::span<LegalPiece const>(&onlyHead, 1), {}, 4, 4, true, shoulder).status ==
+               WholeSetStatus::Infeasible,
+            "a proven empty required slot is infeasible") &&
+         ok;
+    ok = Check(SearchLegalSet({}, {}, 4, 4).status == WholeSetStatus::Unknown,
+            "an unproven empty domain preserves") &&
+         ok;
+    LegalPiece missingFacts = Piece(4, 10, 10);
+    missingFacts.weaponKnown = false;
+    WholeSetOracle const noWeapon = SearchLegalSet(std::span<LegalPiece const>(&missingFacts, 1), {}, 4, 4);
+    ok = Check(noWeapon.status == WholeSetStatus::Unknown, "a missing weapon fact preserves") && ok;
+    ok = Check(SearchLegalSet(std::span<LegalPiece const>(&onlyHead, 1), {}, 1, 4, true, shoulder | 1u).status ==
+               WholeSetStatus::Unknown,
+            "a bound narrower than the required domain preserves") &&
          ok;
 
     if (!ok)
