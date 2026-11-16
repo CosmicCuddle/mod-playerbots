@@ -72,7 +72,7 @@ public:
     static void ClearPendingLogins();   // shutdown, outside any callback
 
     void LogoutAllBots();
-    void OnBotLogin(Player* const bot, PendingBotLogin::Owner& pendingOwner);
+    bool OnBotLogin(Player* const bot, PendingBotLogin::Owner& pendingOwner);
     static bool CompleteQueuedBotLogin(ObjectGuid guid, std::uint64_t sessionIncarnation);
 
     std::vector<std::string> HandlePlayerbotCommand(char const* args, Player* master = nullptr);
