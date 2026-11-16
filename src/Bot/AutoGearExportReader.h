@@ -30,7 +30,8 @@ namespace PlayerbotsAutoGearSelection
     };
 
     inline constexpr std::size_t kExportFieldLimit = 256;
-    inline constexpr std::size_t kExportColumnLimit = 32;
+    // Safety ceiling above a WotLK item_template. Wider input is bounded, not truncated.
+    inline constexpr std::size_t kExportColumnLimit = 256;
     inline constexpr std::uint32_t kExportRowLimit = 4096;
 
     // Only this table and this column list are read. Other VALUES clauses are ignored.
@@ -205,20 +206,12 @@ namespace PlayerbotsAutoGearSelection
             if (format != ExportFormat::Dump)
                 return;
             if (contract == nullptr || contract->schema.empty() || contract->table.empty() ||
-                contract->columns.empty() || contract->columns.size() > kExportColumnLimit)
+                contract->idColumn.empty() || contract->columns.size() > kExportColumnLimit)
             {
                 Fail();
                 return;
             }
-            int found = 0;
-            for (std::size_t i = 0; i < contract->columns.size(); ++i)
-            {
-                if (contract->columns[i] != contract->idColumn)
-                    continue;
-                idIndex = static_cast<int>(i);
-                ++found;
-            }
-            if (found != 1)
+            if (!contract->columns.empty() && !ColumnId(contract->columns))
                 Fail();
         }
 
@@ -239,7 +232,8 @@ namespace PlayerbotsAutoGearSelection
             }
             if (format == ExportFormat::Dump)
             {
-                if (mode == DumpMode::InTuples || mode == DumpMode::WantValues || inBacktick)
+                if (mode == DumpMode::InTuples || mode == DumpMode::WantValues || mode == DumpMode::InCreate ||
+                    mode == DumpMode::InCreateSkip || inBacktick || !targetSeen)
                     Fail();
             }
             else if (format == ExportFormat::Normalized)
@@ -287,7 +281,16 @@ namespace PlayerbotsAutoGearSelection
             InColumns,
             AfterColumn,
             WantValues,
-            InTuples
+            InTuples,
+            WantUse,
+            AfterUse,
+            AfterCreate,
+            AfterCreateTable,
+            AfterCreateName,
+            WantCreateTable,
+            AfterCreateTableName,
+            InCreate,
+            InCreateSkip
         };
 
         void Fail()
@@ -599,7 +602,7 @@ namespace PlayerbotsAutoGearSelection
                 }
                 return false;
             }
-            if (mode == DumpMode::InTuples && depth > 0)
+            if (mode == DumpMode::InTuples)
                 return TakePunct(value);
             if (IsIdentStart(value))
             {
@@ -643,10 +646,48 @@ namespace PlayerbotsAutoGearSelection
         {
             std::string const word = ident;
             ident.clear();
+            if (mode == DumpMode::InCreateSkip)
+                return;
+            if (mode == DumpMode::InCreate)
+            {
+                if (IsConstraint(word))
+                    mode = DumpMode::InCreateSkip;
+                else if (!PushColumn(word))
+                    Fail();
+                else
+                    mode = DumpMode::InCreateSkip;
+                return;
+            }
             if (mode == DumpMode::Idle)
             {
                 if (word == "INSERT")
                     mode = DumpMode::AfterInsert;
+                else if (word == "USE")
+                    mode = DumpMode::WantUse;
+                else if (word == "CREATE")
+                    mode = DumpMode::AfterCreate;
+                return;
+            }
+            if (mode == DumpMode::WantUse)
+            {
+                currentSchema = word;
+                mode = DumpMode::AfterUse;
+                return;
+            }
+            if (mode == DumpMode::AfterCreate)
+            {
+                mode = word == "TABLE" ? DumpMode::AfterCreateTable : DumpMode::Idle;
+                if (mode == DumpMode::Idle)
+                    skipping = true;
+                return;
+            }
+            if (mode == DumpMode::AfterCreateTable || mode == DumpMode::WantCreateTable)
+            {
+                if (mode == DumpMode::AfterCreateTable)
+                    firstName = word;
+                else
+                    tableName = word;
+                mode = mode == DumpMode::AfterCreateTable ? DumpMode::AfterCreateName : DumpMode::AfterCreateTableName;
                 return;
             }
             if (mode == DumpMode::AfterInsert)
@@ -662,6 +703,16 @@ namespace PlayerbotsAutoGearSelection
                 mode = DumpMode::AfterFirstName;
                 return;
             }
+            if (mode == DumpMode::AfterFirstName)
+            {
+                if (word == "VALUES" && CurrentTarget(firstName))
+                    StartBareInsert();
+                else if (CurrentTarget(firstName))
+                    Fail();
+                else
+                    BeginSkip();
+                return;
+            }
             if (mode == DumpMode::WantTable)
             {
                 tableName = word;
@@ -670,16 +721,18 @@ namespace PlayerbotsAutoGearSelection
             }
             if (mode == DumpMode::InColumns)
             {
-                statementColumns.push_back(word);
-                if (statementColumns.size() > kExportColumnLimit)
-                    MarkOver();
-                mode = DumpMode::AfterColumn;
+                if (!PushColumn(word))
+                    Fail();
+                else
+                    mode = DumpMode::AfterColumn;
                 return;
             }
             if (mode == DumpMode::WantValues)
             {
                 if (word == "VALUES")
                     mode = DumpMode::InTuples;
+                else if (readingTarget)
+                    Fail();
                 else
                     BeginSkip();
             }
@@ -700,14 +753,39 @@ namespace PlayerbotsAutoGearSelection
             }
             if (value == ';')
             {
-                if (mode == DumpMode::InTuples && depth == 0)
+                if (mode == DumpMode::AfterUse)
+                    mode = DumpMode::Idle;
+                else if (mode == DumpMode::InTuples && depth == 0)
                     ResetStatement();
-                else if (mode == DumpMode::InTuples || mode == DumpMode::WantValues)
+                else if (mode == DumpMode::InTuples || mode == DumpMode::WantValues || mode == DumpMode::InCreate ||
+                    mode == DumpMode::InCreateSkip)
                     Fail();
                 else
                     ResetStatement();
                 return false;
             }
+            if (mode == DumpMode::AfterCreateName && value == '.')
+            {
+                mode = DumpMode::WantCreateTable;
+                return false;
+            }
+            if ((mode == DumpMode::AfterCreateName || mode == DumpMode::AfterCreateTableName) && value == '(')
+            {
+                bool const target = mode == DumpMode::AfterCreateName ? CurrentTarget(firstName)
+                                                                      : NamesTarget(firstName, tableName);
+                if (!target)
+                    BeginSkip();
+                else
+                {
+                    creatingTarget = true;
+                    depth = 1;
+                    mode = DumpMode::InCreate;
+                    statementColumns.clear();
+                }
+                return false;
+            }
+            if (mode == DumpMode::InCreate || mode == DumpMode::InCreateSkip)
+                return TakeCreate(value);
             if (mode == DumpMode::AfterFirstName && value == '.')
             {
                 mode = DumpMode::WantTable;
@@ -715,13 +793,24 @@ namespace PlayerbotsAutoGearSelection
             }
             if (mode == DumpMode::AfterFirstName && value == '(')
             {
-                BeginSkip();
+                if (CurrentTarget(firstName))
+                {
+                    readingTarget = true;
+                    statementColumns.clear();
+                    mode = DumpMode::InColumns;
+                }
+                else
+                    BeginSkip();
                 return false;
             }
             if (mode == DumpMode::AfterTable && value == '(')
             {
-                if (firstName == contract->schema && tableName == contract->table)
+                if (NamesTarget(firstName, tableName))
+                {
+                    readingTarget = true;
+                    statementColumns.clear();
                     mode = DumpMode::InColumns;
+                }
                 else
                     BeginSkip();
                 return false;
@@ -733,34 +822,49 @@ namespace PlayerbotsAutoGearSelection
             }
             if (mode == DumpMode::AfterColumn && value == ')')
             {
-                if (statementColumns == contract->columns)
+                if (readingTarget && RememberColumns(statementColumns))
                     mode = DumpMode::WantValues;
+                else if (readingTarget)
+                    Fail();
                 else
                     BeginSkip();
                 return false;
             }
             if (mode != DumpMode::InTuples)
                 return false;
+            if (depth == 0)
+            {
+                if (value == ',')
+                    return false;
+                if (value == '(')
+                {
+                    ++depth;
+                    BeginTuple();
+                    return false;
+                }
+                Fail();
+                return false;
+            }
             if (value == '(')
             {
                 ++depth;
-                if (depth == 1)
-                    BeginTuple();
                 return false;
             }
-            if (depth == 0)
-                return false;
             if (value == ',' && depth == 1)
             {
                 EndTupleField();
+                if (fieldsInTuple > activeCount)
+                    Fail();
                 ++fieldIndex;
+                if (fieldIndex >= activeCount)
+                    Fail();
                 BeginField();
                 return false;
             }
             if (value == ')' && depth == 1)
             {
                 EndTupleField();
-                if (!tupleSawId)
+                if (fieldsInTuple != activeCount || !tupleSawId)
                     Fail();
                 depth = 0;
                 return false;
@@ -772,6 +876,114 @@ namespace PlayerbotsAutoGearSelection
             return false;
         }
 
+        static bool IsConstraint(std::string const& word)
+        {
+            return word == "PRIMARY" || word == "UNIQUE" || word == "KEY" || word == "CONSTRAINT" || word == "INDEX" ||
+                   word == "FULLTEXT" || word == "SPATIAL" || word == "FOREIGN";
+        }
+
+        bool CurrentTarget(std::string const& table) const
+        {
+            return currentSchema == contract->schema && table == contract->table;
+        }
+
+        bool NamesTarget(std::string const& schema, std::string const& table) const
+        {
+            return schema == contract->schema && table == contract->table;
+        }
+
+        bool ColumnId(std::vector<std::string> const& columns)
+        {
+            int found = 0;
+            for (std::size_t i = 0; i < columns.size(); ++i)
+            {
+                if (columns[i] != contract->idColumn)
+                    continue;
+                idIndex = static_cast<int>(i);
+                ++found;
+            }
+            return found == 1;
+        }
+
+        bool PushColumn(std::string const& name)
+        {
+            for (std::string const& have : statementColumns)
+            {
+                if (have == name)
+                    return false;
+            }
+            if (statementColumns.size() >= kExportColumnLimit)
+            {
+                MarkOver();
+                return false;
+            }
+            statementColumns.push_back(name);
+            return true;
+        }
+
+        bool RememberColumns(std::vector<std::string> const& columns)
+        {
+            if (columns.empty() || columns.size() > kExportColumnLimit)
+                return false;
+            if (!provenColumns.empty() && columns != provenColumns)
+                return false;
+            if (!contract->columns.empty() && columns != contract->columns)
+                return false;
+            if (!ColumnId(columns))
+                return false;
+            if (provenColumns.empty())
+                provenColumns = columns;
+            activeCount = static_cast<int>(columns.size());
+            targetSeen = true;
+            readingTarget = true;
+            return true;
+        }
+
+        void StartBareInsert()
+        {
+            if (provenColumns.empty() || !RememberColumns(provenColumns))
+            {
+                Fail();
+                return;
+            }
+            mode = DumpMode::InTuples;
+        }
+
+        bool TakeCreate(char const value)
+        {
+            if (value == '(')
+            {
+                ++depth;
+                mode = DumpMode::InCreateSkip;
+                return false;
+            }
+            if (value == ')')
+            {
+                if (depth > 0)
+                    --depth;
+                if (depth == 0)
+                    FinishCreate();
+                return false;
+            }
+            if (value == ',' && depth == 1)
+                mode = DumpMode::InCreate;
+            return false;
+        }
+
+        void FinishCreate()
+        {
+            if (!creatingTarget || !RememberColumns(statementColumns))
+            {
+                if (creatingTarget)
+                    Fail();
+                else
+                    BeginSkip();
+                return;
+            }
+            creatingTarget = false;
+            BeginSkip();
+        }
+
         void BeginSkip()
         {
             skipping = true;
@@ -779,6 +991,8 @@ namespace PlayerbotsAutoGearSelection
             statementColumns.clear();
             capturing = false;
             depth = 0;
+            readingTarget = false;
+            creatingTarget = false;
         }
 
         void ResetStatement()
@@ -791,11 +1005,13 @@ namespace PlayerbotsAutoGearSelection
             depth = 0;
             capturing = false;
             token.clear();
+            readingTarget = false;
         }
 
         void BeginTuple()
         {
             fieldIndex = 0;
+            fieldsInTuple = 0;
             tupleSawId = false;
             BeginField();
         }
@@ -809,6 +1025,7 @@ namespace PlayerbotsAutoGearSelection
 
         void EndTupleField()
         {
+            ++fieldsInTuple;
             if (!capturing)
                 return;
             std::int32_t id = 0;
@@ -859,11 +1076,16 @@ namespace PlayerbotsAutoGearSelection
         bool skipping = false;
         bool capturing = false;
         bool tupleSawId = false;
+        bool targetSeen = false;
+        bool readingTarget = false;
+        bool creatingTarget = false;
         char quoteChar = '\'';
         DumpMode mode = DumpMode::Idle;
         int depth = 0;
         int idIndex = -1;
         int fieldIndex = 0;
+        int fieldsInTuple = 0;
+        int activeCount = 0;
         int headerColumns = 0;
         std::size_t fieldLength = 0;
         std::string field;
@@ -871,7 +1093,9 @@ namespace PlayerbotsAutoGearSelection
         std::string token;
         std::string firstName;
         std::string tableName;
+        std::string currentSchema;
         std::vector<std::string> statementColumns;
+        std::vector<std::string> provenColumns;
     };
 
     inline void NoteSelection(ParsedExport& parsed, DumpContract const* contract)

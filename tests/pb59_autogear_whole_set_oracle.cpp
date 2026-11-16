@@ -107,8 +107,8 @@ int main()
 
     LegalPiece tooMany[] = {{1, 10, 1, 0, true}, {2, 10, 1, 0, true}, {3, 10, 1, 0, true}, {4, 10, 1, 0, true},
         {5, 10, 1, 0, true}};
-    ok = Check(SearchLegalSet(tooMany, {}, 4, 4).status == WholeSetStatus::Bounded,
-            "more than the item bound is not searched") &&
+    ok = Check(SearchLegalSet(tooMany, {}, 4, 4).status == WholeSetStatus::Unknown,
+            "more than the item bound is unknown, not a partial score") &&
          ok;
 
     if (!ok)

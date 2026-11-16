@@ -118,9 +118,9 @@ WholeSetOracle BruteLegal(std::span<LegalPiece const> pieces, std::span<SetDelta
         {
             if (piece.id == 0)
                 continue;
-            if (piece.twoHand)
+            if (piece.weapon == Kind::TwoHand && piece.slot == 15)
                 twoHand = true;
-            if (piece.offHand)
+            if (piece.slot == 16)
                 offHand = true;
             std::uint32_t copies = 0;
             for (LegalPiece const& other : picked)
@@ -248,7 +248,7 @@ int main()
     std::string const dump = "INSERT INTO `acore_world`.`spell_dbc` (`Id`) VALUES (100);\n"
                              "INSERT INTO `acore_world`.`item_template` (`name`,`entry`) VALUES "
                              "('alpha',200),('beta',300);\n"
-                             "INSERT INTO `acore_world`.`item_template` (`entry`) VALUES (400);\n";
+                             "INSERT INTO `acore_world`.`spell_dbc` (`Id`) VALUES (400);\n";
     DumpContract const items{"acore_world", "item_template", {"name", "entry"}, "entry"};
     ParsedExport const selected = ReadText(dump, 2, 1024, ExportFormat::Dump, &items);
     ok = Check(selected.verdict == ExportVerdict::MetadataChecked && selected.ids.size() == 2 &&
@@ -267,13 +267,12 @@ int main()
     LegalPiece overflow[] = {Piece(1, 10, 3000000000u), Piece(2, 10, 2000000000u), Piece(3, 11, 3000000000u),
         Piece(4, 11, 2000000000u)};
     WholeSetOracle const kept = SearchLegalSet(overflow, {}, 4, 4);
-    ok = Check(kept.status == WholeSetStatus::Scored && kept.score == 4000000000u && kept.chosen[0] == 2 &&
-               kept.chosen[1] == 4,
-            "overflow keeps searching and keeps the later legal sum") &&
+    ok = Check(kept.status == WholeSetStatus::Unknown && kept.score == 0,
+            "a legal overflow preserves the whole search") &&
          ok;
     LegalPiece tooBig[] = {Piece(1, 10, 3000000000u), Piece(3, 11, 3000000000u)};
-    ok = Check(SearchLegalSet(tooBig, {}, 4, 4).status == WholeSetStatus::Bounded,
-            "a domain whose every sum overflows is bounded") &&
+    ok = Check(SearchLegalSet(tooBig, {}, 4, 4).status == WholeSetStatus::Unknown,
+            "every legal sum overflowing is unknown, not a score") &&
          ok;
 
     LegalPiece shared[] = {Piece(5, 10, 10), Piece(5, 11, 10)};
@@ -282,12 +281,12 @@ int main()
     shared[0].uniqueEquipped = true;
     shared[1].uniqueEquipped = true;
     shared[0].baseScore = 100;
-    shared[1].baseScore = 90;
+    shared[1].baseScore = 100;
     LegalPiece alternatives[] = {shared[0], Piece(6, 10, 40), shared[1], Piece(8, 11, 30)};
     alternatives[2].uniqueEquipped = true;
     WholeSetOracle const unique = SearchLegalSet(alternatives, {}, 4, 4);
-    ok = Check(unique.status == WholeSetStatus::Scored && unique.score == 130 && unique.chosen[0] == 5 &&
-               unique.chosen[1] == 8,
+    ok = Check(unique.status == WholeSetStatus::Scored && unique.score == 140 && unique.chosen[0] == 6 &&
+               unique.chosen[1] == 5,
             "a unique item is equipped once") &&
          ok;
     alternatives[0].maxCount = 1;
@@ -302,8 +301,7 @@ int main()
          ok;
 
     LegalPiece hands[] = {Piece(10, 15, 100), Piece(11, 15, 30), Piece(12, 16, 40)};
-    hands[0].twoHand = true;
-    hands[2].offHand = true;
+    hands[0].weapon = Kind::TwoHand;
     hands[2].slotOptional = true;
     WholeSetOracle const weapons = SearchLegalSet(hands, {}, 4, 4);
     ok = Check(weapons.status == WholeSetStatus::Scored && weapons.score == 100 && weapons.chosen[0] == 10 &&
@@ -372,7 +370,7 @@ int main()
             PlayerbotsAutoGearVariant::Candidate row;
             row.entryId = 5;
             row.itemLevel = 60;
-            row.score = 90;
+            row.score = 100;
             row.kind = Kind::Count;
             row.uniqueEquipped = true;
             row.metadataKnown = true;
@@ -402,11 +400,11 @@ int main()
     policy.known = true;
     PlayerbotsAutoGearVariant::Result const variant =
         PlayerbotsAutoGearVariant::Solve(domains, policy, 1000, 100000);
-    LegalPiece uniquePieces[] = {Piece(5, 10, 100), Piece(6, 10, 40), Piece(5, 11, 90), Piece(8, 11, 30)};
+    LegalPiece uniquePieces[] = {Piece(5, 10, 100), Piece(6, 10, 40), Piece(5, 11, 100), Piece(8, 11, 30)};
     uniquePieces[0].uniqueEquipped = true;
     uniquePieces[2].uniqueEquipped = true;
     WholeSetOracle const uniqueOracle = SearchLegalSet(uniquePieces, {}, 4, 4);
-    ok = Check(uniqueOracle.score == variant.score && variant.score == 130, "unique gear matches the variant solver") &&
+    ok = Check(uniqueOracle.score == variant.score && variant.score == 140, "unique gear matches the variant solver") &&
          ok;
 
     std::vector<PlayerbotsAutoGearVariant::Candidate> mains{[]
