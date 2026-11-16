@@ -892,6 +892,15 @@ BotRetirementResult PlayerbotHolder::TryDisablePlayerBot(ObjectGuid guid)
     auto const sessionIncarnation = session->GetPB59SessionIncarnation();
     if (!sessionIncarnation)
         return Result::Refused;
+    // Headless published sessions have independent custody; the legacy AI-only
+    // disable path cannot unlink them. Do not change real/selfbot semantics.
+    if (session->IsHeadless())
+    {
+        using Published = PB59::PublishedSessionOwner<WorldSession>;
+        auto phase = Published::Inspect({guid.GetRawValue(), ownerIncarnation, holderLife->identity, sessionIncarnation});
+        if (phase != Published::Phase::Missing)
+            return phase == Published::Phase::RecoveryRequired ? Result::RecoveryRequired : Result::Refused;
+    }
     auto record = Journal::Reserve(guid.GetRawValue(), ownerIncarnation, holderLife->identity, Journal::Kind::Disable);
     if (!record)
     {
