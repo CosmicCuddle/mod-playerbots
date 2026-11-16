@@ -74,6 +74,7 @@ RouteRequest Enabled(std::uint8_t stage)
     request.playerContextVerified = true;
     request.progressionContextVerified = true;
     request.population = Population::RandomBot;
+    request.randomDiscardPrepared = true;
     request.rawStage = stage;
     request.effectiveStage = stage;
     request.qualityLimit = 4;
@@ -195,8 +196,8 @@ int main()
     commit.selection.facts = legal;
     RouteDecision const chosen = ResolveAutoGearRoute(commit, ScoreOf);
     ok = Check(chosen.selectionRan && chosen.action == GearAction::CommitSet && chosen.plan.selected[4].entryId == 66 &&
-               !chosen.deletesGear,
-            "a legal set is committed and nothing is deleted") &&
+               chosen.discardOriginals && !chosen.deletesGear,
+            "a legal RNDBOT set plans discard but deletes nothing") &&
          ok;
 
     std::vector<ItemFact> tooHard{Fact(66, 60)};
@@ -204,8 +205,8 @@ int main()
     RouteRequest strip = Enabled(0);
     strip.selection.facts = tooHard;
     RouteDecision const stripped = ResolveAutoGearRoute(strip, ScoreOf);
-    ok = Check(stripped.action == GearAction::StripToBags && !stripped.deletesGear,
-            "a confirmed empty set moves gear to bags") &&
+    ok = Check(stripped.action == GearAction::StripDiscard && stripped.discardOriginals && !stripped.deletesGear,
+            "a confirmed empty RNDBOT set plans discard") &&
          ok;
 
     RouteRequest unknown = Enabled(0);
@@ -229,9 +230,28 @@ int main()
          ok;
     emptyFacts.domainProvenEmpty = true;
     RouteDecision const emptyProven = ResolveAutoGearRoute(emptyFacts, ScoreOf);
-    ok = Check(emptyProven.action == GearAction::StripToBags && !emptyProven.preserve && !emptyProven.deletesGear,
-            "a proven empty required domain strips to bags") &&
+    ok = Check(emptyProven.action == GearAction::StripDiscard && !emptyProven.preserve && emptyProven.discardOriginals && !emptyProven.deletesGear,
+            "a proven empty RNDBOT domain plans discard") &&
          ok;
+
+    // Full bags do not block an exact RNDBOT discard plan.
+    commit.selection.bags = BagSpace::Full;
+    ok = Check(ResolveAutoGearRoute(commit, ScoreOf).action == GearAction::CommitSet,
+            "RNDBOT replacement does not need free bags") && ok;
+    strip.selection.bags = BagSpace::Full;
+    ok = Check(ResolveAutoGearRoute(strip, ScoreOf).action == GearAction::StripDiscard,
+            "RNDBOT no-set does not need free bags") && ok;
+    commit.randomDiscardPrepared = false;
+    ok = Check(ResolveAutoGearRoute(commit, ScoreOf).preserve, "missing discard preflight preserves") && ok;
+    strip.population = Population::AltBot;
+    ok = Check(ResolveAutoGearRoute(strip, ScoreOf).preserve, "altbot cannot inherit discard permission with full bags") && ok;
+    strip.selection.bags = BagSpace::Enough;
+    auto altStrip = ResolveAutoGearRoute(strip, ScoreOf);
+    ok = Check(altStrip.action == GearAction::StripToBags && !altStrip.discardOriginals,
+            "altbot retains original equipment in bags") && ok;
+    emptyFacts.selection.completeMask = 0;
+    ok = Check(ResolveAutoGearRoute(emptyFacts, ScoreOf).preserve,
+            "empty boolean cannot bypass solver proof") && ok;
 
     ItemFact card = Fact(910001, 60);
     card.darkmoonCard = true;

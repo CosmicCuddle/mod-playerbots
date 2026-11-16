@@ -46,6 +46,8 @@ namespace PlayerbotsAutoGearSelection
         // Facts were fully enumerated and the required domain is empty.
         bool domainProvenEmpty = false;
         PlanInput selection{};
+        // Exact native RNDBOT preflight, not a bag-space assertion.
+        bool randomDiscardPrepared = false;
     };
 
     struct RouteDecision
@@ -57,6 +59,7 @@ namespace PlayerbotsAutoGearSelection
         bool selectionRan = false;
         bool writesProgression = false;
         bool deletesGear = false;
+        bool discardOriginals = false; // intended final disposition, not execution
         bool reset = false;
         std::uint32_t quality = 0;
         GearAction action = GearAction::Preserve;
@@ -91,6 +94,7 @@ namespace PlayerbotsAutoGearSelection
         decision.action = GearAction::Preserve;
         decision.preserve = true;
         decision.deletesGear = false;
+        decision.discardOriginals = false;
     }
 
     template <class Scorer>
@@ -211,26 +215,27 @@ namespace PlayerbotsAutoGearSelection
             PreserveDecision(decision);
             return decision;
         }
-        if (request.selection.facts.empty())
+        bool const random = request.population == Population::RandomBot;
+        // RNDBOTs must not fall back to permanent bag retention. Altbots
+        // and other populations cannot inherit a caller-supplied discard bit.
+        if ((random && !request.randomDiscardPrepared) ||
+            (request.selection.facts.empty() && !request.domainProvenEmpty))
         {
-            if (request.domainProvenEmpty && request.selection.requiredMask != 0)
-            {
-                decision.action = GearAction::StripToBags;
-                decision.preserve = false;
-                decision.deletesGear = false;
-                return decision;
-            }
             PreserveDecision(decision);
             return decision;
         }
         PlanInput selection = request.selection;
         selection.cap = resolved.cap;
+        selection.randomDiscardPrepared = random && request.randomDiscardPrepared;
+        // Even an empty domain must traverse the same solver/proof checks.
         decision.plan = SelectFromFacts(selection, scorer);
         decision.selectionRan = true;
         decision.action = decision.plan.outcome.action;
         if (decision.action == GearAction::CommitSet && !HasSelectedEntry(decision.plan))
             decision.action = GearAction::Preserve;
         decision.preserve = decision.action == GearAction::Preserve;
+        decision.discardOriginals = selection.randomDiscardPrepared &&
+            (decision.action == GearAction::CommitSet || decision.action == GearAction::StripDiscard);
         decision.deletesGear = false;
         return decision;
     }

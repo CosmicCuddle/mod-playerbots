@@ -53,7 +53,8 @@ namespace PlayerbotsAutoGearSelection
         CommitSet,
         StripToBags,
         Preserve,
-        Restore
+        Restore,
+        StripDiscard
     };
 
     struct Outcome
@@ -63,21 +64,23 @@ namespace PlayerbotsAutoGearSelection
         RecoveryRequest recovery{};
     };
 
-    // Planning only. StripToBags moves combat gear into empty storage.
-    // Body and tabard stay. Nothing is deleted.
+    // Planning only. Discard is an explicit RNDBOT-specific intent, never
+    // deletion authority. Body and tabard stay; no item is mutated here.
     constexpr Outcome MapOutcome(bool authorityValid, PlayerbotsAutoGearCommand::PreparationResult prepared,
-        bool searchComplete, BagSpace bags)
+        bool searchComplete, BagSpace bags, bool randomDiscardPrepared = false)
     {
         using PlayerbotsAutoGearCommand::ResolveNextStep;
         auto const step = ResolveNextStep(authorityValid, prepared, searchComplete);
         if (step == PlayerbotsAutoGearCommand::NextStep::CommitPreparedSet)
         {
-            if (bags != BagSpace::Enough)
+            if (randomDiscardPrepared ? !searchComplete : bags != BagSpace::Enough)
                 return {Disposition::TechnicalFailure, GearAction::Preserve, {}};
             return {Disposition::Commit, GearAction::CommitSet, {}};
         }
         if (step == PlayerbotsAutoGearCommand::NextStep::RequestStrip)
         {
+            if (randomDiscardPrepared)
+                return {Disposition::GenuineNoSet, GearAction::StripDiscard, {}};
             if (bags == BagSpace::Enough)
                 return {Disposition::GenuineNoSet, GearAction::StripToBags, {}};
             return {Disposition::TechnicalFailure, GearAction::Preserve, {}};

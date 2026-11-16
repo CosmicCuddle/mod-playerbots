@@ -10,6 +10,7 @@
 #include "AutoGearProgressionCap.h"
 #if __has_include("PB59InventorySlotFacts.h")
 #include "AutoGearNativeStoragePreparation.h"
+#include "AutoGearNativeDiscardPreparation.h"
 #endif
 #include "BisListMgr.h"
 #include "BudgetValues.h"
@@ -685,6 +686,23 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     // No native complete candidate domain or transaction executor yet. This
     // real command now resolves a verified cap; selection and mutation remain
     // unavailable. Never infer a proven empty domain from missing facts.
+#if __has_include("PB59InventorySlotFacts.h")
+    // The preflight produces an exact snapshot, not permission to discard.
+    // A future collector must first establish authoritative selection facts.
+    std::optional<PlayerbotsAutoGearStorage::NativeDiscardPlan> discard;
+    if (request.selection.authorityValid && request.populationKnown && randomBot)
+    {
+        auto verifiedRandom = [bot, ai](Player const& current)
+        {
+            return &current == bot && GET_PLAYERBOT_AI(bot) == ai &&
+                bot->GetSession() && bot->GetSession()->IsHeadless() &&
+                sRandomPlayerbotMgr.IsRandomBot(bot) &&
+                sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId());
+        };
+        discard = PlayerbotsAutoGearStorage::PrepareNativeRandomDiscard(*bot, verifiedRandom);
+        request.randomDiscardPrepared = discard.has_value();
+    }
+#endif
     auto const decision = ResolveAutoGearRoute(request, [](uint32, int32, uint32) { return 0u; });
     LOG_INFO("playerbots", "PB59 AutoGear world plan bot={} sender={} raw={} effective={} authority={} cap={} action={} form={}",
         bot->GetGUID().GetRawValue(), sender->GetGUID().GetRawValue(), request.rawStage, request.effectiveStage,
@@ -692,7 +710,11 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
 #if __has_include("PB59InventorySlotFacts.h")
     // Only an actual proven mutation decision may enter storage preparation.
     // The complete native effects/rollback executor is not yet connected.
-    if (decision.action == GearAction::StripToBags || decision.action == GearAction::CommitSet)
+    if (decision.discardOriginals)
+    {
+        LOG_INFO("playerbots", "PB59 AutoGear RNDBOT discard preflight accepted; executor not connected");
+    }
+    else if (decision.action == GearAction::StripToBags || decision.action == GearAction::CommitSet)
     {
         auto prepared = PlayerbotsAutoGearStorage::PrepareNativeStorage(*bot);
         LOG_INFO("playerbots", "PB59 AutoGear storage preflight status={} reserved={}",

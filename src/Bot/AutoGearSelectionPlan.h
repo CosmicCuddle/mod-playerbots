@@ -81,6 +81,9 @@ namespace PlayerbotsAutoGearSelection
             Solve
         };
         AllocationPoint allocationFault = AllocationPoint::None;
+        // Set only by the verified RNDBOT route after exact no-bag preparation.
+        // A plan is never authorization for native irreversible disposal.
+        bool randomDiscardPrepared = false;
     };
 
     inline bool SameNativeFact(SourceRow const& row, ItemFact const& fact)
@@ -176,7 +179,7 @@ namespace PlayerbotsAutoGearSelection
         auto finish = [&](bool authority, PreparationResult prepared, bool searchComplete)
         {
             plan.sourceComplete = false;
-            plan.outcome = MapOutcome(authority, prepared, searchComplete, in.bags);
+            plan.outcome = MapOutcome(authority, prepared, searchComplete, in.bags, in.randomDiscardPrepared);
             return plan;
         };
         if (!in.authorityValid || in.cap.preserve || in.cap.cap == 0)
@@ -563,8 +566,11 @@ namespace PlayerbotsAutoGearSelection
             searchComplete = false;
             prepared = PreparationResult::NotPrepared;
         }
-        plan.outcome = MapOutcome(true, prepared, searchComplete, in.bags);
+        plan.outcome = MapOutcome(true, prepared, searchComplete, in.bags, in.randomDiscardPrepared);
         plan.storage.pieces = plan.selected;
+        // The old bag-storage executor must never consume a discard plan.
+        plan.storage.deletesRetainedGear = in.randomDiscardPrepared &&
+            plan.outcome.disposition == Disposition::Commit;
         plan.storage.senderEpoch = in.senderEpoch;
         plan.storage.senderIpRevision = in.senderIpRevision;
         plan.storage.senderEquipmentRevision = in.senderEquipmentRevision;
