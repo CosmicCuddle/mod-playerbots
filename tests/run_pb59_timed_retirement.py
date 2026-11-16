@@ -44,7 +44,7 @@ def main():
     for body in (logout, disable):
         assert "GetPB59SessionIncarnation() == sessionIncarnation" in body
         assert body.index("ForgetTimedBot") < body.index("RemoveFromPlayerbotsMap")
-    publish = between(mgr, "void PlayerbotHolder::OnBotLogin(Player* const bot,", "    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);")
+    publish = between(mgr, "bool PlayerbotHolder::OnBotLogin(Player* const bot,", "    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);")
     assert publish.index("playerBots.emplace") < publish.index("RegisterTimedBot") < publish.index("ReleasePublished") < publish.index("OnBotLoginInternal")
     assert script.index("ProcessTimedBotLogouts") < script.index("UpdatePendingLogins") < script.index("PlayerbotWorldThreadProcessor::instance().Update(diff)")
     shutdown = between(script, "    void OnShutdown() override", "class PlayerBotsBGScript")
