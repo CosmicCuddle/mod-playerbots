@@ -8,10 +8,25 @@
 #define PLAYERBOTS_AUTOGEAR_CANDIDATE_COLLECTOR_H
 
 #include "AutoGearSelectionPlan.h"
+#include <array>
 #include <vector>
 
 namespace PlayerbotsAutoGearSelection
 {
+    // Vanilla Darkmoon trinkets whose tooltip metadata and procs disagree.
+    // They stay unknown and are never forced.
+    inline bool ConflictingDarkmoonCard(std::uint32_t entry)
+    {
+        return entry >= 19287 && entry <= 19290;
+    }
+
+    enum class CountPopulation : std::uint8_t
+    {
+        Unknown,
+        AltBot,
+        RandomBot
+    };
+
     // One template row the caller already copied. A false flag is missing
     // data. It is not proof that the item is absent.
     struct CandidateTemplate
@@ -47,19 +62,47 @@ namespace PlayerbotsAutoGearSelection
         bool darkmoonCard = false;
         bool darkmoonAvailabilityKnown = false;
         bool darkmoonProcKnown = false;
+        // Actual CanEquip / whole-set proof. The template reader never sets this.
         bool equipKnown = false;
         bool equipAllowed = false;
         bool blockedOnlyByCurrentGear = false;
         bool scoreKnown = true;
     };
 
-    // Owning copy of one source row after the cap and quality filters.
+    // Caller-verified identity. Unlisted entries stay unknown.
+    struct VerifiedItemIdentity
+    {
+        std::uint32_t entry = 0;
+        bool verified = false;
+        bool darkmoonCard = false;
+        bool availabilityKnown = false;
+        bool procKnown = false;
+    };
+
+    // Exact original that a verified random bot's disposition will retire.
+    struct ApprovedOriginal
+    {
+        std::uint32_t entryId = 0;
+        std::int32_t randomProperty = 0;
+        std::uint8_t slot = 0;
+        bool approved = false;
+    };
+
+    // Temporary custody. It is not part of the final projected count.
+    struct StagingPiece
+    {
+        std::uint32_t entryId = 0;
+        std::int32_t randomProperty = 0;
+        std::uint32_t count = 0;
+    };
+
     struct ProvenSourceRow
     {
         std::uint32_t entry = 0;
         std::int32_t randomProperty = 0;
         std::uint8_t slot = 0;
         FactDecision eligibility = FactDecision::Unknown;
+        SourceEligibility staticEligibility = SourceEligibility::Unknown;
         std::uint32_t classMask = 0;
         bool specRestricted = false;
         std::uint8_t specTab = 0;
@@ -79,27 +122,34 @@ namespace PlayerbotsAutoGearSelection
         bool withinCap = false;
         bool withinQuality = false;
         bool included = false;
+        bool equipProven = false;
     };
 
     struct CollectorRequest
     {
-        bool playerContext = false;
-        bool progressionContext = false;
-        std::uint8_t rawStage = 0;
-        std::uint8_t effectiveStage = 0;
-        // Zero means the approved stage cap governs. A nonzero value only lowers it.
-        std::uint32_t scoreLimit = 0;
+        // Already resolved for this command, including match, leveling, and numeric.
+        bool capSupplied = false;
+        CapResult resolvedCap{};
+        CapMode resolvedMode = CapMode::Endgame;
         bool qualityLimitKnown = false;
         std::uint32_t qualityLimit = 0;
         BotView bot{};
         std::span<CandidateTemplate const> rows{};
+        std::span<VerifiedItemIdentity const> identities{};
         std::span<RetainedCount const> retained{};
+        std::span<ApprovedOriginal const> approvedOriginals{};
+        std::span<StagingPiece const> staging{};
+        CountPopulation population = CountPopulation::Unknown;
+        bool populationVerified = false;
         std::uint32_t eligibleMask = 0;
         std::uint32_t requiredMask = 0;
         std::uint32_t completeMask = 0;
-        // False when the caller stopped before the source ended.
         bool sourceExhausted = false;
+        // True only when the caller proved this list is the whole legal universe.
+        // A cache walk must leave it false.
+        bool exhaustiveLegalDomain = false;
         std::size_t rowBudget = 64;
+        std::uint64_t sourceRevision = 0;
         BagSpace bags = BagSpace::Unknown;
         bool authorityValid = false;
     };
@@ -108,14 +158,24 @@ namespace PlayerbotsAutoGearSelection
     {
         bool preserve = true;
         bool truncated = false;
-        // True only for a finished scan whose required domain has no legal row.
+        bool conflict = false;
+        bool projectionKnown = false;
+        // True only for a justified exhaustive domain with no legal row.
         bool claimedEmpty = false;
         bool deletesGear = false;
+        bool nativeEquipProven = false;
+        bool nativeSourceUsed = false;
         std::uint32_t cap = 0;
+        CapMode mode = CapMode::Endgame;
         GearAction action = GearAction::Preserve;
         Plan plan{};
         std::vector<ItemFact> facts{};
         std::vector<ProvenSourceRow> rows{};
+        std::vector<SourceRow> nativeRows{};
+        std::array<std::vector<ProvenanceRow>, PlayerbotsAutoGearSet::Slots> provenance{};
+        std::vector<RetainedCount> physicalCounts{};
+        std::vector<RetainedCount> projectedCounts{};
+        std::vector<StagingPiece> staging{};
     };
 
     inline bool IdentityComplete(CandidateTemplate const& row)
@@ -131,6 +191,56 @@ namespace PlayerbotsAutoGearSelection
         if (row.setId != 0 && !row.setEvidenceKnown)
             return false;
         return true;
+    }
+
+    inline void ApplyVerifiedIdentity(CandidateTemplate& row, std::span<VerifiedItemIdentity const> identities)
+    {
+        if (ConflictingDarkmoonCard(row.entry))
+        {
+            row.darkmoonIdentityKnown = true;
+            row.darkmoonCard = true;
+            row.darkmoonAvailabilityKnown = false;
+            row.darkmoonProcKnown = false;
+            return;
+        }
+        VerifiedItemIdentity const* found = nullptr;
+        for (VerifiedItemIdentity const& identity : identities)
+        {
+            if (identity.entry != row.entry)
+                continue;
+            if (found != nullptr || !identity.verified)
+            {
+                row.darkmoonIdentityKnown = false;
+                return;
+            }
+            found = &identity;
+        }
+        if (found == nullptr)
+        {
+            row.darkmoonIdentityKnown = false;
+            return;
+        }
+        row.darkmoonIdentityKnown = true;
+        row.darkmoonCard = found->darkmoonCard;
+        row.darkmoonAvailabilityKnown = found->availabilityKnown;
+        row.darkmoonProcKnown = found->procKnown;
+    }
+
+    inline bool SameTemplateIdentity(CandidateTemplate const& left, CandidateTemplate const& right)
+    {
+        return left.entry == right.entry && left.slot == right.slot && left.randomProperty == right.randomProperty &&
+               left.itemLevel == right.itemLevel && left.quality == right.quality && left.setId == right.setId &&
+               left.limitCategory == right.limitCategory && left.maxCount == right.maxCount &&
+               left.loaded == right.loaded;
+    }
+
+    inline bool ConflictingTemplates(CandidateTemplate const& left, CandidateTemplate const& right)
+    {
+        if (left.entry != right.entry || left.slot != right.slot)
+            return false;
+        if (left.randomProperty != right.randomProperty)
+            return false;
+        return !SameTemplateIdentity(left, right);
     }
 
     inline ItemFact FactFromTemplate(CandidateTemplate const& row)
@@ -170,6 +280,106 @@ namespace PlayerbotsAutoGearSelection
         return fact;
     }
 
+    // mode 0 is HAVE. mode 1 is EQUIP. Any other mode stays unknown.
+    template <class Entry>
+    void ApplyLimitEntry(CandidateTemplate& row, Entry const* entry)
+    {
+        if (row.limitCategory == 0)
+        {
+            row.limitKnown = true;
+            row.categoryLimit = 0;
+            row.categoryHaveLimit = 0;
+            return;
+        }
+        if (entry == nullptr || entry->ID != row.limitCategory || entry->maxCount == 0)
+        {
+            row.limitKnown = false;
+            return;
+        }
+        if (entry->mode == 0)
+        {
+            row.categoryHaveLimit = entry->maxCount;
+            row.categoryLimit = 0;
+            row.limitKnown = true;
+            return;
+        }
+        if (entry->mode == 1)
+        {
+            row.categoryLimit = entry->maxCount;
+            row.categoryHaveLimit = 0;
+            row.limitKnown = true;
+            return;
+        }
+        row.limitKnown = false;
+    }
+
+    template <class Entry>
+    void ApplySetEntry(CandidateTemplate& row, Entry const* entry)
+    {
+        if (row.setId == 0)
+        {
+            row.setEvidenceKnown = true;
+            row.setBonusPresent = false;
+            return;
+        }
+        if (entry == nullptr)
+        {
+            row.setEvidenceKnown = false;
+            row.setBonusPresent = false;
+            return;
+        }
+        row.setEvidenceKnown = true;
+        row.setBonusPresent = false;
+        for (std::size_t spell = 0; spell < 8; ++spell)
+        {
+            if (entry->spells[spell] != 0 && entry->items_to_triggerspell[spell] != 0)
+                row.setBonusPresent = true;
+        }
+    }
+
+    inline bool CombatDispositionSlot(std::uint8_t slot)
+    {
+        return slot < PlayerbotsAutoGearSet::Slots && slot != 3 && slot != 18;
+    }
+
+    // Random bots drop only exact approved originals from the final count.
+    // Staging and unrelated rows stay. Alt bots keep the physical count.
+    inline bool ProjectFinalCounts(CollectorRequest const& request, CollectorResult& result)
+    {
+        result.physicalCounts.assign(request.retained.begin(), request.retained.end());
+        result.staging.assign(request.staging.begin(), request.staging.end());
+        result.projectedCounts = result.physicalCounts;
+        result.projectionKnown = true;
+        bool const randomBot = request.populationVerified && request.population == CountPopulation::RandomBot;
+        if (!randomBot)
+            return true;
+        for (ApprovedOriginal const& original : request.approvedOriginals)
+        {
+            if (!original.approved || !CombatDispositionSlot(original.slot))
+                continue;
+            bool matched = false;
+            for (RetainedCount& row : result.projectedCounts)
+            {
+                if (row.entryId != original.entryId || row.limitCategory != 0)
+                    continue;
+                if (!row.equippedKnown || row.equipped == 0)
+                {
+                    result.projectionKnown = false;
+                    return false;
+                }
+                --row.equipped;
+                matched = true;
+                break;
+            }
+            if (!matched)
+            {
+                result.projectionKnown = false;
+                return false;
+            }
+        }
+        return true;
+    }
+
     inline void FillRetained(CandidateTemplate const& row, std::span<RetainedCount const> retained,
         ProvenSourceRow& proven)
     {
@@ -192,6 +402,14 @@ namespace PlayerbotsAutoGearSelection
             proven.retainedKnown = false;
     }
 
+    inline FactDecision StaticEligibility(ItemFact const& fact, BotView const& bot, std::uint32_t cap)
+    {
+        ItemFact staticFact = fact;
+        staticFact.equipKnown = true;
+        staticFact.equipAllowed = true;
+        return Classify(staticFact, bot, cap);
+    }
+
     // Callable entry. Copies a bounded set of source rows, then asks
     // SelectFromFacts to plan them. It does not equip, destroy, or reselect.
     template <class Scorer>
@@ -199,29 +417,31 @@ namespace PlayerbotsAutoGearSelection
     {
         CollectorResult result;
         result.deletesGear = false;
-        CapInput capInput;
-        capInput.playerContext = request.playerContext;
-        capInput.progressionContext = request.progressionContext;
-        capInput.mode = CapMode::Endgame;
-        capInput.rawStage = request.rawStage;
-        capInput.effectiveStage = request.effectiveStage;
-        capInput.policy = ApprovedCapPolicy();
-        capInput.scoreLimit = request.scoreLimit;
-        CapResult const cap = ComposeCap(capInput);
-        result.cap = cap.cap;
-
+        result.nativeEquipProven = false;
+        result.mode = request.resolvedMode;
+        bool const capReady = request.capSupplied && !request.resolvedCap.preserve && request.resolvedCap.cap != 0;
+        result.cap = capReady ? request.resolvedCap.cap : 0;
+        bool projectionOk = ProjectFinalCounts(request, result);
+        bool conflict = false;
+        for (std::size_t i = 0; i < request.rows.size() && !conflict; ++i)
+        {
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                if (ConflictingTemplates(request.rows[i], request.rows[j]))
+                    conflict = true;
+            }
+        }
+        result.conflict = conflict;
         bool const overBudget = request.rows.size() > request.rowBudget;
-        result.truncated = overBudget || !request.sourceExhausted;
+        result.truncated = overBudget || !request.sourceExhausted || conflict;
         std::size_t const limit = request.rows.size() < request.rowBudget ? request.rows.size() : request.rowBudget;
-        bool incomplete = !cap.preserve && !request.qualityLimitKnown;
-        if (!request.playerContext || !request.progressionContext || cap.preserve)
-            incomplete = true;
-
+        bool incomplete = !capReady || !request.qualityLimitKnown || !projectionOk || conflict;
         result.facts.reserve(limit);
         result.rows.reserve(limit);
         for (std::size_t index = 0; index < limit; ++index)
         {
-            CandidateTemplate const& row = request.rows[index];
+            CandidateTemplate row = request.rows[index];
+            ApplyVerifiedIdentity(row, request.identities);
             ProvenSourceRow proven;
             proven.entry = row.entry;
             proven.randomProperty = row.randomProperty;
@@ -240,48 +460,121 @@ namespace PlayerbotsAutoGearSelection
             proven.setBonusPresent = row.setBonusPresent;
             proven.itemLevel = row.itemLevel;
             proven.quality = row.quality;
-            FillRetained(row, request.retained, proven);
-            if (!IdentityComplete(row))
+            proven.equipProven = row.equipKnown && row.equipAllowed;
+            FillRetained(row, result.projectedCounts, proven);
+            if (!proven.retainedKnown)
+                incomplete = true;
+            SourceRow source;
+            source.entryId = row.entry;
+            source.randomProperty = row.randomProperty;
+            source.itemLevel = row.itemLevel;
+            source.slot = row.slot;
+            source.templateLoaded = row.loaded && row.metadataKnown;
+            ProvenanceRow provenance;
+            provenance.entryId = row.entry;
+            provenance.randomProperty = row.randomProperty;
+            provenance.itemLevel = row.itemLevel;
+            provenance.setId = row.setId;
+            provenance.setEvidenceKnown = row.setEvidenceKnown;
+            provenance.setBonusPresent = row.setBonusPresent;
+            provenance.revision = request.sourceRevision;
+            if (!IdentityComplete(row) || !capReady)
             {
                 proven.eligibility = FactDecision::Unknown;
+                proven.staticEligibility = SourceEligibility::Unknown;
+                source.eligibility = SourceEligibility::Unknown;
+                provenance.state = RowState::Unknown;
                 incomplete = true;
-                result.rows.push_back(proven);
-                continue;
             }
-            proven.withinQuality = row.quality <= request.qualityLimit;
-            proven.withinCap = cap.cap != 0 && row.itemLevel <= cap.cap;
-            if (!proven.withinQuality || !proven.withinCap)
+            else
             {
-                proven.eligibility = FactDecision::Unavailable;
-                result.rows.push_back(proven);
-                continue;
+                proven.withinQuality = row.quality <= request.qualityLimit;
+                proven.withinCap = row.itemLevel <= result.cap;
+                ItemFact fact = FactFromTemplate(row);
+                FactDecision const staticDecision = StaticEligibility(fact, request.bot, result.cap);
+                FactDecision const decision = Classify(fact, request.bot, result.cap);
+                proven.eligibility = decision;
+                bool const cardOpen = row.darkmoonCard && (!row.darkmoonAvailabilityKnown || !row.darkmoonProcKnown);
+                if (!proven.withinQuality || !proven.withinCap || staticDecision == FactDecision::Unavailable)
+                {
+                    proven.staticEligibility = SourceEligibility::KnownUnavailable;
+                    source.eligibility = SourceEligibility::KnownUnavailable;
+                    source.staticCapabilityKnown = true;
+                    source.staticCapable = false;
+                    provenance.state = RowState::KnownUnavailable;
+                }
+                else if (staticDecision == FactDecision::Accept)
+                {
+                    proven.staticEligibility = SourceEligibility::KnownEligible;
+                    source.eligibility = SourceEligibility::KnownEligible;
+                    source.staticCapabilityKnown = true;
+                    source.staticCapable = true;
+                    provenance.state = RowState::KnownPresent;
+                    if (decision == FactDecision::Unknown || decision == FactDecision::Invalid || cardOpen ||
+                        !proven.retainedKnown)
+                        incomplete = true;
+                    if (decision == FactDecision::Accept && !cardOpen && proven.retainedKnown)
+                    {
+                        proven.included = true;
+                        result.facts.push_back(fact);
+                    }
+                }
+                else
+                {
+                    proven.staticEligibility = SourceEligibility::Unknown;
+                    source.eligibility = SourceEligibility::Unknown;
+                    provenance.state = RowState::Unknown;
+                    incomplete = true;
+                }
             }
-            ItemFact fact = FactFromTemplate(row);
-            FactDecision const decision = Classify(fact, request.bot, cap.cap);
-            proven.eligibility = decision;
-            bool const cardOpen = row.darkmoonCard && (!row.darkmoonAvailabilityKnown || !row.darkmoonProcKnown);
-            if (decision == FactDecision::Unknown || decision == FactDecision::Invalid || cardOpen)
-                incomplete = true;
-            if (decision == FactDecision::Accept && !cardOpen)
-            {
-                proven.included = true;
-                result.facts.push_back(fact);
-            }
+            if (row.slot < PlayerbotsAutoGearSet::Slots)
+                result.provenance[row.slot].push_back(provenance);
+            result.nativeRows.push_back(source);
             result.rows.push_back(proven);
         }
 
+        bool splitVariant = false;
+        for (std::size_t i = 0; i < result.nativeRows.size() && !splitVariant; ++i)
+        {
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                if (result.nativeRows[i].entryId == result.nativeRows[j].entryId &&
+                    result.nativeRows[i].randomProperty != result.nativeRows[j].randomProperty)
+                    splitVariant = true;
+            }
+        }
+        bool const justified = request.exhaustiveLegalDomain && request.sourceExhausted && !result.truncated &&
+                               !incomplete && !conflict && capReady && projectionOk;
         PlanInput input;
-        input.cap = cap;
+        input.cap = request.resolvedCap;
+        input.cap.cap = result.cap;
+        input.cap.preserve = !capReady;
         input.bot = request.bot;
         input.facts = result.facts;
         input.eligibleMask = request.eligibleMask;
         input.requiredMask = request.requiredMask;
-        input.completeMask = result.truncated || incomplete ? 0 : request.completeMask;
-        input.retained = request.retained;
+        input.completeMask = justified ? request.completeMask : 0;
+        input.retained = result.projectedCounts;
         input.bags = request.bags;
-        input.authorityValid = request.authorityValid && !result.truncated && !incomplete && !cap.preserve;
+        input.authorityValid = request.authorityValid && justified;
+        input.sourceRevision = request.sourceRevision;
+        input.sourceBudget = request.rowBudget;
+        input.hasNativeSource = justified && request.sourceRevision != 0 && !splitVariant;
+        if (input.hasNativeSource)
+        {
+            input.nativeRows = result.nativeRows;
+            for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+            {
+                input.nativeProofs[slot].authoritative = true;
+                input.nativeProofs[slot].rows = result.provenance[slot];
+                input.nativeProofs[slot].rowsDeclared = true;
+                input.nativeProofs[slot].declaredRows = result.provenance[slot].size();
+            }
+        }
+        result.nativeSourceUsed = input.hasNativeSource;
         result.plan = SelectFromFacts(input, scorer);
-        if (result.truncated || incomplete || cap.preserve)
+        result.nativeEquipProven = false;
+        if (!justified)
         {
             result.action = GearAction::Preserve;
             result.preserve = true;

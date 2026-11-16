@@ -95,11 +95,13 @@ namespace PlayerbotsAutoGearSelection
         CollectorRequest request{};
         std::uint32_t level = 0;
         std::uint8_t classId = 0;
-        // The equipment caches are complete only when the caller has proved it.
-        bool cacheComplete = false;
-        // Left false until a caller can tell a Darkmoon card from any other item.
-        bool treatUnmarkedAsNotDarkmoon = false;
     };
+
+    template <class Inventory>
+    inline Inventory ExactInventoryType(std::uint32_t raw)
+    {
+        return static_cast<Inventory>(raw);
+    }
 
     inline void InventoryTypesForSlot(std::uint8_t slot, std::array<std::uint32_t, 4>& types, std::uint8_t& count)
     {
@@ -172,80 +174,93 @@ namespace PlayerbotsAutoGearSelection
         }
     }
 
-    // Walks RandomItemMgr::GetEquipment and GetEquipmentNew. Lookup returns an
-    // ItemTemplate pointer. The scorer is StatsWeightCalculator::CalculateItem.
-    template <class Source, class Lookup, class Scorer>
-    CollectorResult CollectNativeCandidateFacts(Source const& source, Lookup const& lookup,
-        NativeCollectQuery const& query, Scorer const& scorer)
+    // Walks RandomItemMgr::GetEquipment and GetEquipmentNew. Inventory is the
+    // real InventoryType. The caches omit items above epic and invalid items,
+    // and quest levels are normalized, so the walk is not a legal universe.
+    template <class Inventory, class Source, class ItemLookup, class LimitLookup, class SetLookup, class Scorer>
+    CollectorResult CollectNativeCandidateFacts(Source const& source, ItemLookup const& items,
+        LimitLookup const& limits, SetLookup const& sets, NativeCollectQuery const& query, Scorer const& scorer)
     {
-        std::vector<CandidateTemplate> gathered;
-        bool hitBudget = false;
+        struct Seen
+        {
+            CandidateTemplate row;
+        };
+        std::vector<Seen> seen;
+        bool conflict = false;
+        auto consider = [&](std::uint32_t entry, std::uint8_t slot)
+        {
+            CandidateTemplate row = ReadItemTemplate(items(entry), slot);
+            if (row.limitCategory != 0)
+                ApplyLimitEntry(row, limits(row.limitCategory));
+            else
+                row.limitKnown = true;
+            if (row.setId != 0)
+                ApplySetEntry(row, sets(row.setId));
+            else
+            {
+                row.setEvidenceKnown = true;
+                row.setBonusPresent = false;
+            }
+            for (Seen const& prior : seen)
+            {
+                if (prior.row.entry != entry || prior.row.slot != slot)
+                    continue;
+                if (!SameTemplateIdentity(prior.row, row))
+                    conflict = true;
+                return;
+            }
+            seen.push_back(Seen{row});
+        };
         std::uint32_t const qualityCap = query.request.qualityLimit < 5 ? query.request.qualityLimit : 5;
-        std::size_t const budget = query.request.rowBudget;
-        for (std::uint8_t slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+        for (std::uint8_t slot = 0; slot < PlayerbotsAutoGearSet::Slots && !conflict; ++slot)
         {
             if ((query.request.eligibleMask & (std::uint32_t{1} << slot)) == 0)
                 continue;
-            for (std::uint32_t quality = 0; quality <= qualityCap; ++quality)
+            for (std::uint32_t quality = 0; quality <= qualityCap && !conflict; ++quality)
             {
                 auto const& listed = source.GetEquipment(query.level, query.classId, slot, quality);
                 for (auto const entry : listed)
-                {
-                    if (gathered.size() >= budget)
-                    {
-                        hitBudget = true;
-                        break;
-                    }
-                    gathered.push_back(ReadItemTemplate(lookup(entry), slot));
-                }
-                if (hitBudget)
-                    break;
+                    consider(entry, slot);
             }
-            if (hitBudget)
-                break;
             std::array<std::uint32_t, 4> types{};
             std::uint8_t typeCount = 0;
             InventoryTypesForSlot(slot, types, typeCount);
-            for (std::uint8_t typeIndex = 0; typeIndex < typeCount && !hitBudget; ++typeIndex)
+            for (std::uint8_t typeIndex = 0; typeIndex < typeCount && !conflict; ++typeIndex)
             {
-                for (std::uint32_t required = 0; required <= query.level && !hitBudget; ++required)
+                Inventory const inventoryType = ExactInventoryType<Inventory>(types[typeIndex]);
+                for (std::uint32_t required = 0; required <= query.level && !conflict; ++required)
                 {
-                    auto const& listed = source.GetEquipmentNew(required, types[typeIndex]);
+                    auto const& listed = source.GetEquipmentNew(required, inventoryType);
                     for (auto const entry : listed)
-                    {
-                        if (gathered.size() >= budget)
-                        {
-                            hitBudget = true;
-                            break;
-                        }
-                        bool already = false;
-                        for (CandidateTemplate const& prior : gathered)
-                        {
-                            if (prior.entry == entry && prior.slot == slot)
-                                already = true;
-                        }
-                        if (!already)
-                            gathered.push_back(ReadItemTemplate(lookup(entry), slot));
-                    }
+                        consider(entry, slot);
                 }
             }
-            if (hitBudget)
-                break;
         }
-        if (query.treatUnmarkedAsNotDarkmoon)
-        {
-            for (CandidateTemplate& row : gathered)
-            {
-                if (!row.darkmoonIdentityKnown && !row.darkmoonCard)
-                    row.darkmoonIdentityKnown = true;
-            }
-        }
+        bool const overBudget = seen.size() > query.request.rowBudget;
+        std::size_t const limit = seen.size() < query.request.rowBudget ? seen.size() : query.request.rowBudget;
+        std::vector<CandidateTemplate> gathered;
+        gathered.reserve(limit);
+        for (std::size_t index = 0; index < limit; ++index)
+            gathered.push_back(seen[index].row);
         CollectorRequest request = query.request;
         request.rows = gathered;
-        request.sourceExhausted = query.cacheComplete && !hitBudget;
-        if (!request.sourceExhausted)
-            request.completeMask = 0;
-        return CollectCandidateFacts(request, scorer);
+        // The equipment caches are not the authoritative legal universe.
+        request.exhaustiveLegalDomain = false;
+        request.sourceExhausted = !overBudget && !conflict;
+        request.completeMask = 0;
+        if (overBudget)
+            request.rowBudget = limit;
+        CollectorResult result = CollectCandidateFacts(request, scorer);
+        if (conflict)
+            result.conflict = true;
+        result.action = GearAction::Preserve;
+        result.preserve = true;
+        result.claimedEmpty = false;
+        result.deletesGear = false;
+        result.nativeEquipProven = false;
+        if (overBudget)
+            result.truncated = true;
+        return result;
     }
 
     // Adapts StatsWeightCalculator::CalculateItem. The calculator still loads
