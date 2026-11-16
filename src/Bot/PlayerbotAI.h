@@ -8,6 +8,7 @@
 #define PLAYERBOTS_PLAYERBOTAI_H
 
 #include "Chat.h"
+#include "AutoGearQueuedCommand.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
 #include "CreatureData.h"
@@ -376,7 +377,9 @@ public:
           owner(other.owner),
           requiredLevel(other.requiredLevel),
           type(other.type),
-          time(other.time)
+          time(other.time),
+          pb59Capped(other.pb59Capped),
+          pb59Sender(other.pb59Sender)
     {
     }
 
@@ -385,6 +388,9 @@ public:
     PlayerbotSecurityLevel GetRequiredLevel() { return requiredLevel; }
     uint32& GetType() { return type; }
     time_t& GetTime() { return time; }
+    void BindPB59Sender(PB59::CommandOwner sender) { pb59Capped = true; pb59Sender = sender; }
+    bool IsPB59Capped() const { return pb59Capped; }
+    PB59::CommandOwner GetPB59Sender() const { return pb59Sender; }
 
 private:
     std::string const command;
@@ -392,6 +398,8 @@ private:
     PlayerbotSecurityLevel requiredLevel;  // what the sender needed when the command was accepted
     uint32 type;
     time_t time;
+    bool pb59Capped = false;
+    PB59::CommandOwner pb59Sender;
 };
 
 class PlayerbotAI : public PlayerbotAIBase
