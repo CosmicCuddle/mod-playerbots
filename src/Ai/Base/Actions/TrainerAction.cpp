@@ -329,6 +329,16 @@ static bool PreserveAutoGearPlan(Player* bot, PlayerbotAI* botAI, Event const& e
 
 bool BisGearAction::Execute(Event event)
 {
+    // Owner policy: Altbots must never receive AutoGear/BiS modifications,
+    // regardless of legacy AutoGearCommandAltBots configuration or IP cap flag.
+    if (!bot || !botAI || botAI->IsAltBot() || !sRandomPlayerbotMgr.IsRandomBot(bot))
+    {
+        if (botAI)
+            botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                "bis_rndbot_only_error", "Only random bots may use AutoGear or BiS. Alt bots keep their gear.", {}));
+        return false;
+    }
+
     if (!sPlayerbotAIConfig.AutoGearBisCommand)
     {
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
@@ -621,7 +631,8 @@ static bool PreserveAutoGearPlan(Player* bot, PlayerbotAI* botAI, Event const& e
     request.ipCapEnabled = true;
     request.bis = bis;
     request.text = event.getParam();
-    request.altCommandAllowed = sPlayerbotAIConfig.AutoGearCommandAltBots != 0;
+    // Legacy flag cannot override the owner's RNDBOT-only AutoGear rule.
+    request.altCommandAllowed = false;
     request.qualityLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
     request.scoreLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);
     if (bis)
@@ -660,6 +671,16 @@ static bool PreserveAutoGearPlan(Player* bot, PlayerbotAI* botAI, Event const& e
 
 bool AutoGearAction::Execute(Event event)
 {
+    // Preserve Altbot gear before parsing commands or entering any legacy
+    // wipe, replacement or reset path. Unknown populations fail closed.
+    if (!bot || !botAI || botAI->IsAltBot() || !sRandomPlayerbotMgr.IsRandomBot(bot))
+    {
+        if (botAI)
+            botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                "autogear_rndbot_only_error", "Only random bots may use AutoGear. Alt bots keep their gear.", {}));
+        return false;
+    }
+
     if (!sPlayerbotAIConfig.AutoGearCommand)
     {
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
