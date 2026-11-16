@@ -966,6 +966,12 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
     if (playerBots.find(guid) != playerBots.end())
         return;
 
+    // Owner-context scope blocks admitted PB retirement during initialization.
+    // It does not own Player/session or guard unrelated Core destruction paths.
+    auto callbackScope = bot->AcquirePB59CallbackScope();
+    if (!callbackScope.Admitted())
+        return;
+    auto const sessionId = pendingOwner.Identity();
     PlayerbotsMgr::instance().AddPlayerbotData(bot, true);
     if (!holderLife->Alive() || ObjectAccessor::FindConnectedPlayer(guid) != bot ||
         bot->GetPB59OwnerIncarnation() != playerId || !pendingOwner.CanPublish(bot->GetSession()) ||
@@ -988,7 +994,22 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
         return;
     }
 
+    auto currentBot = [&]() -> bool
+    {
+        if (!holderLife->Alive())
+            return false;
+        Player* live = ObjectAccessor::FindConnectedPlayer(guid);
+        if (!live || live != bot || live != GetPlayerBot(guid) ||
+            live->GetPB59OwnerIncarnation() != playerId)
+            return false;
+        WorldSession* session = live->GetSession();
+        return session && session->GetPlayer() == live &&
+            session->GetPB59SessionIncarnation() == sessionId;
+    };
+
     OnBotLoginInternal(bot);
+    if (!currentBot())
+        return;
 
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     if (!botAI)
@@ -1001,6 +1022,26 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
     PlayerbotIdentityGeneration::Instance().IssueLogin(bot->GetGUID());
 
     Player* master = botAI->GetMaster();
+    ObjectGuid const masterGuid = master ? master->GetGUID() : ObjectGuid::Empty;
+    auto const masterId = master ? master->GetPB59OwnerIncarnation() : 0;
+    auto const masterSessionId = master && master->GetSession() ?
+        master->GetSession()->GetPB59SessionIncarnation() : 0;
+    auto current = [&]() -> bool
+    {
+        if (!currentBot() || GET_PLAYERBOT_AI(bot) != botAI)
+            return false;
+        if (!masterGuid)
+            return botAI->GetMaster() == nullptr;
+        Player* liveMaster = ObjectAccessor::FindConnectedPlayer(masterGuid);
+        if (!liveMaster || liveMaster != master || liveMaster->GetPB59OwnerIncarnation() != masterId ||
+            botAI->GetMaster() != liveMaster)
+            return false;
+        auto* session = liveMaster->GetSession();
+        return session && session->GetPlayer() == liveMaster && masterSessionId &&
+            session->GetPB59SessionIncarnation() == masterSessionId;
+    };
+    if (!current())
+        return;
 
     Group* group = bot->GetGroup();
     if (group)
@@ -1035,6 +1076,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
         if (!groupValid)
         {
             botAI->LeaveOrDisbandGroup();
+            if (!current())
+                return;
         }
     }
 
@@ -1047,28 +1090,43 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
     {
         botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(bot));
     }
+    if (!current())
+        return;
     PlayerbotRepository::instance().Load(botAI);
+    if (!current())
+        return;
 
     // The loaded strategies were saved at the bot's last strategy change and can include another
     // instance's strategy, so apply the current map's again.
     if (sPlayerbotAIConfig.ApplyInstanceStrategies)
+    {
         botAI->ApplyInstanceStrategies(bot->GetMapId());
+        if (!current())
+            return;
+    }
 
     if (master && !master->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
         bot->GetMotionMaster()->MovementExpired();
         bot->CleanupAfterTaxiFlight();
+        if (!current())
+            return;
     }
 
     // check activity
     botAI->AllowActivity(ALL_ACTIVITY, true);
+    if (!current())
+        return;
 
     // set delay on login
     botAI->SetNextCheckDelay(urand(2000, 4000));
 
     botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
         "hello", "Hello!", {}), PLAYERBOT_SECURITY_TALK);
+        if (!current())
+            return;
 
+    group = bot->GetGroup(); // callbacks above may have changed membership
     // Queue group operations for world thread
     if (master && master->GetGroup() && !group)
     {
@@ -1117,6 +1175,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
     }
 
     bot->SaveToDB(false, false);
+    if (!current())
+        return;
     bool addClassBot = sRandomPlayerbotMgr.IsAccountType(accountId, 2);
     if (addClassBot && master && abs((int)master->GetLevel() - (int)bot->GetLevel()) > 3)
     {
@@ -1129,6 +1189,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
             mixedGearScore = 1;
         PlayerbotFactory factory(bot, master->GetLevel(), ITEM_QUALITY_LEGENDARY, mixedGearScore);
         factory.Randomize(false);
+        if (!current())
+            return;
     }
 
     // bots join World chat if not solo oriented
@@ -1142,6 +1204,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
         pkt << std::string("World");
         pkt << "";  // Pass
         bot->GetSession()->HandleJoinChannel(pkt);
+        if (!current())
+            return;
     }
 
     // join standard channels
@@ -1195,7 +1259,11 @@ void PlayerbotHolder::OnBotLogin(Player* const bot, PendingBotLogin::Owner& pend
             }
 
             if (new_channel)
+            {
                 new_channel->JoinChannel(bot, "");
+                if (!current())
+                    return;
+            }
         }
     }
 }
