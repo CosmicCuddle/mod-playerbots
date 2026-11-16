@@ -24,7 +24,7 @@ def main():
     script = (root / "src/Script/Playerbots.cpp").read_text(encoding="utf-8")
     native = between(mgr, "void PlayerbotHolder::UpdatePendingLogins()", "bool PlayerbotHolder::IsAccountLinked") + "\n"
     native += between(mgr, "void PlayerbotHolder::HandlePlayerBotLoginCallback", "void PlayerbotHolder::UpdateSessions()") + "\n"
-    native += between(mgr, "void PlayerbotHolder::OnBotLogin(Player* const bot,", "    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);") + "}\n"
+    native += between(mgr, "bool PlayerbotHolder::OnBotLogin(Player* const bot,", "    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);") + "    return true;\n}\n"
     queued = between(ops, "class OnBotLoginOperation : public PlayerbotOperation", "class ArenaTeamAssignOperation")
     # Source contracts: AddPlayerBot and callback registration are not compiled
     # by this fixture; neither are the post-publication native initialization
