@@ -100,6 +100,9 @@ namespace PlayerbotsAutoGearSelection
         bool propertyKnown = false;
         std::uint8_t slot = 0;
         bool approved = false;
+        std::uint32_t limitCategory = 0;
+        std::uint64_t guid = 0;
+        bool guidKnown = false;
     };
 
     // Temporary custody. It is not part of the final projected count.
@@ -164,6 +167,9 @@ namespace PlayerbotsAutoGearSelection
         // A cache walk must leave it false.
         bool exhaustiveLegalDomain = false;
         std::size_t rowBudget = 64;
+        // Enforced before candidate allocation and before scoring.
+        std::size_t sourceBudget = 64;
+        std::size_t expansionBudget = 64;
         std::uint64_t sourceRevision = 0;
         BagSpace bags = BagSpace::Unknown;
         bool authorityValid = false;
@@ -247,7 +253,12 @@ namespace PlayerbotsAutoGearSelection
         return left.entry == right.entry && left.slot == right.slot && left.randomProperty == right.randomProperty &&
                left.itemLevel == right.itemLevel && left.quality == right.quality && left.setId == right.setId &&
                left.limitCategory == right.limitCategory && left.maxCount == right.maxCount &&
-               left.loaded == right.loaded;
+               left.loaded == right.loaded && left.propertyGroup == right.propertyGroup &&
+               left.suffixGroup == right.suffixGroup && left.groupsKnown == right.groupsKnown &&
+               left.classMask == right.classMask && left.armorSubtype == right.armorSubtype &&
+               left.kind == right.kind && left.uniqueEquipped == right.uniqueEquipped &&
+               left.specRestricted == right.specRestricted && left.equipKnown == right.equipKnown &&
+               left.equipAllowed == right.equipAllowed;
     }
 
     inline bool ConflictingTemplates(CandidateTemplate const& left, CandidateTemplate const& right)
@@ -371,8 +382,25 @@ namespace PlayerbotsAutoGearSelection
             return true;
         for (ApprovedOriginal const& original : request.approvedOriginals)
         {
-            if (!original.approved || !original.propertyKnown || !CombatDispositionSlot(original.slot))
+            if (!original.approved)
                 continue;
+            if (!original.propertyKnown || !original.guidKnown || !CombatDispositionSlot(original.slot))
+            {
+                result.projectionKnown = false;
+                return false;
+            }
+            for (ApprovedOriginal const& earlier : request.approvedOriginals)
+            {
+                if (&earlier == &original || !earlier.approved)
+                    continue;
+                bool const sameSlot = earlier.slot == original.slot;
+                bool const sameGuid = earlier.guidKnown && earlier.guid == original.guid;
+                if (sameSlot || sameGuid)
+                {
+                    result.projectionKnown = false;
+                    return false;
+                }
+            }
             bool matched = false;
             for (RetainedCount& row : result.projectedCounts)
             {
@@ -388,6 +416,27 @@ namespace PlayerbotsAutoGearSelection
                 break;
             }
             if (!matched)
+            {
+                result.projectionKnown = false;
+                return false;
+            }
+            if (original.limitCategory == 0)
+                continue;
+            bool categoryMatched = false;
+            for (RetainedCount& row : result.projectedCounts)
+            {
+                if (row.entryId != 0 || row.limitCategory != original.limitCategory)
+                    continue;
+                if (!row.equippedKnown || row.equipped == 0)
+                {
+                    result.projectionKnown = false;
+                    return false;
+                }
+                --row.equipped;
+                categoryMatched = true;
+                break;
+            }
+            if (!categoryMatched)
             {
                 result.projectionKnown = false;
                 return false;
@@ -436,10 +485,26 @@ namespace PlayerbotsAutoGearSelection
         result.nativeEquipProven = false;
         result.mode = request.resolvedMode;
         result.bis = request.bis;
+        if (request.rows.size() > request.sourceBudget)
+        {
+            result.truncated = true;
+            result.preserve = true;
+            result.claimedEmpty = false;
+            result.action = GearAction::Preserve;
+            return result;
+        }
         std::vector<CandidateTemplate> expanded;
         bool variantGap = false;
         for (CandidateTemplate const& sourceRow : request.rows)
         {
+            if (expanded.size() >= request.expansionBudget)
+            {
+                result.truncated = true;
+                result.preserve = true;
+                result.claimedEmpty = false;
+                result.action = GearAction::Preserve;
+                return result;
+            }
             if (!sourceRow.groupsKnown)
             {
                 expanded.push_back(sourceRow);
@@ -469,10 +534,26 @@ namespace PlayerbotsAutoGearSelection
             if (!listed.complete)
             {
                 variantGap = true;
+                if (expanded.size() >= request.expansionBudget)
+                {
+                    result.truncated = true;
+                    result.preserve = true;
+                    result.claimedEmpty = false;
+                    result.action = GearAction::Preserve;
+                    return result;
+                }
                 CandidateTemplate unknown = sourceRow;
                 unknown.randomPropertyKnown = false;
                 expanded.push_back(unknown);
                 continue;
+            }
+            if (expanded.size() + listed.variants.size() > request.expansionBudget)
+            {
+                result.truncated = true;
+                result.preserve = true;
+                result.claimedEmpty = false;
+                result.action = GearAction::Preserve;
+                return result;
             }
             for (VariantId const& variant : listed.variants)
             {

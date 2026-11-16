@@ -177,19 +177,47 @@ namespace PlayerbotsAutoGearSelection
         }
     }
 
+    // No loaded group. Grouped templates stay incomplete.
+    struct EmptyVariantSource
+    {
+        struct Viewed
+        {
+            std::span<CoreGroupRow const> coreRows{};
+            std::span<std::uint32_t const> mgrPool{};
+            bool mgrPoolPresent = false;
+            std::span<std::uint32_t const> propertyDbc{};
+            std::span<std::uint32_t const> suffixDbc{};
+            bool dbcKnown = false;
+        };
+
+        Viewed View(std::int32_t) const { return {}; }
+
+        bool operator()(std::int32_t, std::uint32_t) const { return false; }
+    };
+
     // Walks RandomItemMgr::GetEquipment and GetEquipmentNew. Inventory is the
     // real InventoryType. The caches omit items above epic and invalid items,
     // and quest levels are normalized, so the walk is not a legal universe.
-    template <class Inventory, class Source, class ItemLookup, class LimitLookup, class SetLookup, class Scorer>
+    // VariantLookup::View(group) supplies Core rows and the mgr pool.
+    // VariantLookup::operator()(group, enchant) is HasItemEnchantMod.
+    template <class Inventory, class Source, class ItemLookup, class LimitLookup, class SetLookup, class VariantLookup,
+        class Scorer>
     CollectorResult CollectNativeCandidateFacts(Source const& source, ItemLookup const& items,
-        LimitLookup const& limits, SetLookup const& sets, NativeCollectQuery const& query, Scorer const& scorer)
+        LimitLookup const& limits, SetLookup const& sets, VariantLookup const& variants,
+        NativeCollectQuery const& query, Scorer const& scorer)
     {
         struct Seen
         {
             CandidateTemplate row;
         };
+        std::size_t const sourceBudget = query.request.sourceBudget < query.request.rowBudget
+                                             ? query.request.sourceBudget
+                                             : query.request.rowBudget;
+        std::vector<OwnedVariantSource> backing;
+        backing.reserve(sourceBudget == 0 ? 1 : sourceBudget);
         std::vector<Seen> seen;
         bool conflict = false;
+        bool overSource = false;
         auto consider = [&](std::uint32_t entry, std::uint8_t slot)
         {
             CandidateTemplate row = ReadItemTemplate(items(entry), slot);
@@ -211,6 +239,26 @@ namespace PlayerbotsAutoGearSelection
                 if (!SameTemplateIdentity(prior.row, row))
                     conflict = true;
                 return;
+            }
+            if (seen.size() >= sourceBudget)
+            {
+                overSource = true;
+                return;
+            }
+            if (row.groupsKnown && (row.propertyGroup > 0 || row.suffixGroup > 0))
+            {
+                std::int32_t const group = row.propertyGroup > 0 ? row.propertyGroup : row.suffixGroup;
+                auto const viewed = variants.View(group);
+                backing.push_back(AdaptLoadedGroup(viewed.coreRows, viewed.mgrPool, viewed.mgrPoolPresent, group,
+                    variants, viewed.propertyDbc, viewed.suffixDbc, viewed.dbcKnown));
+                OwnedVariantSource& owned = backing.back();
+                row.enchantPool = owned.pool;
+                row.membership = owned.membership;
+                row.poolPresent = owned.complete;
+                row.membershipKnown = owned.membershipKnown;
+                row.propertyDbc = owned.propertyDbc;
+                row.suffixDbc = owned.suffixDbc;
+                row.dbcKnown = owned.dbcKnown;
             }
             seen.push_back(Seen{row});
         };
@@ -239,20 +287,28 @@ namespace PlayerbotsAutoGearSelection
                 }
             }
         }
-        bool const overBudget = seen.size() > query.request.rowBudget;
-        std::size_t const limit = seen.size() < query.request.rowBudget ? seen.size() : query.request.rowBudget;
+        bool const overBudget = overSource || seen.size() > sourceBudget;
+        if (overBudget)
+        {
+            CollectorResult result;
+            result.truncated = true;
+            result.preserve = true;
+            result.claimedEmpty = false;
+            result.action = GearAction::Preserve;
+            result.deletesGear = false;
+            result.nativeEquipProven = false;
+            return result;
+        }
         std::vector<CandidateTemplate> gathered;
-        gathered.reserve(limit);
-        for (std::size_t index = 0; index < limit; ++index)
-            gathered.push_back(seen[index].row);
+        gathered.reserve(seen.size());
+        for (Seen const& item : seen)
+            gathered.push_back(item.row);
         CollectorRequest request = query.request;
         request.rows = gathered;
         // The equipment caches are not the authoritative legal universe.
         request.exhaustiveLegalDomain = false;
-        request.sourceExhausted = !overBudget && !conflict;
+        request.sourceExhausted = !conflict;
         request.completeMask = 0;
-        if (overBudget)
-            request.rowBudget = limit;
         CollectorResult result = CollectCandidateFacts(request, scorer);
         if (conflict)
             result.conflict = true;
@@ -261,9 +317,14 @@ namespace PlayerbotsAutoGearSelection
         result.claimedEmpty = false;
         result.deletesGear = false;
         result.nativeEquipProven = false;
-        if (overBudget)
-            result.truncated = true;
         return result;
+    }
+
+    template <class Inventory, class Source, class ItemLookup, class LimitLookup, class SetLookup, class Scorer>
+    CollectorResult CollectNativeCandidateFacts(Source const& source, ItemLookup const& items,
+        LimitLookup const& limits, SetLookup const& sets, NativeCollectQuery const& query, Scorer const& scorer)
+    {
+        return CollectNativeCandidateFacts<Inventory>(source, items, limits, sets, EmptyVariantSource{}, query, scorer);
     }
 
     // Adapts StatsWeightCalculator::CalculateItem. The calculator still loads

@@ -98,9 +98,10 @@ namespace PlayerbotsAutoGearSelection
                     duplicate = true;
             }
             bool const tooWide = enchant > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
-            bool const inProperty = ListedId(request.propertyDbc, enchant);
-            bool const inSuffix = ListedId(request.suffixDbc, enchant);
-            bool const wrongStore = suffix ? !inSuffix || inProperty : !inProperty || inSuffix;
+            // The two DBC stores are separate. The same number may exist in both.
+            bool const inSelected =
+                suffix ? ListedId(request.suffixDbc, enchant) : ListedId(request.propertyDbc, enchant);
+            bool const wrongStore = !inSelected;
             if (enchant == 0 || request.membership[index] == 0 || duplicate || tooWide || wrongStore)
             {
                 result.conflict = true;
@@ -154,6 +155,114 @@ namespace PlayerbotsAutoGearSelection
         request.dbcKnown = dbcKnown;
         request.budget = budget;
         return EnumerateVariants(request);
+    }
+
+    // One loaded Core item_enchantment_template row. Only a positive weight,
+    // in the same range Core keeps, is an authoritative member.
+    struct CoreGroupRow
+    {
+        std::uint32_t enchant = 0;
+        float weight = 0.f;
+    };
+
+    inline bool AuthoritativeWeight(float weight)
+    {
+        return weight > 0.000001f && weight <= 100.f;
+    }
+
+    // Owned copies. Spans into these arrays stay valid until the owner dies.
+    struct OwnedVariantSource
+    {
+        std::vector<std::uint32_t> pool{};
+        std::vector<std::uint8_t> membership{};
+        std::vector<std::uint32_t> propertyDbc{};
+        std::vector<std::uint32_t> suffixDbc{};
+        bool poolPresent = false;
+        bool membershipKnown = false;
+        bool dbcKnown = false;
+        bool complete = false;
+        bool partial = false;
+        bool conflict = false;
+    };
+
+    // Core positive-weight rows are the authoritative group. The RandomItemMgr
+    // pool is complete only when it contains exactly those ids. HasItemEnchantMod
+    // confirms a member. It does not prove that the pool is exhaustive.
+    template <class Membership>
+    OwnedVariantSource AdaptLoadedGroup(std::span<CoreGroupRow const> coreRows, std::span<std::uint32_t const> mgrPool,
+        bool mgrPoolPresent, std::int32_t group, Membership const& member, std::span<std::uint32_t const> propertyDbc,
+        std::span<std::uint32_t const> suffixDbc, bool dbcKnown)
+    {
+        OwnedVariantSource owned;
+        owned.propertyDbc.assign(propertyDbc.begin(), propertyDbc.end());
+        owned.suffixDbc.assign(suffixDbc.begin(), suffixDbc.end());
+        owned.dbcKnown = dbcKnown;
+        if (group <= 0 || !mgrPoolPresent)
+        {
+            owned.partial = group > 0;
+            return owned;
+        }
+        for (CoreGroupRow const& row : coreRows)
+        {
+            if (row.enchant == 0)
+            {
+                owned.conflict = true;
+                return owned;
+            }
+            if (!AuthoritativeWeight(row.weight))
+                continue;
+            for (std::uint32_t prior : owned.pool)
+            {
+                if (prior == row.enchant)
+                {
+                    owned.conflict = true;
+                    owned.pool.clear();
+                    return owned;
+                }
+            }
+            owned.pool.push_back(row.enchant);
+        }
+        if (owned.pool.empty())
+        {
+            owned.partial = true;
+            return owned;
+        }
+        if (mgrPool.size() != owned.pool.size())
+        {
+            owned.partial = true;
+            owned.pool.clear();
+            return owned;
+        }
+        for (std::uint32_t id : owned.pool)
+        {
+            bool inMgr = false;
+            for (std::uint32_t mgr : mgrPool)
+            {
+                if (mgr == id)
+                    inMgr = true;
+            }
+            if (!inMgr)
+            {
+                owned.partial = true;
+                owned.pool.clear();
+                return owned;
+            }
+        }
+        owned.membership.assign(owned.pool.size(), 0);
+        owned.membershipKnown = true;
+        for (std::size_t index = 0; index < owned.pool.size(); ++index)
+        {
+            bool const listed = member(group, owned.pool[index]);
+            owned.membership[index] = listed ? 1 : 0;
+            if (!listed)
+            {
+                owned.conflict = true;
+                return owned;
+            }
+        }
+        owned.poolPresent = true;
+        owned.complete = true;
+        return owned;
     }
 }
 

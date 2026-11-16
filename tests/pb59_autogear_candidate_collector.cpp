@@ -366,6 +366,8 @@ int main()
     original.propertyKnown = true;
     original.slot = 4;
     original.approved = true;
+    original.guid = 10;
+    original.guidKnown = true;
     StagingPiece staged;
     staged.entryId = 66;
     staged.count = 1;
