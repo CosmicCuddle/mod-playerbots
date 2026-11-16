@@ -20,7 +20,9 @@ namespace PlayerbotsAutoGearSelection
     {
         bool commandEnabled = false;
         bool ipCapEnabled = false;
-        bool altCommandAllowed = true;
+        // Kept for older callers, but no longer grants Altbot AutoGear.
+        // Owner rule: only verified RandomBots may run AutoGear at all.
+        bool altCommandAllowed = false;
         bool bis = false;
         bool tierSync = false;
         std::string_view text{};
@@ -133,13 +135,10 @@ namespace PlayerbotsAutoGearSelection
             PreserveDecision(decision);
             return decision;
         }
-        if (!request.populationKnown || request.population == Population::Unknown)
+        if (!request.populationKnown || request.population != Population::RandomBot)
         {
-            PreserveDecision(decision);
-            return decision;
-        }
-        if (request.population == Population::AltBot && !request.altCommandAllowed)
-        {
+            // Owner-approved no-op for Altbots, AddClass and unknown source:
+            // no cap fallback, legacy execution, plan, item or stage mutation.
             decision.rejected = true;
             PreserveDecision(decision);
             return decision;
