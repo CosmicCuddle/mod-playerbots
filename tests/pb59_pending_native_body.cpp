@@ -12,7 +12,7 @@ struct ObjectGuid { unsigned value; unsigned GetCounter()const{return value;} bo
 namespace std { template<> struct hash<ObjectGuid> { size_t operator()(ObjectGuid g) const noexcept { return g.value; } }; }
 #define LOG_ERROR(...) ((void)0)
 struct WorldSession;
-struct Player { ObjectGuid guid; std::uint64_t incarnation; WorldSession* session; ObjectGuid GetGUID() const {return guid;} std::uint64_t GetPB59OwnerIncarnation() const {return incarnation;} WorldSession* GetSession() const {return session;} };
+struct Player { struct CallbackScope { bool Admitted() const { return true; } }; CallbackScope AcquirePB59CallbackScope() { return {}; } ObjectGuid guid; std::uint64_t incarnation; WorldSession* session; ObjectGuid GetGUID() const {return guid;} std::uint64_t GetPB59OwnerIncarnation() const {return incarnation;} WorldSession* GetSession() const {return session;} };
 static std::map<ObjectGuid,Player*> registered;
 struct ObjectAccessor { static Player* FindConnectedPlayer(ObjectGuid guid){auto it=registered.find(guid);return it==registered.end()?nullptr:it->second;} };
 struct PlayerbotLoginQueryHolder { ObjectGuid guid; ObjectGuid GetGuid() const {return guid;} };
@@ -54,7 +54,8 @@ struct PlayerbotHolder
     bool timedRegistrationAllowed=true;
     bool RegisterTimedBot(Player*){return timedRegistrationAllowed;}
     void ForgetTimedBot(ObjectGuid,std::uint64_t,std::uint64_t){}
-    void OnBotLogin(Player*,PendingBotLogin::Owner&);
+    bool OnBotLogin(Player*,PendingBotLogin::Owner&);
+    Player* GetPlayerBot(ObjectGuid guid){auto it=playerBots.find(guid);return it==playerBots.end()?nullptr:it->second;}
     void OnBotLoginInternal(Player* p){if(onPublish)onPublish(p);}
 };
 struct RandomPlayerbotMgr:PlayerbotHolder {std::function<void(Player*)> loginHook; static RandomPlayerbotMgr& instance(){static RandomPlayerbotMgr m;return m;}void OnPlayerLogin(Player* p){if(loginHook)loginHook(p);}};
@@ -94,6 +95,10 @@ int main()
     // exception reports false without deleting the session owned by the holder.
     PlayerbotsMgr::instance().beforePublish=[] {throw std::runtime_error("before");};Add({4},16);H::UpdatePendingLogins();assert(!queue.Run());assert(H::botLoading.at({4}).owner.State()==Phase::Failed);PlayerbotsMgr::instance().beforePublish={};H::UpdatePendingLogins();assert(H::botLoading.empty());
     random.onPublish=[](Player*){throw std::runtime_error("after");};auto* partial=Add({4},17);H::UpdatePendingLogins();assert(!queue.Run());assert(H::botLoading.empty()&&random.playerBots.at({4})->session==partial);random.onPublish={};DeleteLegacy(random,{4});
+    // An identity change after publication must report incomplete, not success.
+    random.onPublish=[](Player* p){++p->incarnation;};auto* changed=Add({11},25);
+    H::UpdatePendingLogins();assert(!queue.Run());assert(H::botLoading.empty()&&random.playerBots.at({11})->session==changed);
+    random.onPublish={};DeleteLegacy(random,{11});
     // Native cleanup veto/throw leaves exact owner in sticky recovery, no replay.
     for(unsigned n=0;n<2;++n){auto* s=Add({5},18+n);s->veto=n==0;s->fault=n==1;H::UpdatePendingLogins();queue.queue.clear();int calls=WorldSession::logoutCalls;H::UpdatePendingLogins();assert(H::botLoading.at({5}).owner.State()==Phase::RecoveryRequired&&WorldSession::logoutCalls==calls+1);H::UpdatePendingLogins();assert(WorldSession::logoutCalls==calls+1);s->veto=s->fault=false;s->LogoutPlayer(true);H::botLoading.erase({5});}
     // Shutdown during callback must not delete the session on its own stack.
