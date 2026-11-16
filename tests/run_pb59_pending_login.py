@@ -26,6 +26,7 @@ def main():
     native += between(mgr, "void PlayerbotHolder::HandlePlayerBotLoginCallback", "void PlayerbotHolder::UpdateSessions()") + "\n"
     native += between(mgr, "bool PlayerbotHolder::OnBotLogin(Player* const bot,", "    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);") + "    return true;\n}\n"
     queued = between(ops, "class OnBotLoginOperation : public PlayerbotOperation", "class ArenaTeamAssignOperation")
+    custody = between(mgr, "        // Independent custody must own the exact session BEFORE holder erase.", "\n    }\n    catch")
     # Source contracts: AddPlayerBot and callback registration are not compiled
     # by this fixture; neither are the post-publication native initialization
     # callbacks or the full WorldSession/DB/world-thread integration.
@@ -50,6 +51,7 @@ def main():
         work = Path(tmp)
         (work / "pending_native.inc").write_text(native, encoding="utf-8")
         (work / "queued_native.inc").write_text(queued, encoding="utf-8")
+        (work / "logout_custody_native.inc").write_text(custody, encoding="utf-8")
         for name in ("pb59_pending_session_owner.cpp", "pb59_pending_native_body.cpp"):
             binary = work / Path(name).stem
             command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
