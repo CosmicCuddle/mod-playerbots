@@ -19,8 +19,9 @@ namespace PlayerbotsAutoGearSelection
         Unknown
     };
 
-    // Population regear only. A commanded alt bot can still be geared under
-    // the sender's cap later. This predicate never writes a progression stage.
+    // Population regear only. Altbots are excluded from all AutoGear
+    // commands by the owner's 16 Nov decision, independently of tier sync.
+    // This predicate never writes a progression stage.
     constexpr bool AllowsPopulationTierSync(Population population)
     {
         return population == Population::RandomBot;
