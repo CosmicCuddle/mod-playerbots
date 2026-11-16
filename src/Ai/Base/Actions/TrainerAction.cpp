@@ -720,6 +720,8 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     {
 #if defined(COSMIC_PB59_DETACHED_ITEM_API)
         if (discard && decision.action == GearAction::CommitSet && decision.selectionRan &&
+            request.selection.hasNativeSource && request.selection.sourceRevision &&
+            decision.plan.storage.sourceRevision == request.selection.sourceRevision &&
             decision.plan.sourceComplete && decision.plan.scoresTrustworthy && decision.plan.cap == decision.cap)
         {
             PlayerbotsAutoGearStorage::NativeReplacementSelection selected;

@@ -93,6 +93,10 @@ std::optional<NativeReplacementBatch> PrepareNativeRandomReplacement(Player& bot
                 if (!NativeReplacementItemCurrent(*batch.items[slot], selection.pieces[slot],
                         selection.cap, selection.quality))
                     return false;
+                // New GUIDs must never alias the original disposal set.
+                for (auto const& old : original.equipment)
+                    if (old.item && old.item->guid == batch.items[slot]->GetGUID().GetRawValue())
+                        return false;
                 for (std::uint8_t other = 0; other < slot; ++other)
                     if (batch.items[other] && batch.items[other]->GetGUID() == batch.items[slot]->GetGUID())
                         return false;
