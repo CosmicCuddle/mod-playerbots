@@ -7,6 +7,8 @@
 #include "PlayerbotRepository.h"
 #include "PlayerbotsDatabase.h"
 #include "AiObjectContext.h"
+#include "Config.h"
+#include "Log.h"
 
 void PlayerbotRepository::Load(PlayerbotAI* botAI)
 {
@@ -68,7 +70,19 @@ void PlayerbotRepository::Save(PlayerbotAI* botAI)
     SaveValue(trans, guid, "nc", FormatStrategies("nc", botAI->GetStrategies(BOT_STATE_NON_COMBAT)));
     SaveValue(trans, guid, "dead", FormatStrategies("dead", botAI->GetStrategies(BOT_STATE_DEAD)));
 
-    PlayerbotsDatabase.DirectCommitTransaction(trans);
+    if (!sConfigMgr->GetOption<bool>("PB59.CharacterSaveEvidence.Enable", false))
+    {
+        PlayerbotsDatabase.DirectCommitTransaction(trans);
+        return;
+    }
+
+    // Keep the existing synchronous strategy write and native logout order.
+    // A failed or uncertain result is diagnostic only: never replay an old
+    // strategy snapshot or prevent the normal character logout save.
+    auto const result = PlayerbotsDatabase.DirectCommitTransactionWithResult(trans);
+    if (!result.IsCommitted())
+        LOG_ERROR("playerbots", "PB59 strategy save GUID {} outcome {} code {}; strategy snapshot may be missing; dropping failed save, no automatic replay.",
+            guid, static_cast<int>(result.status), result.executionCode);
 }
 
 std::string const PlayerbotRepository::FormatStrategies(std::string const /*type*/, std::vector<std::string> strategies)
