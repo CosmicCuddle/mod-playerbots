@@ -12,3 +12,14 @@ clang++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -Itests/pb
 /tmp/pb59-discard-san
 ```
 27 checks per configuration. The route fixture adds six cases; full native and full route test execution remain a separate gate. No live activation.
+
+Outcome matrix independently run against exact outcome header blob 1b512ada2d5aab94876e84bf30066c53e4ca7953 and command outcome blob 302d301b22956580e42a8d20ab4f0cc1ad52362c:
+
+```sh
+g++ -std=c++20 -Wall -Wextra -Werror -Isrc/Bot tests/pb59_rndbot_discard_outcome.cpp -o /tmp/pb59-outcomes
+/tmp/pb59-outcomes
+clang++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc/Bot tests/pb59_rndbot_discard_outcome.cpp -o /tmp/pb59-outcomes-san
+/tmp/pb59-outcomes-san
+```
+
+Both report 120 outcome cases PASS. Scope: pure outcome plus the separate 27-case native preparation mock; the modified complete route fixture has not been executed in this environment.
