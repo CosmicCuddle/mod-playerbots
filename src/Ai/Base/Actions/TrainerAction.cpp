@@ -11,6 +11,9 @@
 #if __has_include("PB59InventorySlotFacts.h")
 #include "AutoGearNativeStoragePreparation.h"
 #include "AutoGearNativeDiscardPreparation.h"
+#if defined(COSMIC_PB59_DETACHED_ITEM_API)
+#include "AutoGearNativeReplacementPreparation.h"
+#endif
 #endif
 #include "BisListMgr.h"
 #include "BudgetValues.h"
@@ -633,6 +636,9 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     if (!sPlayerbotAIConfig.AutoGearIPCapEnable || !bot || !ai || !sender ||
         !bot->IsInWorld() || !sender->IsInWorld() || !bot->GetSession() || !sender->GetSession())
         return false;
+    // Copy log identity before any native policy callback can retire a player.
+    auto const botLogGuid = bot->GetGUID().GetRawValue();
+    auto const senderLogGuid = sender->GetGUID().GetRawValue();
     RouteRequest request;
     request.ipCapEnabled = true;
     request.bis = bis;
@@ -690,28 +696,55 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     // The preflight produces an exact snapshot, not permission to discard.
     // A future collector must first establish authoritative selection facts.
     std::optional<PlayerbotsAutoGearStorage::NativeDiscardPlan> discard;
+    auto verifiedRandom = [bot, ai](Player const& current)
+    {
+        return &current == bot && GET_PLAYERBOT_AI(bot) == ai &&
+            bot->GetSession() && bot->GetSession()->IsHeadless() &&
+            sRandomPlayerbotMgr.IsRandomBot(bot) &&
+            sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId());
+    };
     if (request.selection.authorityValid && request.populationKnown && randomBot)
     {
-        auto verifiedRandom = [bot, ai](Player const& current)
-        {
-            return &current == bot && GET_PLAYERBOT_AI(bot) == ai &&
-                bot->GetSession() && bot->GetSession()->IsHeadless() &&
-                sRandomPlayerbotMgr.IsRandomBot(bot) &&
-                sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId());
-        };
         discard = PlayerbotsAutoGearStorage::PrepareNativeRandomDiscard(*bot, verifiedRandom);
         request.randomDiscardPrepared = discard.has_value();
     }
 #endif
     auto const decision = ResolveAutoGearRoute(request, [](uint32, int32, uint32) { return 0u; });
     LOG_INFO("playerbots", "PB59 AutoGear world plan bot={} sender={} raw={} effective={} authority={} cap={} action={} form={}",
-        bot->GetGUID().GetRawValue(), sender->GetGUID().GetRawValue(), request.rawStage, request.effectiveStage,
+        botLogGuid, senderLogGuid, request.rawStage, request.effectiveStage,
         request.progressionContextVerified, decision.cap, static_cast<uint32>(decision.action), static_cast<uint32>(decision.form));
 #if __has_include("PB59InventorySlotFacts.h")
     // Only an actual proven mutation decision may enter storage preparation.
     // The complete native effects/rollback executor is not yet connected.
     if (decision.discardOriginals)
     {
+#if defined(COSMIC_PB59_DETACHED_ITEM_API)
+        if (discard && decision.action == GearAction::CommitSet && decision.selectionRan &&
+            decision.plan.sourceComplete && decision.plan.scoresTrustworthy && decision.plan.cap == decision.cap)
+        {
+            PlayerbotsAutoGearStorage::NativeReplacementSelection selected;
+            selected.cap = decision.cap;
+            selected.quality = decision.quality;
+            selected.eligibleMask = request.selection.eligibleMask;
+            selected.requiredMask = request.selection.requiredMask;
+            bool exact = true;
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            {
+                auto const& piece = decision.plan.selected[slot];
+                if (piece.entryId != decision.plan.solved.items[slot] || (piece.entryId && piece.slot != slot))
+                    exact = false;
+                selected.pieces[slot] = {piece.entryId, piece.randomProperty};
+            }
+            if (exact)
+            {
+                auto staged = PlayerbotsAutoGearStorage::PrepareNativeRandomReplacement(*bot, *discard,
+                    selected, verifiedRandom);
+                LOG_INFO("playerbots", "PB59 AutoGear RNDBOT detached replacement prepared={}", bool(staged));
+                // Preview only until the native custody/effects executor exists.
+                // The owning batch destroys only these never-attached new objects.
+            }
+        }
+#endif
         LOG_INFO("playerbots", "PB59 AutoGear RNDBOT discard preflight accepted; executor not connected");
     }
     else if (decision.action == GearAction::StripToBags || decision.action == GearAction::CommitSet)
