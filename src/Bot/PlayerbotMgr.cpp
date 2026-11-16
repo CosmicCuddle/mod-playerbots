@@ -182,6 +182,35 @@ bool PlayerbotHolder::RequestExplicitBotLogout(Player* bot, Player* master)
     return result == Mailbox::Submit::Accepted || result == Mailbox::Submit::Coalesced;
 }
 
+// World owner only. Acknowledge after logging, not before. No native pointers
+// are retained and a replacement master cannot inherit a previous receipt.
+static void LogExplicitLogoutReceipts()
+{
+    using Mailbox = PB59::TimedRetirementMailbox;
+    auto& mailbox = Mailbox::Instance();
+    for (std::size_t n = 0; n < Mailbox::ReceiptCapacity; ++n)
+    {
+        auto receipt = mailbox.PeekReceipt();
+        if (!receipt) break;
+        char const* status = "unknown";
+        switch (receipt->status)
+        {
+            case Mailbox::ReceiptStatus::Completed: status = "completed"; break;
+            case Mailbox::ReceiptStatus::Refused: status = "refused"; break;
+            case Mailbox::ReceiptStatus::RecoveryRequired: status = "recovery required"; break;
+            case Mailbox::ReceiptStatus::OwnerLost: status = "owner lost before dispatch"; break;
+            case Mailbox::ReceiptStatus::Shutdown: status = "cancelled at shutdown"; break;
+            default: return;
+        }
+        LOG_INFO("playerbots", "Explicit logout GUID {} player {} session {} holder {} master {} master player {} master session {} ticket {} result {}",
+            receipt->work.identity.guid, receipt->work.identity.player, receipt->work.identity.session,
+            receipt->work.identity.holder, receipt->work.identity.masterGuid, receipt->work.identity.masterPlayer,
+            receipt->work.identity.masterSession, receipt->work.ticket, status);
+        (void)status; // test fixtures may compile out logging
+        if (!mailbox.AcknowledgeReceipt(*receipt)) break;
+    }
+}
+
 void PlayerbotHolder::ProcessTimedBotLogouts()
 {
     using Mailbox = PB59::TimedRetirementMailbox;
@@ -197,7 +226,14 @@ void PlayerbotHolder::ProcessTimedBotLogouts()
             Mailbox& mailbox;
             Mailbox::Work work;
             bool recovery = false;
-            ~Finish() { (void)mailbox.Finish(work, recovery); }
+            Mailbox::ReceiptStatus status = Mailbox::ReceiptStatus::Refused;
+            ~Finish()
+            {
+                if (work.mode == Mailbox::Mode::Explicit)
+                    (void)mailbox.FinishExplicit(work, status);
+                else
+                    (void)mailbox.Finish(work, recovery);
+            }
         } finish{mailbox, *work};
         auto const& id = work->identity;
         auto dispatch = [&]() -> BotRetirementResult
@@ -240,26 +276,27 @@ void PlayerbotHolder::ProcessTimedBotLogouts()
         {
             auto result = dispatch();
             finish.recovery = result == BotRetirementResult::RecoveryRequired;
-            if (work->mode == Mailbox::Mode::Explicit)
-                LOG_INFO("playerbots", "Explicit logout GUID {} ticket {} result {}", id.guid, work->ticket,
-                    result == BotRetirementResult::Completed ? "completed" :
-                    finish.recovery ? "recovery required" : "refused");
-            else if (finish.recovery)
+            finish.status = result == BotRetirementResult::Completed ? Mailbox::ReceiptStatus::Completed :
+                finish.recovery ? Mailbox::ReceiptStatus::RecoveryRequired : Mailbox::ReceiptStatus::Refused;
+            if (work->mode == Mailbox::Mode::Timed && finish.recovery)
                 LOG_ERROR("playerbots", "Timed logout of {} requires recovery; no automatic retry", id.guid);
         }
         catch (...)
         {
             // Unknown outcome must not authorize another attempt.
             finish.recovery = true;
-            LOG_ERROR("playerbots", "Timed logout dispatch interrupted for GUID {}", id.guid);
+            finish.status = Mailbox::ReceiptStatus::RecoveryRequired;
+            LOG_ERROR("playerbots", "Bot logout dispatch interrupted for GUID {}", id.guid);
         }
     }
+    LogExplicitLogoutReceipts();
 }
 
 void PlayerbotHolder::StopTimedBotLogouts()
 {
     auto& mailbox = PB59::TimedRetirementMailbox::Instance();
     mailbox.Stop();
+    LogExplicitLogoutReceipts();
     auto unresolved = mailbox.Outstanding();
     if (unresolved)
         LOG_ERROR("playerbots", "{} timed logout requests pending/blocked at shutdown; native drain not yet implemented", unresolved);
