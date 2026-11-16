@@ -164,6 +164,24 @@ void PlayerbotHolder::RequestTimedBotLogout(Player* bot)
         LOG_ERROR("playerbots", "Timed bot logout ticket space exhausted");
 }
 
+bool PlayerbotHolder::RequestExplicitBotLogout(Player* bot, Player* master)
+{
+    auto* session = bot ? bot->GetSession() : nullptr;
+    auto* masterSession = master ? master->GetSession() : nullptr;
+    if (!session || !session->IsHeadless() || session->GetPlayer() != bot ||
+        session->IsLoggingOut() || !masterSession || masterSession->GetPlayer() != master ||
+        masterSession->IsHeadless())
+        return false;
+    // Only immutable identities cross from the command/AI context to the world.
+    // The mailbox checks the original registered personal master atomically.
+    using Mailbox = PB59::TimedRetirementMailbox;
+    auto result = Mailbox::Instance().RequestExplicit(bot->GetGUID().GetRawValue(),
+        bot->GetPB59OwnerIncarnation(), session->GetPB59SessionIncarnation(),
+        master->GetGUID().GetRawValue(), master->GetPB59OwnerIncarnation(),
+        masterSession->GetPB59SessionIncarnation());
+    return result == Mailbox::Submit::Accepted || result == Mailbox::Submit::Coalesced;
+}
+
 void PlayerbotHolder::ProcessTimedBotLogouts()
 {
     using Mailbox = PB59::TimedRetirementMailbox;
@@ -182,7 +200,7 @@ void PlayerbotHolder::ProcessTimedBotLogouts()
             ~Finish() { (void)mailbox.Finish(work, recovery); }
         } finish{mailbox, *work};
         auto const& id = work->identity;
-        try
+        auto dispatch = [&]() -> BotRetirementResult
         {
             ObjectGuid guid(id.guid);
             Player* bot = ObjectAccessor::FindConnectedPlayer(guid);
@@ -190,8 +208,9 @@ void PlayerbotHolder::ProcessTimedBotLogouts()
             if (!bot || bot->GetPB59OwnerIncarnation() != id.player || !session ||
                 !session->IsHeadless() || session->GetPlayer() != bot ||
                 session->GetPB59SessionIncarnation() != id.session)
-                continue;
+                return BotRetirementResult::Refused;
             PlayerbotHolder* holder = &sRandomPlayerbotMgr;
+            Player* expectedMaster = nullptr;
             if (id.masterGuid)
             {
                 Player* master = ObjectAccessor::FindConnectedPlayer(ObjectGuid(id.masterGuid));
@@ -199,21 +218,34 @@ void PlayerbotHolder::ProcessTimedBotLogouts()
                 if (!master || master->GetPB59OwnerIncarnation() != id.masterPlayer ||
                     !masterSession || masterSession->GetPlayer() != master ||
                     masterSession->GetPB59SessionIncarnation() != id.masterSession)
-                    continue;
+                    return BotRetirementResult::Refused;
+                expectedMaster = master;
                 holder = GET_PLAYERBOT_MGR(master);
             }
             if (!holder)
-                continue;
+                return BotRetirementResult::Refused;
             auto tag = holder->_pb59HolderLifetime.Observe();
             if (!tag->Alive() || tag->identity != id.holder || holder->GetPlayerBot(guid) != bot)
-                continue;
+                return BotRetirementResult::Refused;
             auto* ai = GET_PLAYERBOT_AI(bot);
-            if (!ai || !ai->IsTimedLogoutReady())
-                continue;
-            auto result = holder->TryLogoutPlayerBot(guid, {}, true);
+            if (!ai)
+                return BotRetirementResult::Refused;
+            bool const timed = work->mode == Mailbox::Mode::Timed;
+            if (timed ? !ai->IsTimedLogoutReady() :
+                (!expectedMaster || ai->GetMaster() != expectedMaster || session->IsLoggingOut()))
+                return BotRetirementResult::Refused;
+            return holder->TryLogoutPlayerBot(guid, {}, timed);
+        };
+        try
+        {
+            auto result = dispatch();
             finish.recovery = result == BotRetirementResult::RecoveryRequired;
-            if (finish.recovery)
-                LOG_ERROR("playerbots", "Timed logout of {} requires recovery; no automatic retry", guid.ToString());
+            if (work->mode == Mailbox::Mode::Explicit)
+                LOG_INFO("playerbots", "Explicit logout GUID {} ticket {} result {}", id.guid, work->ticket,
+                    result == BotRetirementResult::Completed ? "completed" :
+                    finish.recovery ? "recovery required" : "refused");
+            else if (finish.recovery)
+                LOG_ERROR("playerbots", "Timed logout of {} requires recovery; no automatic retry", id.guid);
         }
         catch (...)
         {
