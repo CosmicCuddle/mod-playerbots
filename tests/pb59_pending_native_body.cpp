@@ -42,6 +42,7 @@ struct PendingBotLogin
     std::uint64_t botPlayerIncarnation=0;
     Owner owner;
 };
+enum class BotRetirementResult { Refused, Completed, RecoveryRequired };
 struct PlayerbotHolder
 {
     PB59::RecoveryRegistry::HolderLifetime _pb59HolderLifetime;
@@ -55,6 +56,8 @@ struct PlayerbotHolder
     bool timedRegistrationAllowed=true;
     bool RegisterTimedBot(Player*){return timedRegistrationAllowed;}
     void ForgetTimedBot(ObjectGuid,std::uint64_t,std::uint64_t){}
+    void RemoveFromPlayerbotsMap(ObjectGuid guid){playerBots.erase(guid);}
+    BotRetirementResult FinishPublishedForTest(ObjectGuid guid);
     bool OnBotLogin(Player*,PendingBotLogin::Owner&);
     Player* GetPlayerBot(ObjectGuid guid){auto it=playerBots.find(guid);return it==playerBots.end()?nullptr:it->second;}
     void OnBotLoginInternal(Player* p){if(onPublish)onPublish(p);}
@@ -72,17 +75,34 @@ struct PlayerbotWorldThreadProcessor {bool accept=true;std::vector<std::unique_p
 using Phase=PendingBotLogin::Owner::Phase;
 using H=PlayerbotHolder;
 static WorldSession* Add(ObjectGuid guid,std::uint64_t id,uint32 account=0,std::uint64_t masterPlayer=0,std::uint64_t masterSession=0){auto session=std::make_unique<WorldSession>(id);auto* raw=session.get();auto [it,inserted]=H::botLoading.try_emplace(guid,account,masterPlayer,masterSession,std::move(session));assert(inserted);raw->callback=[guid,raw]{sRandomPlayerbotMgr.HandlePlayerBotLoginCallback({guid},raw);};return raw;}
-static void DeletePublished(H& holder,ObjectGuid guid){
-    using R=PB59::PublishedSessionOwner<WorldSession>;using J=PB59::RecoveryRegistry;
-    auto* p=holder.playerBots.at(guid);auto* s=p->session;
-    R::Identity id{guid.GetRawValue(),p->incarnation,holder._pb59HolderLifetime.Observe()->identity,s->id};
-    assert(R::Inspect(id)==R::Phase::Published);
-    auto permit=R::TryReserveRetirement(id);assert(permit);
-    auto record=J::Reserve(id.guid,id.player,id.holder,J::Kind::Logout);assert(record&&record.MarkMutation());
-    auto handoff=R::TakeForRecovery(id,permit,record);assert(handoff);
-    assert(handoff.Unlink([&](R::Identity exact){assert(exact==id);return holder.playerBots.erase(guid)==1;}));
-    assert(handoff.WithSession([](WorldSession& session){session.LogoutPlayer(true);}));
-    assert(handoff.DeleteDetached()&&R::Inspect(id)==R::Phase::Missing);
+// Exact native custody tail, with a synthetic Core retirement lease and
+// minimal holder APIs. No actual native DB/logout or Core lifetime proof.
+BotRetirementResult H::FinishPublishedForTest(ObjectGuid guid)
+{
+    using Result=BotRetirementResult;
+    using Published=PB59::PublishedSessionOwner<WorldSession>;
+    using Journal=PB59::RecoveryRegistry;
+    auto* bot=GetPlayerBot(guid);
+    if(!bot)return Result::Refused;
+    auto* session=bot->session;
+    auto const ownerIncarnation=bot->incarnation, sessionIncarnation=session->id;
+    Published::Identity const publishedId{guid.GetRawValue(),ownerIncarnation,_pb59HolderLifetime.Observe()->identity,sessionIncarnation};
+    auto custodyPermit=Published::TryReserveRetirement(publishedId);
+    if(!custodyPermit)return Result::Refused;
+    auto record=Journal::Reserve(publishedId.guid,ownerIncarnation,publishedId.holder,Journal::Kind::Logout);
+    if(!record||!record.MarkMutation())return Result::Refused;
+    auto current=[&]{return GetPlayerBot(guid)==bot&&session->GetPlayer()==bot&&bot->incarnation==ownerIncarnation&&session->id==sessionIncarnation;};
+    auto partial=[] {return Result::RecoveryRequired;};
+    struct Lease {bool Complete(){return true;}} retirement;
+    try
+    {
+#include "logout_custody_native.inc"
+    }
+    catch(...) {return partial();}
+}
+static void DeletePublished(H& holder,ObjectGuid guid)
+{
+    assert(holder.FinishPublishedForTest(guid)==BotRetirementResult::Completed);
 }
 int main()
 {
@@ -120,4 +140,19 @@ int main()
     random.loginHook=[](Player*){for(unsigned i=100;i<300;++i)Add({i},i+1000);};Add({7},21);H::UpdatePendingLogins();assert(H::botLoading.size()==201&&queue.queue.size()==1);random.loginHook={};assert(queue.Run());DeletePublished(random,{7});H::ClearPendingLogins();assert(H::botLoading.empty());H::_pendingLoginsStopping=false;
     assert(registered.empty());
     assert(PB59::PublishedSessionOwner<WorldSession>::Outstanding()==0);
+    // Native custody tail retains ownership after a logout veto or throw.
+    // These intentionally unresolved entries survive fixture exit.
+    for(unsigned n=0;n<2;++n)
+    {
+        using R=PB59::PublishedSessionOwner<WorldSession>;
+        auto* failed=Add({30+n},300+n);H::UpdatePendingLogins();assert(queue.Run());
+        auto* bot=failed->GetPlayer();
+        R::Identity id{bot->guid.GetRawValue(),bot->incarnation,random._pb59HolderLifetime.Observe()->identity,failed->id};
+        failed->veto=n==0;failed->fault=n==1;
+        int destroyed=WorldSession::destroyed;
+        assert(random.FinishPublishedForTest(bot->guid)==BotRetirementResult::RecoveryRequired);
+        assert(R::Inspect(id)==R::Phase::RecoveryRequired&&WorldSession::destroyed==destroyed);
+        assert(!random.GetPlayerBot(ObjectGuid{30+n}));
+    }
+    assert(PB59::PublishedSessionOwner<WorldSession>::Outstanding()==2);
 }
