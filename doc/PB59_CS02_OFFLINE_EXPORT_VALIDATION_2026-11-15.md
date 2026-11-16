@@ -29,6 +29,13 @@ The owner will supply `acore_world` and `Spell.csv` later. This spec checks thos
 - `Invalid`: row count mismatch, digest mismatch, a negative spell reference, an empty item-spell list when spells are required, or an unsorted id index. Selection preserves.
 - `Bounded`: the id window is larger than the stated bound. It is not scanned.
 - `MetadataChecked`: the two manifests agree. `ExportIsProductionReady` is always false. This is not a production gear source.
+- `ReadError`: the stream failed. A clean end of file is not this verdict.
+
+## Reader
+
+`AutoGearExportReader.h` and `apps/pb59/export_reader.cpp` read a file in 64-byte steps. Each step is hashed with OpenSSL `EVP_sha256` and parsed before the next step. The byte limit is checked before the addition, so a short read cannot wrap an unsigned counter. The CLI parses manifest numbers without `std::stoul`.
+
+Accepted text is CSV with a header, quoted commas, and quoted newlines; a normalized id list beginning `# pb59-normalized 1`; or a mysqldump fragment. `ConvertDump` recognizes statements and does not execute them. Schema, `CREATE`, and comments are skipped. An extended `INSERT` contributes every tuple. Trailing junk on an id, a repeated id, or a manifest value that is not a whole 32-bit number is rejected.
 
 Darkmoon cards stay Unknown for availability and procs until those spell rows are in an accepted export. Item level 66, required level 60, and unique trinket may be recorded as base fields from coordination #64 comment `6900198011`. They are not a forced set.
 

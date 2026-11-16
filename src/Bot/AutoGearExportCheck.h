@@ -19,7 +19,8 @@ namespace PlayerbotsAutoGearSelection
         Unknown,
         Invalid,
         Bounded,
-        MetadataChecked
+        MetadataChecked,
+        ReadError
     };
 
     struct Sha256Digest

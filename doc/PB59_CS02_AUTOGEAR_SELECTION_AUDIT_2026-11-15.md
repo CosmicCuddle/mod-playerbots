@@ -51,7 +51,9 @@ CS01 review `6903748406` is applied on the same head. The plan keeps the chosen 
 
 CS01 review `6903969713` is applied on the same head. The export reader hashes every declared chunk and parses counts from those bytes. A storage request records the entry, signed property, slot, and revisions, and it is not ready when a revision is missing or stale. Gear moved into bags stays in the retained count. The additive solver is not described as set-optimal. Unknown set evidence preserves.
 
-GCC 13, Clang 18, and GCC ASan+UBSan each report 295 checks: cap 44, plan 72, command parse 22, fact source 24, set bonus 12, variant solver 20, slot enumeration 12, retained constraints 9, solver oracle 14, export check 9, cap matrix 14, adversarial 23, and checkpoint 8 20. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
+CS01 review `6912060277` is applied on the same head. The export reader reads, hashes with OpenSSL, and parses in 64-byte steps. It does not load the file and then hash it. A read error is `ReadError`; a clean end of file is not. CSV quoting, extended `INSERT` tuples, and a read-only dump converter are covered. The converter does not execute SQL. Duplicate ids and a manifest number that is not a whole 32-bit value are Invalid or rejected, and they do not throw. `SearchLegalSet` scores only inside a four-by-four bound and adds a set bonus when the chosen count reaches that threshold. With no set bonus its score matches the variant solver. Unknown set evidence stays unscored, and the plan still preserves. The variant solver is not called set-optimal. `MetadataChecked` is still not production readiness.
+
+GCC 13, Clang 18, and GCC ASan+UBSan each report 314 checks: cap 44, plan 72, command parse 22, fact source 24, set bonus 12, variant solver 20, slot enumeration 12, retained constraints 9, solver oracle 14, export check 9, cap matrix 14, adversarial 23, checkpoint 8 20, export stream 15, and whole-set oracle 4. Clang ASan+UBSan still cannot link. No hosted CI was started from here.
 
 ## Integration still waiting on Maintenance
 

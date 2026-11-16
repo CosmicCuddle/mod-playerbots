@@ -27,7 +27,8 @@ bool LoadManifest(std::string const& path, PlayerbotsAutoGearSelection::Expected
     {
         if (key == "rows")
         {
-            manifest.rows = static_cast<std::uint32_t>(std::stoul(value));
+            if (!PlayerbotsAutoGearSelection::ParseManifestUint(value, manifest.rows))
+                return false;
             manifest.rowsKnown = true;
         }
         else if (key == "digest" && value.size() == 64)
@@ -61,7 +62,13 @@ int main(int argc, char** argv)
         std::cout << "verdict=Unknown productionReady=false\n";
         return 1;
     }
-    std::size_t const limit = static_cast<std::size_t>(std::stoull(argv[3]));
+    std::uint32_t limitValue = 0;
+    if (!PlayerbotsAutoGearSelection::ParseManifestUint(argv[3], limitValue) || limitValue == 0)
+    {
+        std::cout << "verdict=Unknown productionReady=false\n";
+        return 1;
+    }
+    std::size_t const limit = limitValue;
     PlayerbotsAutoGearSelection::ParsedExport const parsed =
         PlayerbotsAutoGearSelection::ReadExportFile(argv[1], expected, limit);
     char const* name = "Unknown";
@@ -71,6 +78,8 @@ int main(int argc, char** argv)
         name = "Bounded";
     else if (parsed.verdict == PlayerbotsAutoGearSelection::ExportVerdict::MetadataChecked)
         name = "MetadataChecked";
+    else if (parsed.verdict == PlayerbotsAutoGearSelection::ExportVerdict::ReadError)
+        name = "ReadError";
     std::cout << "verdict=" << name << " rows=" << parsed.derivedRows << " productionReady=false\n";
     return parsed.verdict == PlayerbotsAutoGearSelection::ExportVerdict::MetadataChecked ? 0 : 1;
 }
