@@ -16,6 +16,8 @@ namespace PlayerbotsAutoGearSlots
         unsigned mainhand, offhand, ranged, tabard;
     };
 
+    // False means the schedule did not search the slot. It is not proof that
+    // the slot is empty. A low-level bot may already be wearing the item.
     constexpr bool SearchAtLevel(unsigned level, unsigned slot, Layout const& layout)
     {
         if (slot == layout.tabard || slot == layout.body)

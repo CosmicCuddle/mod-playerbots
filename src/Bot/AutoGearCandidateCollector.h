@@ -364,6 +364,28 @@ namespace PlayerbotsAutoGearSelection
         }
     }
 
+    // EQUIP limits count socketed gems and equipped copies that this plan does
+    // not retire. Unknown gem or equipped state is not zero. HAVE limits stay
+    // on the possession check. A full category refuses the domain.
+    inline bool EquipRetentionAllows(std::vector<ItemFact>& facts, std::span<RetainedCount const> retained)
+    {
+        for (ItemFact& fact : facts)
+        {
+            if (fact.limitCategory == 0 || fact.categoryLimit == 0)
+                continue;
+            RetainedCount const* row = FindCategoryCount(retained, fact.limitCategory);
+            if (row == nullptr || !row->equippedKnown || !row->gemsKnown)
+                return false;
+            if (row->gems > 0xFFFFFFFFu - row->equipped)
+                return false;
+            std::uint32_t const outside = row->equipped + row->gems;
+            if (outside >= fact.categoryLimit)
+                return false;
+            fact.categoryLimit -= outside;
+        }
+        return true;
+    }
+
     inline bool CombatDispositionSlot(std::uint8_t slot)
     {
         return slot < PlayerbotsAutoGearSet::Slots && slot != 3 && slot != 18;
@@ -677,6 +699,24 @@ namespace PlayerbotsAutoGearSelection
             result.nativeRows.push_back(source);
             result.rows.push_back(proven);
         }
+
+        for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+        {
+            if ((request.eligibleMask & (std::uint32_t{1} << slot)) == 0)
+                continue;
+            if (!request.bot.levelKnown ||
+                PlayerbotsAutoGearSlots::SearchAtLevel(request.bot.level, slot, SelectionSlots))
+                continue;
+            incomplete = true;
+            if (!result.provenance[slot].empty())
+                continue;
+            ProvenanceRow marker;
+            marker.state = RowState::Unknown;
+            marker.revision = request.sourceRevision;
+            result.provenance[slot].push_back(marker);
+        }
+        if (!EquipRetentionAllows(result.facts, result.projectedCounts))
+            incomplete = true;
 
         bool splitVariant = false;
         for (std::size_t i = 0; i < result.nativeRows.size() && !splitVariant; ++i)

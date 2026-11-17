@@ -5,10 +5,10 @@
 #include "AutoGearCandidateCollector.h"
 #include "AutoGearSlotEnumeration.h"
 
-// PB59_CP23_KNOWN_DEFECT defaults to 1 and locks today's B1 and B2 certificates.
-// Pass -DPB59_CP23_KNOWN_DEFECT=0 to require Preserve and Incomplete. That fails until the fix.
+// PB59_CP23_KNOWN_DEFECT is 0. The desired Preserve and Incomplete results are
+// the contract. Pass -DPB59_CP23_KNOWN_DEFECT=1 only to replay the old certificates.
 #ifndef PB59_CP23_KNOWN_DEFECT
-#define PB59_CP23_KNOWN_DEFECT 1
+#define PB59_CP23_KNOWN_DEFECT 0
 #endif
 
 using namespace PlayerbotsAutoGearSelection;
@@ -281,6 +281,58 @@ int main()
                              !crowded.plan.sourceComplete && crowded.plan.selected[12].entryId == 0 &&
                              crowded.plan.selected[13].entryId == 0;
     ok = Check(oneCategory, "two required trinkets in one equip category stay preserve") && ok;
+
+    std::vector<RetainedCount> const severalGems{Count(0, 9, 0, 3, true)};
+    CollectorResult const manyGems = Collect(trinketSlot, oneTrinket, severalGems, noOriginals);
+    bool const gemsFill = manyGems.action == GearAction::Preserve && !manyGems.claimedEmpty &&
+                          !manyGems.plan.sourceComplete && manyGems.plan.selected[12].entryId == 0;
+    ok = Check(gemsFill, "several socketed gems fill an equip limit") && ok;
+
+    std::vector<CandidateTemplate> roomy{EquipTrinket(500, 12)};
+    roomy[0].categoryLimit = 3;
+    std::vector<RetainedCount> const twoGems{Count(0, 9, 0, 2, true)};
+    CollectorResult const gemsLeaveRoom = Collect(trinketSlot, roomy, twoGems, noOriginals);
+    bool const roomLeft = gemsLeaveRoom.action == GearAction::CommitSet && !gemsLeaveRoom.claimedEmpty &&
+                          gemsLeaveRoom.plan.sourceComplete && gemsLeaveRoom.plan.selected[12].entryId == 500;
+    ok = Check(roomLeft, "socketed gems below the equip limit still leave one copy") && ok;
+
+    std::vector<RetainedCount> const gemAndWorn{Count(0, 9, 1, 1, true)};
+    CollectorResult const bothCounts = Collect(trinketSlot, oneTrinket, gemAndWorn, noOriginals);
+    bool const summed = bothCounts.action == GearAction::Preserve && !bothCounts.claimedEmpty &&
+                        !bothCounts.plan.sourceComplete && bothCounts.plan.selected[12].entryId == 0;
+    ok = Check(summed, "a gem plus an outside equipped copy fill an equip limit") && ok;
+
+    CandidateTemplate haveTrinket = Item(500, 12);
+    haveTrinket.limitCategory = 9;
+    haveTrinket.limitKnown = true;
+    haveTrinket.categoryHaveLimit = 1;
+    std::vector<CandidateTemplate> const haveRows{haveTrinket};
+    std::vector<RetainedCount> const haveEmpty{Count(0, 9, 0, 0, true)};
+    CollectorResult const haveOpen = Collect(trinketSlot, haveRows, haveEmpty, noOriginals);
+    bool const haveCommits = haveOpen.action == GearAction::CommitSet && !haveOpen.claimedEmpty &&
+                             haveOpen.plan.sourceComplete && haveOpen.plan.selected[12].entryId == 500;
+    ok = Check(haveCommits, "a have-mode category does not use the equip gem seed") && ok;
+    std::vector<RetainedCount> haveHeld{Count(0, 9, 0, 0, true)};
+    haveHeld[0].bags = 1;
+    CollectorResult const haveClosed = Collect(trinketSlot, haveRows, haveHeld, noOriginals);
+    bool const haveBlocks = haveClosed.action == GearAction::Preserve && !haveClosed.claimedEmpty &&
+                            haveClosed.plan.selected[12].entryId == 0;
+    ok = Check(haveBlocks, "a have-mode category still blocks a possessed copy") && ok;
+
+    CollectorRequest optionalFinger = Domain(Warrior(15), kChest | (1u << 10), kChest);
+    std::vector<CandidateTemplate> const chestAndOneRing{Item(200, 4), Item(100, 10)};
+    CollectorResult const optional = Collect(optionalFinger, chestAndOneRing, none, noOriginals);
+    bool const optionalHeld = optional.action == GearAction::Preserve && !optional.claimedEmpty &&
+                              optional.action != GearAction::StripToBags && !optional.plan.sourceComplete &&
+                              Verdict(optional, 10) == ListVerdict::Incomplete;
+    ok = Check(optionalHeld, "an unrequired floor slot stays incomplete") && ok;
+
+    std::vector<CandidateTemplate> const noItems{};
+    CollectorResult const noRows = Collect(Domain(Warrior(15), kFinger, kFinger), noItems, none, noOriginals);
+    bool const unmarked = noRows.action == GearAction::Preserve && !noRows.claimedEmpty &&
+                          noRows.action != GearAction::StripToBags && Verdict(noRows, 10) == ListVerdict::Incomplete &&
+                          Verdict(noRows, 11) == ListVerdict::Incomplete;
+    ok = Check(unmarked, "an unsearched required slot with no rows is incomplete") && ok;
 
     std::cout << "PB59_CP23_KNOWN_DEFECT=" << (KnownDefect ? 1 : 0) << "\n";
     std::cout << "checks=" << g_checks << "\n";

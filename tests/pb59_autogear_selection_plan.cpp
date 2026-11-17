@@ -192,7 +192,9 @@ int main()
     earlyIn.requiredMask = 1u << 10;
     earlyIn.completeMask = 1u << 10;
     Plan const noRing = SelectFromFacts(earlyIn, ScoreOf);
-    ok = Check(noRing.outcome.disposition == Disposition::GenuineNoSet, "ring skipped below 20") && ok;
+    ok = Check(noRing.outcome.disposition == Disposition::Preserve && noRing.outcome.action == GearAction::Preserve,
+            "an unsearched ring below 20 is not an empty domain") &&
+         ok;
 
     std::vector<ItemFact> retained{Fact(701, 90, 4), Fact(702, 60, 4)};
     Plan const keepLegal = SelectFromFacts(Chest(66, retained, 60), ScoreOf);

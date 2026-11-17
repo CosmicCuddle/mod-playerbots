@@ -24,6 +24,22 @@ namespace PlayerbotsAutoGearSelection
         PlayerbotsAutoGearSet::Candidate candidate{};
     };
 
+    // True when an eligible slot is outside the search schedule. The caller
+    // must preserve. It must not treat that slot as a proven-empty domain.
+    inline bool UnsearchedEligibleSlot(BotView const& bot, std::uint32_t eligibleMask)
+    {
+        if (!bot.levelKnown)
+            return true;
+        for (unsigned slot = 0; slot < PlayerbotsAutoGearSet::Slots; ++slot)
+        {
+            if ((eligibleMask & (std::uint32_t{1} << slot)) == 0)
+                continue;
+            if (!PlayerbotsAutoGearSlots::SearchAtLevel(bot.level, slot, SelectionSlots))
+                return true;
+        }
+        return false;
+    }
+
     constexpr bool WeaponSlot(unsigned slot)
     {
         return slot == PlayerbotsAutoGearSet::Main || slot == PlayerbotsAutoGearSet::Off ||
@@ -76,8 +92,9 @@ namespace PlayerbotsAutoGearSelection
             return FactDecision::Unavailable;
         if (fact.itemLevel > cap || fact.requiredLevel > bot.level)
             return FactDecision::Unavailable;
+        // Not searched is missing proof, not a Core exclusion.
         if (!PlayerbotsAutoGearSlots::SearchAtLevel(bot.level, fact.slot, SelectionSlots))
-            return FactDecision::Unavailable;
+            return FactDecision::Unknown;
         if (fact.classMask != 0 && (fact.classMask & ClassBit(bot.classId)) == 0)
             return FactDecision::Unavailable;
         if (fact.specRestricted && fact.specTab != bot.specTab)
