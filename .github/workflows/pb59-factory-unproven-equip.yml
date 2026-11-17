@@ -1,0 +1,58 @@
+# Read-only branch-specific native solver/Factory boundary regression.
+name: PB59 factory unproven EQUIP-category guard
+
+on:
+  push:
+    branches:
+      - feature/cs01-pb59-factory-equip-unproven-preserve-20261117
+    paths:
+      - src/Bot/AutoGearFactoryPlanningGuard.h
+      - src/Bot/AutoGearSetSolver.h
+      - src/Bot/AutoGearWeaponDomain.h
+      - src/Bot/Factory/PlayerbotFactory.cpp
+      - tests/pb59_autogear_factory_seam.cpp
+      - tests/test_pb59_autogear_factory_seam.py
+      - .github/workflows/pb59-factory-unproven-equip.yml
+  pull_request:
+    branches:
+      - cursor/cs02-pb59-candidate-collector-5d52
+    paths:
+      - src/Bot/AutoGearFactoryPlanningGuard.h
+      - src/Bot/Factory/PlayerbotFactory.cpp
+      - tests/pb59_autogear_factory_seam.cpp
+      - tests/test_pb59_autogear_factory_seam.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pb59-factory-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  factory-source-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+        sanitize: [false, true]
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run C++ factory planning guard
+        env:
+          CXX: ${{ matrix.cxx }}
+          SANITIZE: ${{ matrix.sanitize }}
+        run: |
+          git rev-parse HEAD
+          git hash-object src/Bot/AutoGearSetSolver.h
+          if [ "$SANITIZE" = "true" ]; then
+            python3 tests/test_pb59_autogear_factory_seam.py --cxx "$CXX" --sanitize
+          else
+            python3 tests/test_pb59_autogear_factory_seam.py --cxx "$CXX"
+          fi
