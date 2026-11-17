@@ -31,8 +31,9 @@ int main()
 
     std::vector<SourceRow> variants{Row(100, 101), Row(100, 102)};
     auto const legacy = CopyBoundedSource(variants, 8);
-    ok = Check(legacy.status == CopyStatus::IncompleteVariants && !legacy.sourceComplete,
-            "default legacy route retains split-variant preserve") && ok;
+    ok = Check(legacy.status == CopyStatus::IncompleteVariants && !legacy.sourceComplete &&
+            legacy.rows.empty(),
+            "default legacy route returns no partial split-variant rows") && ok;
     auto const signedCopy = CopyBoundedSource(variants, 8, true);
     ok = Check(signedCopy.status == CopyStatus::Copied && signedCopy.sourceComplete &&
             signedCopy.rows.size() == 2 && signedCopy.rows[0].randomProperty == 101 &&
@@ -60,6 +61,13 @@ int main()
     ok = Check(partialCopy.status == CopyStatus::IncompleteVariants &&
             !partialCopy.sourceComplete && partialCopy.rows.empty(),
             "A3: dropping an eligible incapable sibling cannot certify source") && ok;
+
+    std::vector<SourceRow> reversedPartial{Row(66, 7), Row(66, 5)};
+    reversedPartial[0].staticCapable = false;
+    auto const reversedPartialCopy = CopyBoundedSource(reversedPartial, 8, true);
+    ok = Check(reversedPartialCopy.status == CopyStatus::IncompleteVariants &&
+            !reversedPartialCopy.sourceComplete && reversedPartialCopy.rows.empty(),
+            "A3: an incapable eligible row first also preserves atomically") && ok;
 
     std::vector<SourceRow> ring{Row(100, 101, 10), Row(100, 101, 11)};
     auto const ringCopy = CopyBoundedSource(ring, 8, true);
