@@ -66,6 +66,10 @@ namespace PlayerbotsAutoGearSelection
             return FactDecision::Invalid;
         if (!fact.sourceKnown || !fact.metadataKnown || fact.id == 0 || fact.itemLevel == 0)
             return FactDecision::Unknown;
+        // Cards 19287-19290 disagree on tooltip and proc. They stay unknown
+        // even when a caller forges the availability flags.
+        if (fact.id >= 19287 && fact.id <= 19290)
+            return FactDecision::Unknown;
         if (!bot.levelKnown || bot.level == 0 || !bot.classKnown || !bot.specKnown || !bot.roleKnown)
             return FactDecision::Unknown;
         if (!ValidWotlkClass(bot.classId) || !ValidSpecTab(bot.specTab) || !ValidRole(bot.role))
