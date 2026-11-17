@@ -41,9 +41,25 @@ int main()
 
     std::vector<SourceRow> mixed{Row(100, 101), Row(100, -101), Row(100, 0)};
     auto const signCopy = CopyBoundedSource(mixed, 8, true);
-    ok = Check(signCopy.status == CopyStatus::Copied && signCopy.sourceComplete &&
-            signCopy.rows.size() == 3 && signCopy.rows[1].randomProperty == -101,
-            "positive property, negative suffix, and zero stay distinct") && ok;
+    ok = Check(signCopy.status == CopyStatus::IncompleteVariants && !signCopy.sourceComplete &&
+            signCopy.rows.empty(),
+            "mixed positive, negative and zero namespaces preserve") && ok;
+    std::vector<SourceRow> mixedSign{Row(66, 5), Row(66, -5)};
+    auto const mixedSignCopy = CopyBoundedSource(mixedSign, 8, true);
+    ok = Check(mixedSignCopy.status == CopyStatus::IncompleteVariants &&
+            !mixedSignCopy.sourceComplete && mixedSignCopy.rows.empty(),
+            "A1: property and suffix on one template cannot be certified") && ok;
+    std::vector<SourceRow> mixedZero{Row(66, 0), Row(66, 5)};
+    auto const mixedZeroCopy = CopyBoundedSource(mixedZero, 8, true);
+    ok = Check(mixedZeroCopy.status == CopyStatus::IncompleteVariants &&
+            !mixedZeroCopy.sourceComplete && mixedZeroCopy.rows.empty(),
+            "A2: ungrouped and rolled template cannot be certified") && ok;
+    std::vector<SourceRow> partialVariant{Row(66, 5), Row(66, 7)};
+    partialVariant[1].staticCapable = false;
+    auto const partialCopy = CopyBoundedSource(partialVariant, 8, true);
+    ok = Check(partialCopy.status == CopyStatus::IncompleteVariants &&
+            !partialCopy.sourceComplete && partialCopy.rows.empty(),
+            "A3: dropping an eligible incapable sibling cannot certify source") && ok;
 
     std::vector<SourceRow> ring{Row(100, 101, 10), Row(100, 101, 11)};
     auto const ringCopy = CopyBoundedSource(ring, 8, true);
@@ -97,8 +113,9 @@ int main()
     std::vector<SourceRow> staticDenied{Row(100, 101)};
     staticDenied[0].staticCapable = false;
     auto const staticCopy = CopyBoundedSource(staticDenied, 8, true);
-    ok = Check(staticCopy.status == CopyStatus::Copied && staticCopy.rows.empty(),
-            "static incapability is not an eligible candidate") && ok;
+    ok = Check(staticCopy.status == CopyStatus::IncompleteVariants &&
+            !staticCopy.sourceComplete && staticCopy.rows.empty(),
+            "eligible but statically incapable source cannot certify completeness") && ok;
 
     ok = Check(CopyBoundedSource(plain, 0, true).status == CopyStatus::Bounded,
             "zero budget cannot copy a present row") && ok;
