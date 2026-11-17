@@ -112,13 +112,33 @@ namespace PlayerbotsAutoGearSelection
                     copied.sourceComplete = false;
                     return copied;
                 }
+                // A single template cannot simultaneously claim ungrouped,
+                // property and suffix namespaces without independent native
+                // group authority. Preserve rather than certify mixed signs.
+                if ((row.randomProperty == 0) != (prior.randomProperty == 0) ||
+                    (row.randomProperty < 0) != (prior.randomProperty < 0))
+                {
+                    copied.rows.clear();
+                    copied.status = CopyStatus::IncompleteVariants;
+                    copied.sourceComplete = false;
+                    return copied;
+                }
                 if (row.randomProperty != prior.randomProperty &&
                     row.eligibility == SourceEligibility::KnownEligible &&
                     prior.eligibility == SourceEligibility::KnownEligible &&
                     row.staticCapable && prior.staticCapable)
                     splitVariant = true;
             }
-            if (row.eligibility == SourceEligibility::KnownUnavailable || !row.staticCapable)
+            if (row.eligibility == SourceEligibility::KnownEligible && !row.staticCapable)
+            {
+                // A dropped eligible variant makes the copied legal set
+                // incomplete; do not certify its capable siblings.
+                copied.rows.clear();
+                copied.status = CopyStatus::IncompleteVariants;
+                copied.sourceComplete = false;
+                return copied;
+            }
+            if (row.eligibility == SourceEligibility::KnownUnavailable)
                 continue;
             copied.rows.push_back(row);
         }
