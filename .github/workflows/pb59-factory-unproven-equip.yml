@@ -27,6 +27,11 @@ on:
       - src/Bot/Factory/PlayerbotFactory.cpp
       - tests/pb59_autogear_factory_seam.cpp
       - tests/test_pb59_autogear_factory_seam.py
+      - tests/pb59_autogear_signed_source.cpp
+      - tests/test_pb59_signed_source_integration.py
+      - src/Bot/AutoGearVariantSource.h
+      - src/Bot/AutoGearSelectionPlan.h
+      - .github/workflows/pb59-factory-unproven-equip.yml
   workflow_dispatch:
 
 permissions:
