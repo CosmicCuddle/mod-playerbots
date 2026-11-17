@@ -79,6 +79,25 @@ bool SolveBoth(std::vector<Spec> const& specs, std::uint32_t cap, std::uint32_t 
         row.metadataKnown = true;
         row.eligible = true;
         newItems[spec.slot].push_back(row);
+        if (spec.category != 0)
+        {
+            bool foundCategory = false;
+            for (PlayerbotsAutoGearSelection::RetainedCount const& rowHeld : held)
+            {
+                if (rowHeld.entryId == 0 && rowHeld.limitCategory == spec.category)
+                    foundCategory = true;
+            }
+            if (!foundCategory)
+            {
+                PlayerbotsAutoGearSelection::RetainedCount categoryHeld;
+                categoryHeld.limitCategory = spec.category;
+                categoryHeld.bagsKnown = true;
+                categoryHeld.bankKnown = true;
+                categoryHeld.equippedKnown = true;
+                categoryHeld.gemsKnown = true;
+                held.push_back(categoryHeld);
+            }
+        }
         if (spec.maxCount != 0)
         {
             bool found = false;
@@ -121,6 +140,7 @@ bool SolveBoth(std::vector<Spec> const& specs, std::uint32_t cap, std::uint32_t 
     newPolicy.weapons = weapons;
     newPolicy.known = true;
     newPolicy.entryHeld = held;
+    newPolicy.categoryHeld = held;
     PlayerbotsAutoGearSet::Result const oldResult =
         PlayerbotsAutoGearSet::Solve(oldDomains, oldPolicy, budget, 100000);
     variant = PlayerbotsAutoGearVariant::Solve(newDomains, newPolicy, budget, 100000);
@@ -177,6 +197,27 @@ int main()
     ok = Check(SameAsShared(oldResult, variant) && variant.entries[10] == 2 && variant.entries[11] == 3 &&
                variant.score == 150,
             "category limits match the shared solver") &&
+         ok;
+    PlayerbotsAutoGearVariant::Candidate bare;
+    bare.entryId = 1;
+    bare.itemLevel = 60;
+    bare.score = 10;
+    bare.limitCategory = 9;
+    bare.categoryLimit = 1;
+    bare.metadataKnown = true;
+    bare.eligible = true;
+    std::vector<PlayerbotsAutoGearVariant::Candidate> bareRows{bare};
+    std::array<PlayerbotsAutoGearVariant::Domain, PlayerbotsAutoGearSet::Slots> bareDomains{};
+    bareDomains[10] = {bareRows, true};
+    PlayerbotsAutoGearVariant::Policy barePolicy;
+    barePolicy.cap = 60;
+    barePolicy.eligibleMask = 1u << 10;
+    barePolicy.requiredMask = 1u << 10;
+    barePolicy.known = true;
+    PlayerbotsAutoGearVariant::Result const unproved =
+        PlayerbotsAutoGearVariant::Solve(bareDomains, barePolicy, 1000, 100000);
+    ok = Check(unproved.status == PlayerbotsAutoGearVariant::Status::Incomplete && unproved.entries[10] == 0,
+            "an equip category without a retained proof is incomplete") &&
          ok;
 
     std::vector<Spec> tie{{4, 0, 10, 60, 10, false}, {5, 0, 10, 60, 10, false}};
