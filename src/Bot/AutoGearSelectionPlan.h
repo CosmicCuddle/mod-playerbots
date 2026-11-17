@@ -229,7 +229,9 @@ namespace PlayerbotsAutoGearSelection
         {
             try
             {
-                CopiedSource const copied = CopyBoundedSource(in.nativeRows, in.sourceBudget);
+                // Only the signed-key solver may consume distinct rolled variants.
+                // Exact per-slot provenance validation below remains mandatory.
+                CopiedSource const copied = CopyBoundedSource(in.nativeRows, in.sourceBudget, needsVariant);
                 if (!copied.sourceComplete || copied.status != CopyStatus::Copied)
                     return finish(true, PreparationResult::NotPrepared, false);
                 for (ItemFact const& fact : in.facts)

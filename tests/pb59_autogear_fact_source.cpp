@@ -104,8 +104,9 @@ int main()
     incapable.staticCapable = false;
     std::array<SourceRow, 1> incapableRows{{incapable}};
     CopiedSource const incapableCopy = CopyBoundedSource(incapableRows, 4);
-    ok = Check(incapableCopy.rows.empty() && incapableCopy.sourceComplete,
-            "known-incapable is not unknown") &&
+    ok = Check(incapableCopy.rows.empty() && !incapableCopy.sourceComplete &&
+               incapableCopy.status == CopyStatus::IncompleteVariants,
+            "eligible but incapable row cannot certify an exhaustive legal domain") &&
          ok;
     SourceRow invalidEligibility = incapable;
     invalidEligibility.staticCapable = true;
@@ -123,8 +124,13 @@ int main()
     propB.randomProperty = 2;
     std::array<SourceRow, 2> variants{{propA, propB}};
     CopiedSource const both = CopyBoundedSource(variants, 4);
-    ok = Check(both.rows.size() == 2 && !both.sourceComplete && both.status == CopyStatus::IncompleteVariants,
-            "distinct random properties are not dropped or called complete") &&
+    ok = Check(both.rows.empty() && !both.sourceComplete && both.status == CopyStatus::IncompleteVariants,
+            "legacy mixed-property source clears all rows and remains incomplete") &&
+         ok;
+    CopiedSource const variantAwareBoth = CopyBoundedSource(variants, 4, true);
+    ok = Check(variantAwareBoth.rows.size() == 2 && variantAwareBoth.sourceComplete &&
+               variantAwareBoth.status == CopyStatus::Copied,
+            "explicit signed-variant caller retains both verified property rows") &&
          ok;
     std::array<SourceRow, 1> one{{propA}};
     ok = Check(CopyBoundedSource(one, 4).sourceComplete && CopyBoundedSource(one, 4).rows.size() == 1,
