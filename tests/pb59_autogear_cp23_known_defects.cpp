@@ -293,7 +293,8 @@ int main()
     std::vector<RetainedCount> const twoGems{Count(0, 9, 0, 2, true)};
     CollectorResult const gemsLeaveRoom = Collect(trinketSlot, roomy, twoGems, noOriginals);
     bool const roomLeft = gemsLeaveRoom.action == GearAction::CommitSet && !gemsLeaveRoom.claimedEmpty &&
-                          gemsLeaveRoom.plan.sourceComplete && gemsLeaveRoom.plan.selected[12].entryId == 500;
+                          gemsLeaveRoom.plan.sourceComplete && gemsLeaveRoom.plan.selected[12].entryId == 500 &&
+                          gemsLeaveRoom.facts.size() == 1 && gemsLeaveRoom.facts[0].categoryLimit == 3;
     ok = Check(roomLeft, "socketed gems below the equip limit still leave one copy") && ok;
 
     std::vector<RetainedCount> const gemAndWorn{Count(0, 9, 1, 1, true)};
@@ -333,6 +334,51 @@ int main()
                           noRows.action != GearAction::StripToBags && Verdict(noRows, 10) == ListVerdict::Incomplete &&
                           Verdict(noRows, 11) == ListVerdict::Incomplete;
     ok = Check(unmarked, "an unsearched required slot with no rows is incomplete") && ok;
+
+    ItemFact directFact;
+    directFact.id = 500;
+    directFact.itemLevel = 10;
+    directFact.requiredLevel = 1;
+    directFact.slot = 12;
+    directFact.limitCategory = 9;
+    directFact.categoryLimit = 1;
+    directFact.sourceKnown = true;
+    directFact.metadataKnown = true;
+    directFact.equipKnown = true;
+    directFact.equipAllowed = true;
+    directFact.scoreKnown = true;
+    directFact.setPermitted = true;
+    directFact.setEvidenceKnown = true;
+    std::vector<ItemFact> directFacts{directFact};
+    RetainedCount directGems = Count(0, 9, 0, 1, true);
+    PlanInput directIn;
+    directIn.cap.preserve = false;
+    directIn.cap.cap = 200;
+    directIn.bot = Warrior(80);
+    directIn.facts = directFacts;
+    directIn.eligibleMask = 1u << 12;
+    directIn.requiredMask = 1u << 12;
+    directIn.completeMask = 1u << 12;
+    directIn.authorityValid = true;
+    directIn.bags = BagSpace::Enough;
+    directIn.retained = std::span<RetainedCount const>(&directGems, 1);
+    Plan const directBlocked = SelectFromFacts(directIn, ScoreOf);
+    bool const directStops = directBlocked.outcome.action == GearAction::Preserve &&
+                             directBlocked.selected[12].entryId == 0 && !directBlocked.sourceComplete;
+    ok = Check(directStops, "direct unreduced equip limit keeps a socketed gem") && ok;
+    directFacts[0].categoryLimit = 2;
+    directIn.facts = directFacts;
+    Plan const directRoom = SelectFromFacts(directIn, ScoreOf);
+    bool const directOne = directRoom.outcome.action == GearAction::CommitSet &&
+                           directRoom.selected[12].entryId == 500 && directRoom.sourceComplete;
+    ok = Check(directOne, "direct unreduced equip limit still commits inside the remaining room") && ok;
+    directGems.gemsKnown = false;
+    directFacts[0].categoryLimit = 1;
+    directIn.facts = directFacts;
+    Plan const directUnknown = SelectFromFacts(directIn, ScoreOf);
+    ok = Check(directUnknown.outcome.action == GearAction::Preserve && directUnknown.selected[12].entryId == 0,
+            "direct unknown gem state preserves") &&
+         ok;
 
     std::cout << "PB59_CP23_KNOWN_DEFECT=" << (KnownDefect ? 1 : 0) << "\n";
     std::cout << "checks=" << g_checks << "\n";

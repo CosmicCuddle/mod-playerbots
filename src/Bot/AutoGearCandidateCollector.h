@@ -364,24 +364,17 @@ namespace PlayerbotsAutoGearSelection
         }
     }
 
-    // EQUIP limits count socketed gems and equipped copies that this plan does
-    // not retire. Unknown gem or equipped state is not zero. HAVE limits stay
-    // on the possession check. A full category refuses the domain.
-    inline bool EquipRetentionAllows(std::vector<ItemFact>& facts, std::span<RetainedCount const> retained)
+    // Refuses a missing, unknown, or already-full EQUIP proof. Does not subtract.
+    // The variant solver subtracts the same seed once from categoryLimit.
+    inline bool EquipRetentionAllows(std::vector<ItemFact> const& facts, std::span<RetainedCount const> retained)
     {
-        for (ItemFact& fact : facts)
+        for (ItemFact const& fact : facts)
         {
             if (fact.limitCategory == 0 || fact.categoryLimit == 0)
                 continue;
-            RetainedCount const* row = FindCategoryCount(retained, fact.limitCategory);
-            if (row == nullptr || !row->equippedKnown || !row->gemsKnown)
+            std::uint32_t outside = 0;
+            if (!EquipOutsideCount(retained, fact.limitCategory, outside) || outside >= fact.categoryLimit)
                 return false;
-            if (row->gems > 0xFFFFFFFFu - row->equipped)
-                return false;
-            std::uint32_t const outside = row->equipped + row->gems;
-            if (outside >= fact.categoryLimit)
-                return false;
-            fact.categoryLimit -= outside;
         }
         return true;
     }

@@ -220,6 +220,21 @@ namespace PlayerbotsAutoGearSelection
         return found;
     }
 
+    // Gems plus equipped copies still in the projected count. False means the
+    // EQUIP proof is missing or unknown, which is not a zero seed.
+    inline bool EquipOutsideCount(std::span<RetainedCount const> retained, std::uint32_t category,
+        std::uint32_t& outside)
+    {
+        outside = 0;
+        RetainedCount const* row = FindCategoryCount(retained, category);
+        if (row == nullptr || !row->equippedKnown || !row->gemsKnown)
+            return false;
+        if (row->gems > 0xFFFFFFFFu - row->equipped)
+            return false;
+        outside = row->equipped + row->gems;
+        return true;
+    }
+
     // A strip moves equipped copies into bags. The total does not shrink.
     inline bool MoveEquippedIntoBags(RetainedCount& row, std::uint32_t count)
     {

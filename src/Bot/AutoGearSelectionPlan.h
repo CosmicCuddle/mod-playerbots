@@ -209,7 +209,8 @@ namespace PlayerbotsAutoGearSelection
             std::uint32_t room = 0;
             if (GatePossession(fact, in.retained, room) == PossessionGate::Unknown)
                 return finish(true, PreparationResult::NotPrepared, false);
-            if (fact.maxCount != 0 || fact.categoryHaveLimit != 0 || fact.randomProperty != 0)
+            if (fact.maxCount != 0 || fact.categoryHaveLimit != 0 || fact.categoryLimit != 0 ||
+                fact.randomProperty != 0)
                 needsVariant = true;
         }
         if (!needsVariant)
