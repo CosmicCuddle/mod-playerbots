@@ -13,12 +13,15 @@ import tempfile
 from pathlib import Path
 
 
+# Minimum executable checks are contributor-reported pre-composition baselines,
+# not an independent certification. A new case can increase, never silently
+# reduce, the coverage without a deliberate reviewed runner change.
 SOURCES = (
-    "pb59_autogear_selection_plan.cpp",
-    "pb59_autogear_variant_solver.cpp",
-    "pb59_autogear_cp23_known_defects.cpp",
-    "pb59_autogear_candidate_collector.cpp",
-    "pb59_autogear_fact_source.cpp",
+    ("pb59_autogear_selection_plan.cpp", 72),
+    ("pb59_autogear_variant_solver.cpp", 21),
+    ("pb59_autogear_cp23_known_defects.cpp", 36),
+    ("pb59_autogear_candidate_collector.cpp", 36),
+    ("pb59_autogear_fact_source.cpp", 24),
 )
 
 
@@ -41,7 +44,7 @@ def main() -> int:
 
     total = 0
     with tempfile.TemporaryDirectory(prefix="pb59-composed-") as work:
-        for number, name in enumerate(SOURCES, 1):
+        for number, (name, minimum) in enumerate(SOURCES, 1):
             source = tests / name
             if not source.is_file():
                 print(f"FAIL missing fixture: {source}", file=sys.stderr)
@@ -62,15 +65,14 @@ def main() -> int:
                 print(f"FAIL runtime {name} rc={executed.returncode}", file=sys.stderr)
                 print(executed.stdout + executed.stderr, file=sys.stderr)
                 return 1
-            # Keep the published check count auditable; a zero-check binary isn't a pass.
             matches = re.findall(r"(?m)^checks=(\d+)\s*$", executed.stdout)
-            if len(matches) != 1 or int(matches[0]) < 1:
-                print(f"FAIL missing or invalid checks counter in {name}", file=sys.stderr)
+            if len(matches) != 1 or int(matches[0]) < minimum:
+                print(f"FAIL missing, ambiguous or low checks counter in {name}: expected >= {minimum}", file=sys.stderr)
                 print(executed.stdout + executed.stderr, file=sys.stderr)
                 return 1
             checks = int(matches[0])
             total += checks
-            print(f"PASS {name} checks={checks}")
+            print(f"PASS {name} checks={checks} minimum={minimum}")
     print(f"PB59_COMPOSED_CXX=PASS compiler={args.cxx} sanitized={args.sanitize} suites={len(SOURCES)} checks={total}")
     return 0
 
