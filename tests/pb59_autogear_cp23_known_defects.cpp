@@ -380,6 +380,98 @@ int main()
             "direct unknown gem state preserves") &&
          ok;
 
+    directFacts[0].limitCategory = 0;
+    directFacts[0].categoryLimit = 0;
+    directIn.facts = directFacts;
+    directIn.retained = {};
+    Plan const bareLimit = SelectFromFacts(directIn, ScoreOf);
+    ok = Check(bareLimit.outcome.action == GearAction::CommitSet && bareLimit.selected[12].entryId == 500,
+            "a trinket with no equip category still commits") &&
+         ok;
+    directFacts[0].limitCategory = 9;
+    directFacts[0].categoryLimit = 1;
+    directIn.facts = directFacts;
+    Plan const forgedZero = SelectFromFacts(directIn, ScoreOf);
+    ok = Check(forgedZero.outcome.action == GearAction::Preserve && forgedZero.selected[12].entryId == 0 &&
+               !forgedZero.sourceComplete,
+            "an empty retained table is not a zero equip seed") &&
+         ok;
+
+    ItemFact forgedCard = directFacts[0];
+    forgedCard.id = 19287;
+    forgedCard.slot = 4;
+    forgedCard.limitCategory = 0;
+    forgedCard.categoryLimit = 0;
+    forgedCard.darkmoonCard = true;
+    forgedCard.darkmoonAvailabilityKnown = true;
+    forgedCard.darkmoonProcKnown = true;
+    std::vector<ItemFact> cardFacts{forgedCard};
+    PlanInput cardIn = directIn;
+    cardIn.facts = cardFacts;
+    cardIn.eligibleMask = kChest;
+    cardIn.requiredMask = kChest;
+    cardIn.completeMask = kChest;
+    cardIn.retained = {};
+    Plan const cardPlan = SelectFromFacts(cardIn, ScoreOf);
+    ok = Check(cardPlan.outcome.action == GearAction::Preserve && cardPlan.selected[4].entryId == 0,
+            "forged darkmoon availability still stays unknown") &&
+         ok;
+
+    ItemFact blank;
+    std::vector<ItemFact> blankFacts{blank};
+    PlanInput blankIn = cardIn;
+    blankIn.facts = blankFacts;
+    Plan const blankPlan = SelectFromFacts(blankIn, ScoreOf);
+    ok = Check(blankPlan.outcome.action == GearAction::Preserve && blankPlan.selected[4].entryId == 0,
+            "a default-constructed fact preserves") &&
+         ok;
+
+    CollectorRequest exhausted = Domain(Warrior(80), kChest, kChest);
+    exhausted.sourceExhausted = false;
+    std::vector<CandidateTemplate> const oneChest{Item(200, 4)};
+    CollectorResult const cut = Collect(exhausted, oneChest, none, noOriginals);
+    ok = Check(cut.truncated && cut.action == GearAction::Preserve && !cut.claimedEmpty && !cut.plan.sourceComplete,
+            "a truncated list with a complete mask does not claim empty") &&
+         ok;
+
+    ItemFact fresh = directFacts[0];
+    fresh.limitCategory = 0;
+    fresh.categoryLimit = 0;
+    fresh.slot = 4;
+    fresh.id = 200;
+    std::vector<ItemFact> freshFacts{fresh};
+    SourceRow native;
+    native.entryId = 200;
+    native.itemLevel = 10;
+    native.slot = 4;
+    native.templateLoaded = true;
+    native.eligibility = SourceEligibility::KnownEligible;
+    native.staticCapabilityKnown = true;
+    native.staticCapable = true;
+    std::vector<SourceRow> nativeRows{native};
+    ProvenanceRow stale;
+    stale.entryId = 200;
+    stale.itemLevel = 10;
+    stale.revision = 1;
+    stale.state = RowState::KnownPresent;
+    stale.setEvidenceKnown = true;
+    std::vector<ProvenanceRow> staleRows{stale};
+    PlanInput staleIn = cardIn;
+    staleIn.facts = freshFacts;
+    staleIn.hasNativeSource = true;
+    staleIn.sourceRevision = 9;
+    staleIn.sourceBudget = 4;
+    staleIn.nativeRows = nativeRows;
+    staleIn.nativeProofs[4].authoritative = true;
+    staleIn.nativeProofs[4].rows = staleRows;
+    staleIn.nativeProofs[4].rowsDeclared = true;
+    staleIn.nativeProofs[4].declaredRows = staleRows.size();
+    Plan const stalePlan = SelectFromFacts(staleIn, ScoreOf);
+    ok = Check(stalePlan.outcome.action == GearAction::Preserve && !stalePlan.sourceComplete &&
+               stalePlan.selected[4].entryId == 0,
+            "a stale provenance revision does not certify the slot") &&
+         ok;
+
     std::cout << "PB59_CP23_KNOWN_DEFECT=" << (KnownDefect ? 1 : 0) << "\n";
     std::cout << "checks=" << g_checks << "\n";
     return ok ? 0 : 1;
