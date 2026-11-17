@@ -6,6 +6,7 @@
 
 #include "PlayerbotFactory.h"
 #include "AutoGearProgressionCap.h"
+#include "AutoGearFactoryPlanningGuard.h"
 #include "AutoGearSlotPolicy.h"
 #include "AutoGearStorageMatching.h"
 #include "AutoGearStorageTransaction.h"
@@ -4066,7 +4067,7 @@ PlayerbotsAutoGearSet::Result PlayerbotFactory::PlanEquipmentSet(
         EQUIPMENT_SLOT_MAINHAND == PlayerbotsAutoGearSet::Main &&
         EQUIPMENT_SLOT_OFFHAND == PlayerbotsAutoGearSet::Off &&
         EQUIPMENT_SLOT_RANGED == PlayerbotsAutoGearSet::Ranged);
-    return PlayerbotsAutoGearSet::Solve(domains, policy, candidateBudget, nodeBudget);
+    return PlayerbotsAutoGearFactory::PlanWithUnprovenEquipLimits(domains, policy, candidateBudget, nodeBudget);
 }
 
 void PlayerbotFactory::DestroyEquippedGear(Player* bot)
