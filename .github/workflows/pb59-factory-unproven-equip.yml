@@ -1,10 +1,11 @@
-# Read-only branch-specific native solver/Factory boundary regression.
-name: PB59 factory unproven EQUIP-category guard
+# Read-only branch-specific Factory and signed source regression.
+name: PB59 Factory and signed-source composed regression
 
 on:
   push:
     branches:
       - feature/cs01-pb59-factory-equip-unproven-preserve-20261117
+      - review/cs01-pb59-pb37-pb38-factory-compose-20261117
     paths:
       - src/Bot/AutoGearFactoryPlanningGuard.h
       - src/Bot/AutoGearSetSolver.h
@@ -12,10 +13,15 @@ on:
       - src/Bot/Factory/PlayerbotFactory.cpp
       - tests/pb59_autogear_factory_seam.cpp
       - tests/test_pb59_autogear_factory_seam.py
+      - tests/pb59_autogear_signed_source.cpp
+      - tests/test_pb59_signed_source_integration.py
+      - src/Bot/AutoGearVariantSource.h
+      - src/Bot/AutoGearSelectionPlan.h
       - .github/workflows/pb59-factory-unproven-equip.yml
   pull_request:
     branches:
       - cursor/cs02-pb59-candidate-collector-5d52
+      - feature/cs01-pb59-factory-equip-unproven-preserve-20261117
     paths:
       - src/Bot/AutoGearFactoryPlanningGuard.h
       - src/Bot/Factory/PlayerbotFactory.cpp
@@ -44,7 +50,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Run C++ factory planning guard
+      - name: Run C++ factory and signed-source regressions
         env:
           CXX: ${{ matrix.cxx }}
           SANITIZE: ${{ matrix.sanitize }}
@@ -53,6 +59,8 @@ jobs:
           git hash-object src/Bot/AutoGearSetSolver.h
           if [ "$SANITIZE" = "true" ]; then
             python3 tests/test_pb59_autogear_factory_seam.py --cxx "$CXX" --sanitize
+            python3 tests/test_pb59_signed_source_integration.py --cxx "$CXX" --sanitize
           else
             python3 tests/test_pb59_autogear_factory_seam.py --cxx "$CXX"
+            python3 tests/test_pb59_signed_source_integration.py --cxx "$CXX"
           fi
