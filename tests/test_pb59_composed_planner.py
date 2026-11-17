@@ -21,7 +21,7 @@ SOURCES = (
     ("pb59_autogear_variant_solver.cpp", 21),
     ("pb59_autogear_cp23_known_defects.cpp", 36),
     ("pb59_autogear_candidate_collector.cpp", 36),
-    ("pb59_autogear_fact_source.cpp", 24),
+    ("pb59_autogear_fact_source.cpp", 25),
 )
 
 
