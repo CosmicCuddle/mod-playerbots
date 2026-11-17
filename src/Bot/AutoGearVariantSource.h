@@ -144,6 +144,9 @@ namespace PlayerbotsAutoGearSelection
         }
         if (splitVariant && !variantAware)
         {
+            // The legacy caller must not receive a partial set even when it
+            // correctly rejects IncompleteVariants today. Keep failure atomic.
+            copied.rows.clear();
             copied.status = CopyStatus::IncompleteVariants;
             copied.sourceComplete = false;
             return copied;
