@@ -179,9 +179,9 @@ int main()
     std::vector<ItemFact> tooHard{Fact(40, 20, 4)};
     tooHard[0].requiredLevel = 61;
     Plan const needLevel = SelectFromFacts(Chest(66, tooHard, 60), ScoreOf);
-    ok = Check(needLevel.outcome.disposition == Disposition::GenuineNoSet &&
-               needLevel.outcome.action == GearAction::StripToBags,
-            "required level above the bot is no set") &&
+    ok = Check(needLevel.outcome.disposition == Disposition::Preserve &&
+               needLevel.outcome.action == GearAction::Preserve && !needLevel.sourceComplete,
+            "rejected level without native empty proof preserves") &&
          ok;
 
     ItemFact earlyRing = Fact(11, 10, 10);
@@ -266,16 +266,16 @@ int main()
     uniqueIn.requiredMask = uniqueIn.eligibleMask;
     uniqueIn.completeMask = uniqueIn.eligibleMask;
     Plan const uniquePlan = SelectFromFacts(uniqueIn, ScoreOf);
-    ok = Check(uniquePlan.outcome.disposition == Disposition::GenuineNoSet &&
-               uniquePlan.outcome.action == GearAction::StripToBags,
-            "unique pair is a genuine no-set") &&
+    ok = Check(uniquePlan.outcome.disposition == Disposition::Preserve &&
+               uniquePlan.outcome.action == GearAction::Preserve && !uniquePlan.sourceComplete,
+            "direct unique conflict is not certified empty") &&
          ok;
     uniqueIn.bags = BagSpace::Full;
     Plan const fullBags = SelectFromFacts(uniqueIn, ScoreOf);
-    ok = Check(fullBags.outcome.disposition == Disposition::TechnicalFailure &&
+    ok = Check(fullBags.outcome.disposition == Disposition::Preserve &&
                fullBags.outcome.action == GearAction::Preserve &&
                fullBags.outcome.recovery.reason == RecoveryReason::None,
-            "full bags are a technical preserve, not a strip") &&
+            "unknown empty proof preserves even with full bags") &&
          ok;
 
     ItemFact exclusive = Fact(30, 60, 15);
@@ -411,17 +411,28 @@ int main()
 
     std::vector<ItemFact> none;
     Plan const empty = SelectFromFacts(Chest(66, none, 60), ScoreOf);
-    ok = Check(empty.outcome.disposition == Disposition::GenuineNoSet &&
-               empty.outcome.action == GearAction::StripToBags,
-            "complete empty domain strips to bags") &&
+    ok = Check(empty.outcome.disposition == Disposition::Preserve &&
+               empty.outcome.action == GearAction::Preserve && !empty.sourceComplete,
+            "completeMask is not a strip certificate in direct facts-only mode") &&
          ok;
+    PlanInput forgedEmpty = Chest(66, none, 60);
+    forgedEmpty.slotLists[4] = PlanInput::SlotListState::Complete;
+    Plan const forgedMask = SelectFromFacts(forgedEmpty, ScoreOf);
+    ok = Check(forgedMask.outcome.disposition == Disposition::Preserve &&
+               forgedMask.outcome.action == GearAction::Preserve && !forgedMask.sourceComplete,
+            "caller Complete hint and completeMask cannot forge empty authority") && ok;
+    forgedEmpty.slotLists[4] = PlanInput::SlotListState::Unknown;
+    Plan const absentProof = SelectFromFacts(forgedEmpty, ScoreOf);
+    ok = Check(absentProof.outcome.disposition == Disposition::Preserve &&
+               absentProof.outcome.action == GearAction::Preserve,
+            "untrusted unknown slot never authorizes gear strip") && ok;
 
     PlanInput unknownBags = Chest(66, none, 60);
     unknownBags.bags = BagSpace::Unknown;
     Plan const unknownStrip = SelectFromFacts(unknownBags, ScoreOf);
-    ok = Check(unknownStrip.outcome.disposition == Disposition::TechnicalFailure &&
+    ok = Check(unknownStrip.outcome.disposition == Disposition::Preserve &&
                unknownStrip.outcome.action == GearAction::Preserve,
-            "unknown bags do not strip") &&
+            "unknown bags and direct empty proof preserve") &&
          ok;
     ok = Check(PlanInput{}.bags == BagSpace::Unknown, "bags default to unknown") && ok;
 
@@ -594,8 +605,9 @@ int main()
          ok;
     held.bags = 1;
     Plan const alreadyHeld = SelectFromFacts(countedIn, ScoreOf);
-    ok = Check(alreadyHeld.outcome.disposition == Disposition::GenuineNoSet && alreadyHeld.solved.items[4] == 0,
-            "a known full MaxCount omits the item") &&
+    ok = Check(alreadyHeld.outcome.disposition == Disposition::Preserve &&
+               alreadyHeld.solved.items[4] == 0 && !alreadyHeld.sourceComplete,
+            "known full MaxCount omits item but is not native no-set proof") &&
          ok;
     ItemFact haveItem = Fact(66, 60, 4);
     haveItem.limitCategory = 9;
@@ -612,8 +624,9 @@ int main()
     categoryHeld.bags = 1;
     haveIn.retained = std::span<RetainedCount const>(&categoryHeld, 1);
     Plan const haveBlocks = SelectFromFacts(haveIn, ScoreOf);
-    ok = Check(haveBlocks.outcome.disposition == Disposition::GenuineNoSet && haveBlocks.solved.items[4] == 0,
-            "HAVE blocks a copy that EQUIP would still allow") &&
+    ok = Check(haveBlocks.outcome.disposition == Disposition::Preserve &&
+               haveBlocks.solved.items[4] == 0 && !haveBlocks.sourceComplete,
+            "HAVE blocks a copy without authorizing global strip") &&
          ok;
     categoryHeld.bags = 0;
     Plan const haveAllows = SelectFromFacts(haveIn, ScoreOf);
