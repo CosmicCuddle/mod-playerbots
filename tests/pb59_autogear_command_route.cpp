@@ -241,6 +241,7 @@ int main()
     SourceRow unavailable;
     unavailable.entryId = 100;
     unavailable.itemLevel = 60;
+    unavailable.slot = 4; // same required chest slot as the empty native proof
     unavailable.templateLoaded = true;
     unavailable.eligibility = SourceEligibility::KnownUnavailable;
     unavailable.staticCapabilityKnown = true;
@@ -252,11 +253,41 @@ int main()
     signedEmpty.selection.nativeRows = unavailableOnly;
     signedEmpty.selection.sourceBudget = 4;
     signedEmpty.selection.sourceRevision = 7;
+    ProvenanceRow unavailableProof;
+    unavailableProof.entryId = unavailable.entryId;
+    unavailableProof.randomProperty = unavailable.randomProperty;
+    unavailableProof.itemLevel = unavailable.itemLevel;
+    unavailableProof.state = RowState::KnownUnavailable;
+    unavailableProof.revision = 7;
+    std::array<ProvenanceRow, 1> proofRows{{unavailableProof}};
     signedEmpty.selection.nativeProofs[4].authoritative = true;
+    signedEmpty.selection.nativeProofs[4].rowsDeclared = true;
+    signedEmpty.selection.nativeProofs[4].declaredRows = proofRows.size();
+    signedEmpty.selection.nativeProofs[4].rows = proofRows;
     RouteDecision const signedStrip = ResolveAutoGearRoute(signedEmpty, ScoreOf);
     ok = Check(signedStrip.action == GearAction::StripToBags && !signedStrip.preserve &&
                signedStrip.selectionRan && signedStrip.plan.sourceComplete && !signedStrip.deletesGear,
-            "verified RNDBOT with signed native ProvenEmpty may strip to bags") && ok;
+            "verified RNDBOT with declared matching native ProvenEmpty may strip to bags") && ok;
+    signedEmpty.selection.nativeProofs[4].rowsDeclared = false;
+    RouteDecision const missingDeclaration = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(missingDeclaration.preserve && !missingDeclaration.plan.sourceComplete,
+            "authoritative row span without declared count must preserve") && ok;
+    signedEmpty.selection.nativeProofs[4].rowsDeclared = true;
+    signedEmpty.selection.nativeProofs[4].rows = std::span<ProvenanceRow const>{};
+    RouteDecision const droppedUnavailable = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(droppedUnavailable.preserve && !droppedUnavailable.plan.sourceComplete,
+            "omitting a known-unavailable source from empty proof preserves") && ok;
+    signedEmpty.selection.nativeProofs[4].rows = proofRows;
+    proofRows[0].entryId = 101;
+    RouteDecision const wrongProofIdentity = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(wrongProofIdentity.preserve && !wrongProofIdentity.plan.sourceComplete,
+            "mismatched unavailable source and proof identity preserves") && ok;
+    proofRows[0].entryId = unavailable.entryId;
+    unavailableOnly[0].slot = 5;
+    RouteDecision const wrongSourceSlot = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(wrongSourceSlot.preserve && !wrongSourceSlot.plan.sourceComplete,
+            "unavailable source for another slot cannot prove chest empty") && ok;
+    unavailableOnly[0].slot = 4;
     signedEmpty.selection.sourceRevision = 0;
     RouteDecision const staleSigned = ResolveAutoGearRoute(signedEmpty, ScoreOf);
     ok = Check(staleSigned.action == GearAction::Preserve && !staleSigned.plan.sourceComplete,
