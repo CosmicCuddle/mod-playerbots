@@ -22,7 +22,7 @@ SOURCES = (
     ("pb59_autogear_variant_solver.cpp", 21),
     ("pb59_autogear_cp23_known_defects.cpp", 36),
     ("pb59_autogear_candidate_collector.cpp", 36),
-    ("pb59_autogear_fact_source.cpp", 25),
+    ("pb59_autogear_fact_source.cpp", 26),
     ("pb59_autogear_cp30_source_failures.cpp", 111),
     ("pb59_autogear_cp30_population_cap.cpp", 43),
 )
