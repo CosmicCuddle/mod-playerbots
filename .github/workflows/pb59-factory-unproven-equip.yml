@@ -1,9 +1,36 @@
 # Read-only branch-specific Factory and signed source regression.
-name: PB59 Factory and signed-source composed regression
+name: PB59 Factory, signed-source and complete planner regression
 
 on:
   push:
     branches:
+      - feature/cs01-pb59-factory-equip-unproven-preserve-20261117
+      - review/cs01-pb59-pb37-pb38-factory-compose-20261117
+      - review/cs01-pb59-cp28-compose-20261117
+    paths:
+      - src/Bot/AutoGearFactoryPlanningGuard.h
+      - src/Bot/AutoGearSetSolver.h
+      - src/Bot/AutoGearWeaponDomain.h
+      - src/Bot/Factory/PlayerbotFactory.cpp
+      - tests/pb59_autogear_factory_seam.cpp
+      - tests/test_pb59_autogear_factory_seam.py
+      - tests/pb59_autogear_signed_source.cpp
+      - tests/test_pb59_signed_source_integration.py
+      - src/Bot/AutoGearVariantSource.h
+      - src/Bot/AutoGearSelectionPlan.h
+      - src/Bot/AutoGearConstraintFill.h
+      - src/Bot/AutoGearVariantSolver.h
+      - src/Bot/AutoGearCandidateCollector.h
+      - tests/pb59_autogear_selection_plan.cpp
+      - tests/pb59_autogear_variant_solver.cpp
+      - tests/pb59_autogear_cp23_known_defects.cpp
+      - tests/pb59_autogear_candidate_collector.cpp
+      - tests/pb59_autogear_fact_source.cpp
+      - tests/test_pb59_composed_planner.py
+      - .github/workflows/pb59-factory-unproven-equip.yml
+  pull_request:
+    branches:
+      - cursor/cs02-pb59-candidate-collector-5d52
       - feature/cs01-pb59-factory-equip-unproven-preserve-20261117
       - review/cs01-pb59-pb37-pb38-factory-compose-20261117
     paths:
@@ -17,20 +44,15 @@ on:
       - tests/test_pb59_signed_source_integration.py
       - src/Bot/AutoGearVariantSource.h
       - src/Bot/AutoGearSelectionPlan.h
-      - .github/workflows/pb59-factory-unproven-equip.yml
-  pull_request:
-    branches:
-      - cursor/cs02-pb59-candidate-collector-5d52
-      - feature/cs01-pb59-factory-equip-unproven-preserve-20261117
-    paths:
-      - src/Bot/AutoGearFactoryPlanningGuard.h
-      - src/Bot/Factory/PlayerbotFactory.cpp
-      - tests/pb59_autogear_factory_seam.cpp
-      - tests/test_pb59_autogear_factory_seam.py
-      - tests/pb59_autogear_signed_source.cpp
-      - tests/test_pb59_signed_source_integration.py
-      - src/Bot/AutoGearVariantSource.h
-      - src/Bot/AutoGearSelectionPlan.h
+      - src/Bot/AutoGearConstraintFill.h
+      - src/Bot/AutoGearVariantSolver.h
+      - src/Bot/AutoGearCandidateCollector.h
+      - tests/pb59_autogear_selection_plan.cpp
+      - tests/pb59_autogear_variant_solver.cpp
+      - tests/pb59_autogear_cp23_known_defects.cpp
+      - tests/pb59_autogear_candidate_collector.cpp
+      - tests/pb59_autogear_fact_source.cpp
+      - tests/test_pb59_composed_planner.py
       - .github/workflows/pb59-factory-unproven-equip.yml
   workflow_dispatch:
 
@@ -44,7 +66,7 @@ concurrency:
 jobs:
   factory-source-guard:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +77,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Run C++ factory and signed-source regressions
+      - name: Run C++ factory, signed-source and complete planner regressions
         env:
           CXX: ${{ matrix.cxx }}
           SANITIZE: ${{ matrix.sanitize }}
@@ -65,7 +87,9 @@ jobs:
           if [ "$SANITIZE" = "true" ]; then
             python3 tests/test_pb59_autogear_factory_seam.py --cxx "$CXX" --sanitize
             python3 tests/test_pb59_signed_source_integration.py --cxx "$CXX" --sanitize
+            python3 tests/test_pb59_composed_planner.py --cxx "$CXX" --sanitize
           else
             python3 tests/test_pb59_autogear_factory_seam.py --cxx "$CXX"
             python3 tests/test_pb59_signed_source_integration.py --cxx "$CXX"
+            python3 tests/test_pb59_composed_planner.py --cxx "$CXX"
           fi
