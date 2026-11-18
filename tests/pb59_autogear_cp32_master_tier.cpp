@@ -5,6 +5,8 @@
 // with a level 60 commander, normal autogear is min(average, stage cap).
 // CP35 G7: a raid-source list lifts the tier only when it is bound to the
 // exact averaged sample (length, per-slot item level, sender, revision).
+// CP36: Ruby Sanctum is its own point (10-man 258, 25-man 271), apart from
+// ICC (264/271); Zul'Aman stays T5 141.
 #include "AutoGearMasterTier.h"
 #include <iostream>
 #include <string>
@@ -415,6 +417,35 @@ int main()
         Prepare(f, 10, 70, 138, false, Repeat(Raid(RaidPoint::TbcT5, 138), 2));
         ok = Expect("G7 TBC truncated T5 list: TBC floor 125", f, 125, CapMode::Leveling) && ok;
     }
+
+    // --- CP36: Ruby Sanctum is its own point; Zul'Aman stays T5 ---
+    ok = Check(RaidPointCeiling(RaidPoint::WrathRubySanctum, RaidSize::Ten) == 258, "Ruby Sanctum 10 ceiling 258") && ok;
+    ok = Check(RaidPointCeiling(RaidPoint::WrathRubySanctum, RaidSize::TwentyFive) == 271, "Ruby Sanctum 25 ceiling 271") && ok;
+    ok = Check(RaidPointCeiling(RaidPoint::WrathRubySanctum, RaidSize::Unknown) == 258, "Ruby Sanctum unknown size uses 10-man 258") && ok;
+    ok = Check(RaidPointCeiling(RaidPoint::WrathT10, RaidSize::Ten) == 264 && RaidPointCeiling(RaidPoint::WrathT10, RaidSize::TwentyFive) == 271,
+             "ICC stays 264 / 271") && ok;
+    ok = Check(EraForPoint(RaidPoint::WrathRubySanctum) == TierEra::Wrath, "Ruby Sanctum is Wrath tier evidence") && ok;
+    ok = Check(RaidPointCeiling(RaidPoint::TbcT5, RaidSize::Unknown) == 141, "Zul'Aman (T5) stays 141") && ok;
+    MasterTier const rs10 = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 10));
+    ok = Check(rs10.known && rs10.ceiling == 258, "Ruby Sanctum 10 master: 258, not ICC 264") && ok;
+    MasterTier const rs25 = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathRubySanctum, 271, RaidSize::TwentyFive), 10));
+    ok = Check(rs25.known && rs25.ceiling == 271, "Ruby Sanctum 25 master: 271") && ok;
+    MasterTier const rsIcc = tier(TierEra::Wrath,
+        Join(Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 4), Repeat(Raid(RaidPoint::WrathT10, 264, RaidSize::Ten), 4)));
+    ok = Check(rsIcc.known && rsIcc.ceiling == 264, "half ICC 10 + half RS 10 reaches ICC 264") && ok;
+    MasterTier const rsMostly = tier(TierEra::Wrath,
+        Join(Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 10), Repeat(Raid(RaidPoint::WrathT10, 264, RaidSize::Ten), 2)));
+    ok = Check(rsMostly.ceiling == 258, "mostly RS 10 with two ICC 10 pieces stays 258") && ok;
+    MasterTier const rsTbc = tier(TierEra::Tbc, Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 10));
+    ok = Check(!rsTbc.known && rsTbc.ceiling == 125, "Ruby Sanctum gear is no TBC tier evidence") && ok;
+    Prepare(f, 18, 80, 265, false, Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 16));
+    ok = Expect("RS 10 master avg 265 at stage 18: 258", f, 258, CapMode::Leveling) && ok;
+    Prepare(f, 18, 80, 275, false, Repeat(Raid(RaidPoint::WrathRubySanctum, 271, RaidSize::TwentyFive, true), 16));
+    ok = Expect("RS 25 Heroic master avg 275 at stage 18: normal 271", f, 271, CapMode::Leveling) && ok;
+    Prepare(f, 16, 80, 262, false, Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 16));
+    ok = Expect("RS 10 master at stage 16: 258 (stage cap 258 too)", f, 258, CapMode::Leveling) && ok;
+    Prepare(f, 18, 80, 265, true, Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 16));
+    ok = Expect("RS 10 master BiS keeps the stage cap 284", f, 284, CapMode::Endgame) && ok;
 
     // The route itself is not edited (PR #42 also changes it): unwrapped, it
     // still gives the stage cap; only the wrapper applies the worn tier.

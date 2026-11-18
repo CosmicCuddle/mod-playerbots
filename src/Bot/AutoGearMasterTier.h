@@ -23,13 +23,14 @@ namespace PlayerbotsAutoGearSelection
     {
         None,       // quest, dungeon, crafted, vendor, PvP or unknown source
         TbcT4,      // Karazhan, Gruul, Magtheridon
-        TbcT5,      // Serpentshrine, Tempest Keep (and disabled Zul'Aman)
+        TbcT5,      // Serpentshrine, Tempest Keep, Zul'Aman (141)
         TbcT6,      // Hyjal, Black Temple
         TbcSunwell, // Sunwell Plateau
         WrathT7,    // Naxxramas, Obsidian Sanctum, Eye of Eternity
         WrathT8,    // Ulduar
         WrathT9,    // Trial of the Crusader, Onyxia 80
-        WrathT10,   // Icecrown Citadel, Ruby Sanctum
+        WrathT10,   // Icecrown Citadel
+        WrathRubySanctum, // Ruby Sanctum: own point, below ICC at 10-man
         Ambiguous   // cross-phase sources such as Vault of Archavon
     };
 
@@ -78,6 +79,7 @@ namespace PlayerbotsAutoGearSelection
             case RaidPoint::WrathT8:
             case RaidPoint::WrathT9:
             case RaidPoint::WrathT10:
+            case RaidPoint::WrathRubySanctum:
                 return TierEra::Wrath;
             default:
                 return TierEra::None;
@@ -111,6 +113,8 @@ namespace PlayerbotsAutoGearSelection
                 return big ? 245 : 232;
             case RaidPoint::WrathT10:
                 return big ? 271 : 264;
+            case RaidPoint::WrathRubySanctum:
+                return big ? 271 : 258;  // item records: 10N 258, 25N 271 (owner, 18 Nov 17:09 UK)
             default:
                 return 0;
         }
