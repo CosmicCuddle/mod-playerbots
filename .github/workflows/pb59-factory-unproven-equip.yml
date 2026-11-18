@@ -7,6 +7,7 @@ on:
       - feature/cs01-pb59-factory-equip-unproven-preserve-20261117
       - review/cs01-pb59-pb37-pb38-factory-compose-20261117
       - review/cs01-pb59-cp28-compose-20261117
+      - review/cs01-pb59-direct-noset-native-proof-20261118
     paths:
       - src/Bot/AutoGearFactoryPlanningGuard.h
       - src/Bot/AutoGearSetSolver.h
@@ -21,11 +22,15 @@ on:
       - src/Bot/AutoGearConstraintFill.h
       - src/Bot/AutoGearVariantSolver.h
       - src/Bot/AutoGearCandidateCollector.h
+      - src/Bot/AutoGearCommandRoute.h
       - tests/pb59_autogear_selection_plan.cpp
       - tests/pb59_autogear_variant_solver.cpp
       - tests/pb59_autogear_cp23_known_defects.cpp
       - tests/pb59_autogear_candidate_collector.cpp
       - tests/pb59_autogear_fact_source.cpp
+      - tests/pb59_autogear_cp30_population_cap.cpp
+      - tests/pb59_autogear_cp30_source_failures.cpp
+      - tests/pb59_autogear_command_route.cpp
       - tests/test_pb59_composed_planner.py
       - .github/workflows/pb59-factory-unproven-equip.yml
   pull_request:
@@ -33,6 +38,7 @@ on:
       - cursor/cs02-pb59-candidate-collector-5d52
       - feature/cs01-pb59-factory-equip-unproven-preserve-20261117
       - review/cs01-pb59-pb37-pb38-factory-compose-20261117
+      - review/cs01-pb59-cp28-compose-20261117
     paths:
       - src/Bot/AutoGearFactoryPlanningGuard.h
       - src/Bot/AutoGearSetSolver.h
@@ -47,11 +53,15 @@ on:
       - src/Bot/AutoGearConstraintFill.h
       - src/Bot/AutoGearVariantSolver.h
       - src/Bot/AutoGearCandidateCollector.h
+      - src/Bot/AutoGearCommandRoute.h
       - tests/pb59_autogear_selection_plan.cpp
       - tests/pb59_autogear_variant_solver.cpp
       - tests/pb59_autogear_cp23_known_defects.cpp
       - tests/pb59_autogear_candidate_collector.cpp
       - tests/pb59_autogear_fact_source.cpp
+      - tests/pb59_autogear_cp30_population_cap.cpp
+      - tests/pb59_autogear_cp30_source_failures.cpp
+      - tests/pb59_autogear_command_route.cpp
       - tests/test_pb59_composed_planner.py
       - .github/workflows/pb59-factory-unproven-equip.yml
   workflow_dispatch:
@@ -66,7 +76,7 @@ concurrency:
 jobs:
   factory-source-guard:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 18
     strategy:
       fail-fast: false
       matrix:

@@ -230,6 +230,33 @@ int main()
          ok;
     knownEmpty.sourceRevision = 7;
     knownEmpty.nativeProofs[4].authoritative = true;
+    // The old fixture has only a slot-0 source. An empty slot-4 proof,
+    // even with a declared zero-row count, is not a native universe witness.
+    PlanInput bareEmpty = knownEmpty;
+    bareEmpty.nativeProofs[4].rowsDeclared = true;
+    bareEmpty.nativeProofs[4].declaredRows = 0;
+    Plan const bareEmptyResult = SelectFromFacts(bareEmpty, counting);
+    ok = Check(bareEmptyResult.outcome.disposition == Disposition::Preserve &&
+               bareEmptyResult.outcome.action != GearAction::StripToBags &&
+               !bareEmptyResult.sourceComplete,
+            "declared zero-row same-slot source cannot authorize stripping") && ok;
+
+    // A positive synthetic case must match a real raw unavailable row in
+    // the required slot to the corresponding declared provenance record.
+    SourceRow unavailableChest = loaded;
+    unavailableChest.slot = 4;
+    std::array<SourceRow, 1> chestRows{{unavailableChest}};
+    ProvenanceRow unavailableProof;
+    unavailableProof.entryId = unavailableChest.entryId;
+    unavailableProof.randomProperty = unavailableChest.randomProperty;
+    unavailableProof.itemLevel = unavailableChest.itemLevel;
+    unavailableProof.state = RowState::KnownUnavailable;
+    unavailableProof.revision = 7;
+    std::array<ProvenanceRow, 1> unavailableProofRows{{unavailableProof}};
+    knownEmpty.nativeRows = chestRows;
+    knownEmpty.nativeProofs[4].rowsDeclared = true;
+    knownEmpty.nativeProofs[4].declaredRows = unavailableProofRows.size();
+    knownEmpty.nativeProofs[4].rows = unavailableProofRows;
     Plan const knownEmptyResult = SelectFromFacts(knownEmpty, counting);
     ok = Check(knownEmptyResult.outcome.disposition == Disposition::GenuineNoSet &&
                knownEmptyResult.outcome.action == GearAction::StripToBags && knownEmptyResult.sourceComplete,

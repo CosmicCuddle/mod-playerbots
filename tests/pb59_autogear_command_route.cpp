@@ -204,8 +204,9 @@ int main()
     RouteRequest strip = Enabled(0);
     strip.selection.facts = tooHard;
     RouteDecision const stripped = ResolveAutoGearRoute(strip, ScoreOf);
-    ok = Check(stripped.action == GearAction::StripToBags && !stripped.deletesGear,
-            "a confirmed empty set moves gear to bags") &&
+    ok = Check(stripped.action == GearAction::Preserve && stripped.preserve &&
+               !stripped.plan.sourceComplete && !stripped.deletesGear,
+            "a facts-only NoSet cannot strip an RNDBOT without native proof") &&
          ok;
 
     RouteRequest unknown = Enabled(0);
@@ -229,9 +230,90 @@ int main()
          ok;
     emptyFacts.domainProvenEmpty = true;
     RouteDecision const emptyProven = ResolveAutoGearRoute(emptyFacts, ScoreOf);
-    ok = Check(emptyProven.action == GearAction::StripToBags && !emptyProven.preserve && !emptyProven.deletesGear,
-            "a proven empty required domain strips to bags") &&
+    ok = Check(emptyProven.action == GearAction::Preserve && emptyProven.preserve &&
+               !emptyProven.selectionRan && !emptyProven.deletesGear,
+            "caller domainProvenEmpty flag cannot authorize an empty-domain strip") &&
          ok;
+
+    // A synthetic but internally signed/exhaustive native empty list CAN
+    // still request StripToBags for a verified RNDBOT. The native collector
+    // in the actual server does not currently prove an exhaustive universe.
+    SourceRow unavailable;
+    unavailable.entryId = 100;
+    unavailable.itemLevel = 60;
+    unavailable.slot = 4; // same required chest slot as the empty native proof
+    unavailable.templateLoaded = true;
+    unavailable.eligibility = SourceEligibility::KnownUnavailable;
+    unavailable.staticCapabilityKnown = true;
+    unavailable.staticCapable = true;
+    std::array<SourceRow, 1> unavailableOnly{{unavailable}};
+    RouteRequest signedEmpty = Enabled(0);
+    signedEmpty.domainProvenEmpty = true;
+    signedEmpty.selection.hasNativeSource = true;
+    signedEmpty.selection.nativeRows = unavailableOnly;
+    signedEmpty.selection.sourceBudget = 4;
+    signedEmpty.selection.sourceRevision = 7;
+    ProvenanceRow unavailableProof;
+    unavailableProof.entryId = unavailable.entryId;
+    unavailableProof.randomProperty = unavailable.randomProperty;
+    unavailableProof.itemLevel = unavailable.itemLevel;
+    unavailableProof.state = RowState::KnownUnavailable;
+    unavailableProof.revision = 7;
+    std::array<ProvenanceRow, 1> proofRows{{unavailableProof}};
+    signedEmpty.selection.nativeProofs[4].authoritative = true;
+    signedEmpty.selection.nativeProofs[4].rowsDeclared = true;
+    signedEmpty.selection.nativeProofs[4].declaredRows = proofRows.size();
+    signedEmpty.selection.nativeProofs[4].rows = proofRows;
+    RouteDecision const signedStrip = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(signedStrip.action == GearAction::StripToBags && !signedStrip.preserve &&
+               signedStrip.selectionRan && signedStrip.plan.sourceComplete && !signedStrip.deletesGear,
+            "verified RNDBOT with declared matching native ProvenEmpty may strip to bags") && ok;
+    signedEmpty.selection.nativeProofs[4].rowsDeclared = false;
+    RouteDecision const missingDeclaration = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(missingDeclaration.preserve && !missingDeclaration.plan.sourceComplete,
+            "authoritative row span without declared count must preserve") && ok;
+    signedEmpty.selection.nativeProofs[4].rowsDeclared = true;
+    signedEmpty.selection.nativeProofs[4].rows = std::span<ProvenanceRow const>{};
+    RouteDecision const droppedUnavailable = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(droppedUnavailable.preserve && !droppedUnavailable.plan.sourceComplete,
+            "omitting a known-unavailable source from empty proof preserves") && ok;
+    signedEmpty.selection.nativeProofs[4].rows = proofRows;
+    proofRows[0].entryId = 101;
+    RouteDecision const wrongProofIdentity = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(wrongProofIdentity.preserve && !wrongProofIdentity.plan.sourceComplete,
+            "mismatched unavailable source and proof identity preserves") && ok;
+    proofRows[0].entryId = unavailable.entryId;
+    unavailableOnly[0].slot = 5;
+    RouteDecision const wrongSourceSlot = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(wrongSourceSlot.preserve && !wrongSourceSlot.plan.sourceComplete,
+            "unavailable source for another slot cannot prove chest empty") && ok;
+    unavailableOnly[0].slot = 4;
+    signedEmpty.selection.sourceRevision = 0;
+    RouteDecision const staleSigned = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(staleSigned.action == GearAction::Preserve && !staleSigned.plan.sourceComplete,
+            "zero source revision is not an empty certificate") && ok;
+    signedEmpty.selection.sourceRevision = 7;
+    signedEmpty.selection.nativeProofs[4].authoritative = false;
+    RouteDecision const nonAuthoritative = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(nonAuthoritative.action == GearAction::Preserve &&
+               !nonAuthoritative.plan.sourceComplete,
+            "unverified native slot proof never strips") && ok;
+    signedEmpty.selection.nativeProofs[4].authoritative = true;
+    signedEmpty.population = Population::AltBot;
+    RouteDecision const altSigned = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(altSigned.action == GearAction::Preserve && altSigned.preserve,
+            "even a signed empty source cannot strip an AltBot") && ok;
+    signedEmpty.population = Population::RandomBot;
+    signedEmpty.domainProvenEmpty = false;
+    RouteDecision const unsignedHint = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(unsignedHint.action == GearAction::Preserve && !unsignedHint.selectionRan,
+            "signed proof without an independently asserted empty-domain hint preserves") && ok;
+    signedEmpty.domainProvenEmpty = true;
+    unavailableOnly[0].eligibility = SourceEligibility::Unknown;
+    RouteDecision const unknownEligibility = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(unknownEligibility.action == GearAction::Preserve &&
+               !unknownEligibility.plan.sourceComplete,
+            "unknown template eligibility prevents native empty certification") && ok;
 
     ItemFact card = Fact(910001, 60);
     card.darkmoonCard = true;

@@ -43,7 +43,8 @@ namespace PlayerbotsAutoGearSelection
         std::span<std::uint32_t const> masterSlots{};
         bool senderFixedKnown = false;
         std::uint32_t senderFixedAverage = 0;
-        // Facts were fully enumerated and the required domain is empty.
+        // Legacy caller empty-domain hint. NOT proof for StripToBags:
+        // only SelectFromFacts with signed per-slot native provenance may strip.
         bool domainProvenEmpty = false;
         PlanInput selection{};
     };
@@ -211,16 +212,33 @@ namespace PlayerbotsAutoGearSelection
             PreserveDecision(decision);
             return decision;
         }
+        // Moving equipped gear to bags is RNDBOT-only. Alt bots, self bots,
+        // AddClass and unknown owners keep their gear on any empty result.
+        bool const stripAllowed = request.populationKnown && request.population == Population::RandomBot;
         if (request.selection.facts.empty())
         {
-            if (request.domainProvenEmpty && request.selection.requiredMask != 0)
+            // A bare domainProvenEmpty hint can be forged or derived from a
+            // partial source. It can never by itself authorize moving gear.
+            // Re-run the exact planner's signed per-slot ProvenEmpty checks.
+            if (!stripAllowed || !request.domainProvenEmpty ||
+                request.selection.requiredMask == 0 || !request.selection.hasNativeSource)
+            {
+                PreserveDecision(decision);
+                return decision;
+            }
+            PlanInput emptySelection = request.selection;
+            emptySelection.cap = resolved.cap;
+            decision.plan = SelectFromFacts(emptySelection, scorer);
+            decision.selectionRan = true;
+            if (decision.plan.outcome.action == GearAction::StripToBags &&
+                decision.plan.sourceComplete)
             {
                 decision.action = GearAction::StripToBags;
                 decision.preserve = false;
-                decision.deletesGear = false;
-                return decision;
             }
-            PreserveDecision(decision);
+            else
+                PreserveDecision(decision);
+            decision.deletesGear = false;
             return decision;
         }
         PlanInput selection = request.selection;
@@ -229,6 +247,8 @@ namespace PlayerbotsAutoGearSelection
         decision.selectionRan = true;
         decision.action = decision.plan.outcome.action;
         if (decision.action == GearAction::CommitSet && !HasSelectedEntry(decision.plan))
+            decision.action = GearAction::Preserve;
+        if (decision.action == GearAction::StripToBags && !stripAllowed)
             decision.action = GearAction::Preserve;
         decision.preserve = decision.action == GearAction::Preserve;
         decision.deletesGear = false;
