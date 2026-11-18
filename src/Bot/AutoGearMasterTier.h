@@ -85,7 +85,10 @@ namespace PlayerbotsAutoGearSelection
     }
 
     // Normal-mode item ceilings from the 18 Nov item-database research
-    // (/tmp/ilvl report). Wrath unknown size uses the 10-man value. Heroic
+    // (/tmp/ilvl report); the owner delegated these to the item records on
+    // 18 Nov 16:08 UK. Ulduar 25 is its highest normal drop (Val'anyr stays
+    // under the stage 15 cap); Sunwell is its highest actual drop. Wrath
+    // unknown size uses the 10-man value. Heroic
     // sources count as normal until the planned master-Heroic check exists.
     constexpr std::uint32_t RaidPointCeiling(RaidPoint point, RaidSize size)
     {
@@ -99,7 +102,7 @@ namespace PlayerbotsAutoGearSelection
             case RaidPoint::TbcT6:
                 return 156;
             case RaidPoint::TbcSunwell:
-                return 164;
+                return 159;  // highest actual Sunwell drop (owner, 18 Nov 16:08 UK)
             case RaidPoint::WrathT7:
                 return big ? 226 : 213;
             case RaidPoint::WrathT8:
@@ -198,13 +201,17 @@ namespace PlayerbotsAutoGearSelection
     // Wraps ResolveAutoGearRoute without changing it. At a TBC or Wrath stage
     // with a max-level commander, normal forms take the route's existing
     // post-leveling average path with the average lowered to the worn tier,
-    // so the cap is min(average, tier ceiling, stage cap). BiS still takes the
-    // stage cap and match its own sample. Everything else passes through.
+    // so the cap is min(average, tier ceiling, stage cap). At Vanilla stages
+    // 1-7 with a max-level commander, normal forms take the same path with
+    // no tier bound: min(average, stage cap) (owner, 18 Nov 16:08 UK). BiS
+    // still takes the stage cap and match its own sample. Everything else
+    // (stage 0, leveling, Unknown, tier sync) passes through.
     template <class Scorer>
     RouteDecision ResolveTieredAutoGearRoute(RouteRequest const& request, TierFacts const& facts, Scorer const& scorer)
     {
         TierEra const era = EraForStage(request.rawStage);
-        if (request.tierSync || era == TierEra::None)
+        bool const vanillaLater = request.rawStage >= 1 && request.rawStage < PlayerbotsAutoGearCap::TbcEntryStage;
+        if (request.tierSync || (era == TierEra::None && !vanillaLater))
             return ResolveAutoGearRoute(request, scorer);
         bool leveling = request.senderIsLeveling;
         if (request.senderLevelKnown)
@@ -217,6 +224,12 @@ namespace PlayerbotsAutoGearSelection
         }
         if (leveling)
             return ResolveAutoGearRoute(request, scorer);
+        if (era == TierEra::None)
+        {
+            RouteRequest averaged = request;
+            averaged.firstStageAfterLeveling = true;
+            return ResolveAutoGearRoute(averaged, scorer);
+        }
         std::uint32_t const average =
             request.commandingSenderVerified ? OccupiedAverage(request.commandingSenderSlots) : 0;
         std::span<MasterItemSource const> const sources =

@@ -1,6 +1,8 @@
 // CP32: at TBC and Wrath max level, normal autogear is
 // min(commander average, worn raid tier ceiling, stage cap). Owner decision
-// 18 Nov 2026 14:49 UK. BiS, leveling, match and Vanilla are unchanged.
+// 18 Nov 2026 14:49 UK. BiS, leveling and match are unchanged.
+// CP34 (owner, 18 Nov 16:08 UK): Sunwell ceiling 159; at Vanilla stages 1-7
+// with a level 60 commander, normal autogear is min(average, stage cap).
 #include "AutoGearMasterTier.h"
 #include <iostream>
 #include <string>
@@ -257,7 +259,7 @@ int main()
     Prepare(f, 13, 75, 180, false, {});
     ok = Expect("leveling at stage 13 is unchanged", f, 180, CapMode::Leveling) && ok;
     Prepare(f, 7, 60, 70, false, Repeat(Raid(RaidPoint::TbcT4, 120), 16));
-    ok = Expect("Vanilla stage 7 max level is unchanged (stage cap)", f, 92, CapMode::Endgame) && ok;
+    ok = Expect("Vanilla stage 7 max level: master average 70 binds", f, 70, CapMode::Leveling) && ok;
     Prepare(f, 0, 60, 62, false, {});
     ok = Expect("Vanilla first stage after leveling is unchanged (average)", f, 62, CapMode::Leveling) && ok;
     Prepare(f, 0, 60, 62, true, {});
@@ -268,6 +270,52 @@ int main()
     f.request.masterSampleVerified = true;
     f.request.masterSlots = master;
     ok = Expect("match keeps the master's own average", f, 110, CapMode::Match) && ok;
+
+    // --- CP34: Sunwell ceiling and Vanilla stages 1-7 ---
+    ok = Check(RaidPointCeiling(RaidPoint::TbcSunwell, RaidSize::Unknown) == 159, "Sunwell ceiling is 159") && ok;
+    ok = Check(RaidPointCeiling(RaidPoint::WrathT8, RaidSize::TwentyFive) == 239, "Ulduar 25 ceiling stays 239") && ok;
+    MasterTier const sunwell = tier(TierEra::Tbc, Repeat(Raid(RaidPoint::TbcSunwell, 159), 16));
+    ok = Check(sunwell.known && sunwell.ceiling == 159, "full Sunwell master resolves to 159") && ok;
+    Prepare(f, 12, 70, 158, false, Repeat(Raid(RaidPoint::TbcSunwell, 159), 16));
+    ok = Expect("Sunwell master avg 158 at stage 12: stage cap 156 binds", f, 156, CapMode::Leveling) && ok;
+    Prepare(f, 12, 70, 152, false, Repeat(Raid(RaidPoint::TbcSunwell, 159), 16));
+    ok = Expect("Sunwell master avg 152 at stage 12: average binds", f, 152, CapMode::Leveling) && ok;
+    struct VanillaCase
+    {
+        std::uint8_t stage;
+        std::uint32_t average;
+        std::uint32_t stageCap;
+    };
+    VanillaCase const vanilla[] = {{1, 70, 78}, {2, 75, 78}, {3, 80, 83}, {4, 66, 83}, {5, 83, 83}, {6, 86, 88}, {7, 90, 92}};
+    for (VanillaCase const& v : vanilla)
+    {
+        std::string const tag = "Vanilla stage " + std::to_string(v.stage);
+        Prepare(f, v.stage, 60, v.average, false, {});
+        ok = Expect(tag + " level 60: average binds", f, v.average, CapMode::Leveling) && ok;
+        Prepare(f, v.stage, 60, v.stageCap + 20, false, {});
+        ok = Expect(tag + " level 60: stage cap binds above it", f, v.stageCap, CapMode::Leveling) && ok;
+        Prepare(f, v.stage, 60, v.average, true, {});
+        ok = Expect(tag + " BiS keeps the stage cap", f, v.stageCap, CapMode::Endgame) && ok;
+        Prepare(f, v.stage, 55, v.average, false, {});
+        ok = Expect(tag + " leveling commander is unchanged", f, v.average, CapMode::Leveling) && ok;
+    }
+    Prepare(f, 7, 60, 70, false, {});
+    f.request.senderLevelKnown = false;
+    f.request.senderIsLeveling = false;
+    ok = Expect("Vanilla stage 7 legacy max-level flag: average binds", f, 70, CapMode::Leveling) && ok;
+    Prepare(f, 7, 60, 70, false, {});
+    f.request.commandingSenderVerified = false;
+    RouteDecision const vanillaNoSample = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+    ok = Check(vanillaNoSample.preserve && vanillaNoSample.cap == 0, "Vanilla stage 7 with no commander average preserves") && ok;
+    Prepare(f, 7, 60, 70, false, {});
+    f.request.text = "match";
+    f.request.masterSampleVerified = true;
+    std::vector<std::uint32_t> const vanillaMaster(16, 64);
+    f.request.masterSlots = vanillaMaster;
+    ok = Expect("Vanilla stage 7 match keeps the master's own average", f, 64, CapMode::Match) && ok;
+    Prepare(f, 7, 60, 70, false, {});
+    RouteDecision const rawVanilla = ResolveAutoGearRoute(f.request, ScoreOf);
+    ok = Check(rawVanilla.cap == 92 && rawVanilla.mode == CapMode::Endgame, "the unwrapped route at stage 7 is unchanged") && ok;
 
     // The route itself is not edited (PR #42 also changes it): unwrapped, it
     // still gives the stage cap; only the wrapper applies the worn tier.
