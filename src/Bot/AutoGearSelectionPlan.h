@@ -520,6 +520,12 @@ namespace PlayerbotsAutoGearSelection
         if (plan.solved.status == PlayerbotsAutoGearSet::Status::Incomplete ||
             plan.solved.status == PlayerbotsAutoGearSet::Status::Invalid || !plan.scoresTrustworthy)
             searchComplete = false;
+        // A caller-supplied completeMask (even with a Complete slotLists hint)
+        // is NOT an authoritative empty-universe certificate. A no-set from
+        // the direct facts-only path must never authorize StripToBags.
+        // Native mode separately requires ProvenEmpty for every eligible slot.
+        if (plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet && !in.hasNativeSource)
+            searchComplete = false;
         if (in.hasNativeSource)
         {
             bool provenEmptyUniverse = true;
