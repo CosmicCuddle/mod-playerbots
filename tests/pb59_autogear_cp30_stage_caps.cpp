@@ -3,6 +3,7 @@
 // at 226; ICC 25 Heroic and Ruby Sanctum 25 Heroic at 284; nothing lootable
 // reaches 290. Stages 0-7 are unchanged.
 #include "AutoGearCommandRoute.h"
+#include "AutoGearMasterTier.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -99,7 +100,7 @@ RouteRequest Bis(std::uint8_t stage, std::vector<ItemFact> const& facts)
 static_assert(ApprovedVanillaCompletion[7] == 92);
 static_assert(ApprovedVanillaCompletion[13] == 226);
 static_assert(ApprovedVanillaCompletion[18] == 284);
-static_assert(ApprovedEraCeilings[0] == 92 && ApprovedEraCeilings[1] == 164 && ApprovedEraCeilings[2] == 284);
+static_assert(ApprovedEraCeilings[0] == 92 && ApprovedEraCeilings[1] == 159 && ApprovedEraCeilings[2] == 284);
 static_assert(ComposeCap(Endgame(8, 8)).cap == 125);
 static_assert(ComposeCap(Endgame(11, 11)).preserve);
 
@@ -120,13 +121,21 @@ int main()
     for (std::uint8_t stage = 0; stage < PlayerbotsAutoGearCap::TbcEntryStage; ++stage)
         ok = Check(ComposeCap(Endgame(stage, stage)).cap <= 92, "Vanilla stages stay at or below 92") && ok;
     for (std::uint8_t stage = PlayerbotsAutoGearCap::TbcEntryStage; stage < PlayerbotsAutoGearCap::WrathEntryStage; ++stage)
-        ok = Check(ComposeCap(Endgame(stage, stage)).cap <= 164, "TBC stages stay at or below 164") && ok;
+        ok = Check(ComposeCap(Endgame(stage, stage)).cap <= 159, "TBC stages stay at or below 159") && ok;
     for (std::uint8_t stage = PlayerbotsAutoGearCap::WrathEntryStage; stage <= 18; ++stage)
         ok = Check(ComposeCap(Endgame(stage, stage)).cap <= 284, "Wrath stages stay at or below 284") && ok;
 
     // A lagging effective stage is clamped by its own era ceiling.
     ok = Check(ComposeCap(Endgame(13, 7)).cap == 92, "raw 13 at effective Vanilla stage stays at 92") && ok;
-    ok = Check(ComposeCap(Endgame(17, 10)).cap == 164, "raw 17 at effective TBC stage stays at 164") && ok;
+    ok = Check(ComposeCap(Endgame(17, 10)).cap == 159, "raw 17 at effective TBC stage stays at 159") && ok;
+    for (std::uint8_t raw = PlayerbotsAutoGearCap::WrathEntryStage; raw <= 18; ++raw)
+    {
+        for (std::uint8_t effective = PlayerbotsAutoGearCap::TbcEntryStage; effective < PlayerbotsAutoGearCap::WrathEntryStage; ++effective)
+            ok = Check(ComposeCap(Endgame(raw, effective)).cap == 159, "a Wrath raw stage at a TBC effective stage is held at 159") && ok;
+    }
+    ok = Check(ApprovedTbcEraCeiling == PlayerbotsAutoGearSelection::RaidPointCeiling(
+                   PlayerbotsAutoGearSelection::RaidPoint::TbcSunwell, PlayerbotsAutoGearSelection::RaidSize::Unknown),
+             "TBC era ceiling equals the Sunwell tier ceiling") && ok;
     ok = Check(ComposeCap(Endgame(9, 10)).preserve, "effective above raw still refuses") && ok;
     ok = Check(ComposeCap(Endgame(19, 19)).preserve, "stage 19 still refuses") && ok;
     CapInput limited = Endgame(18, 18);

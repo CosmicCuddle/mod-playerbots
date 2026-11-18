@@ -38,8 +38,9 @@ namespace PlayerbotsAutoGearSelection
         return ceiling;
     }
 
-    // Owner-approved 18 Nov 2026: TBC 164 and Wrath 284 expansion ceilings.
-    inline constexpr std::uint32_t ApprovedTbcEraCeiling = 164;
+    // Owner-approved 18 Nov 2026: Wrath 284 expansion ceiling (12:23 UK) and
+    // TBC 159, the highest actual Sunwell drop (16:49 UK; was 164).
+    inline constexpr std::uint32_t ApprovedTbcEraCeiling = 159;
     inline constexpr std::uint32_t ApprovedWrathEraCeiling = 284;
 
     inline constexpr std::array<std::uint32_t, 3> ApprovedEraFloors{{0, 0, 0}};
