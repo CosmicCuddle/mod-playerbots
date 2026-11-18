@@ -30,6 +30,10 @@ namespace PlayerbotsAutoGearSelection
         bool progressionContextVerified = false;
         bool senderIsLeveling = false;
         bool firstStageAfterLeveling = false;
+        // When set, leveling comes from SenderPhaseForStage(senderLevel,
+        // rawStage) and senderIsLeveling is ignored. Unknown preserves.
+        bool senderLevelKnown = false;
+        std::uint32_t senderLevel = 0;
         std::uint8_t rawStage = 0;
         std::uint8_t effectiveStage = 0;
         // Playerbots.AutoGearScoreLimit. Zero does not invent a ceiling.
@@ -158,7 +162,20 @@ namespace PlayerbotsAutoGearSelection
             return decision;
         }
 
-        bool const postLevel = request.firstStageAfterLeveling && !request.senderIsLeveling;
+        bool senderIsLeveling = request.senderIsLeveling;
+        if (request.senderLevelKnown)
+        {
+            SenderPhase const phase =
+                SenderPhaseForStage(true, request.senderLevel, request.progressionContextVerified, request.rawStage);
+            if (phase == SenderPhase::Unknown)
+            {
+                decision.ranNewPath = true;
+                PreserveDecision(decision);
+                return decision;
+            }
+            senderIsLeveling = phase == SenderPhase::Leveling;
+        }
+        bool const postLevel = request.firstStageAfterLeveling && !senderIsLeveling;
         std::uint32_t const senderAverage = request.commandingSenderVerified
             ? OccupiedAverage(request.commandingSenderSlots) : 0;
         ParseRequest parsed;
@@ -174,8 +191,8 @@ namespace PlayerbotsAutoGearSelection
             parsed.evidence.masterOccupied = request.masterSlots;
         }
         CommandForm const preview = FormFor(false, ArgKind::None, request.bis);
-        parsed.requestedMode = ModeForForm(preview, request.senderIsLeveling, request.firstStageAfterLeveling);
-        if (request.senderIsLeveling)
+        parsed.requestedMode = ModeForForm(preview, senderIsLeveling, request.firstStageAfterLeveling);
+        if (senderIsLeveling)
         {
             parsed.progression.senderSampleKnown = request.senderFixedKnown;
             parsed.progression.senderAverage = request.senderFixedAverage;
@@ -184,7 +201,7 @@ namespace PlayerbotsAutoGearSelection
         decision.form = FormFor(command.reset, command.argument, request.bis);
         decision.reset = command.reset;
         decision.quality = command.quality;
-        decision.mode = ModeForForm(decision.form, request.senderIsLeveling, request.firstStageAfterLeveling);
+        decision.mode = ModeForForm(decision.form, senderIsLeveling, request.firstStageAfterLeveling);
         if (postLevel && decision.form != CommandForm::Match && decision.form != CommandForm::Bis &&
             decision.form != CommandForm::BisNumeric)
         {
