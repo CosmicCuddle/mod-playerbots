@@ -578,7 +578,12 @@ namespace PlayerbotsAutoGearSelection
                         if (!sourceProven)
                             searchComplete = false;
                     }
-                    if (sourceRowsForSlot != original.rows.size())
+                    // A declared zero-row span is still only a caller claim:
+                    // no same-slot source has been observed or reconciled.
+                    // A future trusted collector may supply a separate
+                    // universe-exhaustion witness; this header has none.
+                    if (sourceRowsForSlot == 0 || original.rows.empty() ||
+                        sourceRowsForSlot != original.rows.size())
                         searchComplete = false;
                     // This checks consistency of the supplied rows, not
                     // native item-template universe exhaustion. A future
