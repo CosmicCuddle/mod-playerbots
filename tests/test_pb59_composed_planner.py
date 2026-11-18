@@ -29,6 +29,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++", help="C++20 compiler (e.g., g++ or clang++)")
     parser.add_argument("--sanitize", action="store_true", help="Build and run with ASan/UBSan")
+    parser.add_argument(
+        "--extra-cxxflag", action="append", default=[], metavar="FLAG",
+        help="repeatable toolchain/include flag, e.g. --extra-cxxflag=-isystem --extra-cxxflag=/path",
+    )
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parent.parent
@@ -38,7 +42,7 @@ def main() -> int:
         print(f"FAIL missing source directory: {src}", file=sys.stderr)
         return 1
 
-    flags = ["-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", str(src)]
+    flags = ["-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", str(src), *args.extra_cxxflag]
     if args.sanitize:
         flags.extend(("-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g"))
 
