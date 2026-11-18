@@ -235,6 +235,55 @@ int main()
             "caller domainProvenEmpty flag cannot authorize an empty-domain strip") &&
          ok;
 
+    // A synthetic but internally signed/exhaustive native empty list CAN
+    // still request StripToBags for a verified RNDBOT. The native collector
+    // in the actual server does not currently prove an exhaustive universe.
+    SourceRow unavailable;
+    unavailable.entryId = 100;
+    unavailable.itemLevel = 60;
+    unavailable.templateLoaded = true;
+    unavailable.eligibility = SourceEligibility::KnownUnavailable;
+    unavailable.staticCapabilityKnown = true;
+    unavailable.staticCapable = true;
+    std::array<SourceRow, 1> unavailableOnly{{unavailable}};
+    RouteRequest signedEmpty = Enabled(0);
+    signedEmpty.domainProvenEmpty = true;
+    signedEmpty.selection.hasNativeSource = true;
+    signedEmpty.selection.nativeRows = unavailableOnly;
+    signedEmpty.selection.sourceBudget = 4;
+    signedEmpty.selection.sourceRevision = 7;
+    signedEmpty.selection.nativeProofs[4].authoritative = true;
+    RouteDecision const signedStrip = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(signedStrip.action == GearAction::StripToBags && !signedStrip.preserve &&
+               signedStrip.selectionRan && signedStrip.plan.sourceComplete && !signedStrip.deletesGear,
+            "verified RNDBOT with signed native ProvenEmpty may strip to bags") && ok;
+    signedEmpty.selection.sourceRevision = 0;
+    RouteDecision const staleSigned = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(staleSigned.action == GearAction::Preserve && !staleSigned.plan.sourceComplete,
+            "zero source revision is not an empty certificate") && ok;
+    signedEmpty.selection.sourceRevision = 7;
+    signedEmpty.selection.nativeProofs[4].authoritative = false;
+    RouteDecision const nonAuthoritative = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(nonAuthoritative.action == GearAction::Preserve &&
+               !nonAuthoritative.plan.sourceComplete,
+            "unverified native slot proof never strips") && ok;
+    signedEmpty.selection.nativeProofs[4].authoritative = true;
+    signedEmpty.population = Population::AltBot;
+    RouteDecision const altSigned = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(altSigned.action == GearAction::Preserve && altSigned.preserve,
+            "even a signed empty source cannot strip an AltBot") && ok;
+    signedEmpty.population = Population::RandomBot;
+    signedEmpty.domainProvenEmpty = false;
+    RouteDecision const unsignedHint = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(unsignedHint.action == GearAction::Preserve && !unsignedHint.selectionRan,
+            "signed proof without an independently asserted empty-domain hint preserves") && ok;
+    signedEmpty.domainProvenEmpty = true;
+    unavailableOnly[0].eligibility = SourceEligibility::Unknown;
+    RouteDecision const unknownEligibility = ResolveAutoGearRoute(signedEmpty, ScoreOf);
+    ok = Check(unknownEligibility.action == GearAction::Preserve &&
+               !unknownEligibility.plan.sourceComplete,
+            "unknown template eligibility prevents native empty certification") && ok;
+
     ItemFact card = Fact(910001, 60);
     card.darkmoonCard = true;
     card.requestForceBis = true;
