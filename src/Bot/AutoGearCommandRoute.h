@@ -211,9 +211,12 @@ namespace PlayerbotsAutoGearSelection
             PreserveDecision(decision);
             return decision;
         }
+        // Moving equipped gear to bags is RNDBOT-only. Alt bots, self bots,
+        // AddClass and unknown owners keep their gear on any empty result.
+        bool const stripAllowed = request.populationKnown && request.population == Population::RandomBot;
         if (request.selection.facts.empty())
         {
-            if (request.domainProvenEmpty && request.selection.requiredMask != 0)
+            if (request.domainProvenEmpty && request.selection.requiredMask != 0 && stripAllowed)
             {
                 decision.action = GearAction::StripToBags;
                 decision.preserve = false;
@@ -229,6 +232,8 @@ namespace PlayerbotsAutoGearSelection
         decision.selectionRan = true;
         decision.action = decision.plan.outcome.action;
         if (decision.action == GearAction::CommitSet && !HasSelectedEntry(decision.plan))
+            decision.action = GearAction::Preserve;
+        if (decision.action == GearAction::StripToBags && !stripAllowed)
             decision.action = GearAction::Preserve;
         decision.preserve = decision.action == GearAction::Preserve;
         decision.deletesGear = false;
