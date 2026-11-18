@@ -133,22 +133,23 @@ int main()
              "tier sync without a verified stage resolves no cap") &&
          ok;
 
-    // Strip to bags: a proven empty domain only strips a proven RNDBOT.
+    // Domain hints and facts-only NoSet are NOT signed native empty proofs:
+    // even a positively verified RNDBOT must preserve until that proof exists.
     for (Population population : all)
     {
         RouteRequest empty = Ready(population, 0);
         empty.domainProvenEmpty = true;
         RouteDecision const decision = ResolveAutoGearRoute(empty, ScoreOf);
-        bool const rnd = population == Population::RandomBot;
-        ok = Check((decision.action == GearAction::StripToBags) == rnd && !decision.deletesGear,
-                 Name(population) + " empty-domain strip is RNDBOT-only") &&
+        ok = Check(decision.action == GearAction::Preserve && decision.preserve &&
+                   !decision.deletesGear && !decision.selectionRan,
+                 Name(population) + " unverified empty-domain hint never strips") &&
              ok;
         empty.populationKnown = false;
         RouteDecision const unproven = ResolveAutoGearRoute(empty, ScoreOf);
         ok = Check(unproven.action == GearAction::Preserve, Name(population) + " unproven owner never strips") && ok;
 
-        // Solver-produced empty result (caller-claimed complete list with only
-        // an over-cap item) also strips only a proven RNDBOT.
+        // Solver-produced NoSet with a caller-supplied completeMask (only an
+        // over-cap item) is still missing independent native authority.
         std::vector<ItemFact> overCap{Chest(500, 90)};
         RouteRequest solved = Ready(population, 0);
         solved.selection.facts = overCap;
@@ -156,8 +157,9 @@ int main()
         if (population == Population::Unknown)
             ok = Check(viaSolver.preserve && !viaSolver.selectionRan, "unknown owner never reaches the solver") && ok;
         else
-            ok = Check((viaSolver.action == GearAction::StripToBags) == rnd && !viaSolver.deletesGear,
-                     Name(population) + " solver empty result strips only an RNDBOT") &&
+            ok = Check(viaSolver.action == GearAction::Preserve &&
+                       !viaSolver.plan.sourceComplete && !viaSolver.deletesGear,
+                     Name(population) + " direct NoSet preserves without native proof") &&
                  ok;
     }
 
