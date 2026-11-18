@@ -542,6 +542,48 @@ namespace PlayerbotsAutoGearSelection
                     searchComplete = false;
                 if (plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet && !empty)
                     searchComplete = false;
+                if (plan.solved.status == PlayerbotsAutoGearSet::Status::NoSet)
+                {
+                    // Before authorizing an empty-universe result, cross-check
+                    // every raw native row (including KnownUnavailable rows
+                    // filtered out by CopyBoundedSource) against the declared
+                    // per-slot proof. A bare authoritative empty span is not
+                    // evidence that the source universe was enumerated.
+                    PlanInput::NativeSlotProof const& original = in.nativeProofs[slot];
+                    if (!original.rowsDeclared || original.declaredRows != original.rows.size())
+                        searchComplete = false;
+                    std::size_t sourceRowsForSlot = 0;
+                    for (SourceRow const& source : in.nativeRows)
+                    {
+                        if (source.slot != slot)
+                            continue;
+                        ++sourceRowsForSlot;
+                        bool sourceProven = false;
+                        for (ProvenanceRow const& row : original.rows)
+                        {
+                            bool const same = row.entryId == source.entryId &&
+                                              row.randomProperty == source.randomProperty &&
+                                              row.itemLevel == source.itemLevel;
+                            bool const sameState =
+                                (source.eligibility == SourceEligibility::KnownUnavailable &&
+                                 row.state == RowState::KnownUnavailable) ||
+                                (source.eligibility == SourceEligibility::KnownEligible &&
+                                 row.state == RowState::KnownPresent);
+                            if (same && sameState)
+                            {
+                                sourceProven = true;
+                                break;
+                            }
+                        }
+                        if (!sourceProven)
+                            searchComplete = false;
+                    }
+                    if (sourceRowsForSlot != original.rows.size())
+                        searchComplete = false;
+                    // This checks consistency of the supplied rows, not
+                    // native item-template universe exhaustion. A future
+                    // native collector still has to prove that separately.
+                }
                 if (plan.solved.items[slot] != 0 && proof.verdict != ListVerdict::ProvenCandidates)
                     searchComplete = false;
                 if (required && plan.solved.items[slot] == 0 && proof.verdict == ListVerdict::ProvenCandidates)
