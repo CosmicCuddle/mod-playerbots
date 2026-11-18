@@ -204,8 +204,9 @@ int main()
     RouteRequest strip = Enabled(0);
     strip.selection.facts = tooHard;
     RouteDecision const stripped = ResolveAutoGearRoute(strip, ScoreOf);
-    ok = Check(stripped.action == GearAction::StripToBags && !stripped.deletesGear,
-            "a confirmed empty set moves gear to bags") &&
+    ok = Check(stripped.action == GearAction::Preserve && stripped.preserve &&
+               !stripped.plan.sourceComplete && !stripped.deletesGear,
+            "a facts-only NoSet cannot strip an RNDBOT without native proof") &&
          ok;
 
     RouteRequest unknown = Enabled(0);
@@ -229,8 +230,9 @@ int main()
          ok;
     emptyFacts.domainProvenEmpty = true;
     RouteDecision const emptyProven = ResolveAutoGearRoute(emptyFacts, ScoreOf);
-    ok = Check(emptyProven.action == GearAction::StripToBags && !emptyProven.preserve && !emptyProven.deletesGear,
-            "a proven empty required domain strips to bags") &&
+    ok = Check(emptyProven.action == GearAction::Preserve && emptyProven.preserve &&
+               !emptyProven.selectionRan && !emptyProven.deletesGear,
+            "caller domainProvenEmpty flag cannot authorize an empty-domain strip") &&
          ok;
 
     ItemFact card = Fact(910001, 60);
