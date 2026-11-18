@@ -190,13 +190,77 @@ namespace PlayerbotsAutoGearSelection
         return average < tier.ceiling ? average : tier.ceiling;
     }
 
-    // Facts the route does not carry: the raid source of each occupied combat
-    // slot of the commanding sender (the same sample as commandingSenderSlots).
+    // Facts the route does not carry: the raid source of each slot of the
+    // commanding sender, in the same order and length as
+    // commandingSenderSlots (empty slots read itemLevel 0, no raid source).
+    // The list is bound to the snapshot it was read from; see TierSourcesBound.
     struct TierFacts
     {
         bool sourcesVerified = false;
         std::span<MasterItemSource const> sources{};
+        std::uint64_t senderGuid = 0;          // whose equipment was read
+        std::uint32_t equipmentRevision = 0;   // equipment revision it was read at
     };
+
+    // The commander snapshot the route's commandingSenderSlots came from.
+    struct SenderSnapshot
+    {
+        std::uint64_t senderGuid = 0;
+        std::uint32_t equipmentRevision = 0;
+    };
+
+    // G7 (CS01 #59 comment 6984350322): a source list may lift the tier only
+    // when it describes exactly the sample the route averages. A missing or
+    // extra entry, a slot whose item level differs from the equipped sample,
+    // another sender, or another (stale or reused) equipment revision means
+    // the list proves nothing, even when it is marked verified.
+    constexpr bool TierSourcesBound(std::span<std::uint32_t const> slots, SenderSnapshot const& snapshot,
+        TierFacts const& facts)
+    {
+        if (!facts.sourcesVerified || facts.sources.empty())
+            return false;
+        if (snapshot.senderGuid == 0 || snapshot.equipmentRevision == 0)
+            return false;
+        if (facts.senderGuid != snapshot.senderGuid || facts.equipmentRevision != snapshot.equipmentRevision)
+            return false;
+        if (facts.sources.size() != slots.size())
+            return false;
+        bool occupied = false;
+        for (std::size_t i = 0; i < slots.size(); ++i)
+        {
+            MasterItemSource const& source = facts.sources[i];
+            if (source.itemLevel != slots[i])
+                return false;
+            if (slots[i] == 0)
+            {
+                if (source.raidSourceKnown || source.point != RaidPoint::None)
+                    return false;  // an empty slot cannot carry a raid source
+                continue;
+            }
+            occupied = true;
+        }
+        return occupied;
+    }
+
+    // Tier of a bound list; empty slots are skipped. Unbound gives the era
+    // floor (no lift).
+    constexpr MasterTier ResolveBoundMasterTier(TierEra era, std::span<std::uint32_t const> slots,
+        SenderSnapshot const& snapshot, TierFacts const& facts)
+    {
+        if (!TierSourcesBound(slots, snapshot, facts))
+            return ResolveMasterTier(era, {});
+        std::array<MasterItemSource, 32> occupied{};
+        std::size_t count = 0;
+        for (MasterItemSource const& source : facts.sources)
+        {
+            if (source.itemLevel == 0)
+                continue;
+            if (count == occupied.size())
+                return ResolveMasterTier(era, {});
+            occupied[count++] = source;
+        }
+        return ResolveMasterTier(era, std::span<MasterItemSource const>(occupied.data(), count));
+    }
 
     // Wraps ResolveAutoGearRoute without changing it. At a TBC or Wrath stage
     // with a max-level commander, normal forms take the route's existing
@@ -207,7 +271,8 @@ namespace PlayerbotsAutoGearSelection
     // still takes the stage cap and match its own sample. Everything else
     // (stage 0, leveling, Unknown, tier sync) passes through.
     template <class Scorer>
-    RouteDecision ResolveTieredAutoGearRoute(RouteRequest const& request, TierFacts const& facts, Scorer const& scorer)
+    RouteDecision ResolveTieredAutoGearRoute(RouteRequest const& request, SenderSnapshot const& snapshot,
+        TierFacts const& facts, Scorer const& scorer)
     {
         TierEra const era = EraForStage(request.rawStage);
         bool const vanillaLater = request.rawStage >= 1 && request.rawStage < PlayerbotsAutoGearCap::TbcEntryStage;
@@ -232,14 +297,22 @@ namespace PlayerbotsAutoGearSelection
         }
         std::uint32_t const average =
             request.commandingSenderVerified ? OccupiedAverage(request.commandingSenderSlots) : 0;
-        std::span<MasterItemSource const> const sources =
-            facts.sourcesVerified ? facts.sources : std::span<MasterItemSource const>{};
-        std::array<std::uint32_t, 1> const bounded{{TierBoundedAverage(average, ResolveMasterTier(era, sources))}};
+        MasterTier const tier = request.commandingSenderVerified
+            ? ResolveBoundMasterTier(era, request.commandingSenderSlots, snapshot, facts)
+            : ResolveMasterTier(era, {});
+        std::array<std::uint32_t, 1> const bounded{{TierBoundedAverage(average, tier)}};
         RouteRequest tiered = request;
         tiered.firstStageAfterLeveling = true;
         tiered.commandingSenderVerified = bounded[0] != 0;
         tiered.commandingSenderSlots = bounded;
         return ResolveAutoGearRoute(tiered, scorer);
+    }
+
+    // Without a commander snapshot no source list can be bound: no tier lift.
+    template <class Scorer>
+    RouteDecision ResolveTieredAutoGearRoute(RouteRequest const& request, TierFacts const& facts, Scorer const& scorer)
+    {
+        return ResolveTieredAutoGearRoute(request, SenderSnapshot{}, facts, scorer);
     }
 }
 

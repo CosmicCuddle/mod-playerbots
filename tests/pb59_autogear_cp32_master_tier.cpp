@@ -3,6 +3,8 @@
 // 18 Nov 2026 14:49 UK. BiS, leveling and match are unchanged.
 // CP34 (owner, 18 Nov 16:08 UK): Sunwell ceiling 159; at Vanilla stages 1-7
 // with a level 60 commander, normal autogear is min(average, stage cap).
+// CP35 G7: a raid-source list lifts the tier only when it is bound to the
+// exact averaged sample (length, per-slot item level, sender, revision).
 #include "AutoGearMasterTier.h"
 #include <iostream>
 #include <string>
@@ -95,6 +97,7 @@ struct Fixture
     std::vector<MasterItemSource> sources;
     RouteRequest request;
     TierFacts facts;
+    SenderSnapshot snapshot;
 };
 
 // A commander at the given stage and level with a flat average.
@@ -103,8 +106,20 @@ void Prepare(Fixture& f, std::uint8_t stage, std::uint32_t level, std::uint32_t 
 {
     f.slots.assign(16, average);
     f.sources = std::move(sources);
+    // A flat sample: every equipped slot reads the average, so an aligned
+    // source list carries the same item level per slot.
+    if (f.sources.size() == f.slots.size())
+    {
+        for (MasterItemSource& source : f.sources)
+            source.itemLevel = average;
+    }
+    f.facts = TierFacts{};
     f.facts.sourcesVerified = sourcesVerified;
     f.facts.sources = f.sources;
+    f.facts.senderGuid = 42;
+    f.facts.equipmentRevision = 7;
+    f.snapshot.senderGuid = 42;
+    f.snapshot.equipmentRevision = 7;
     RouteRequest& r = f.request;
     r = RouteRequest{};
     r.commandEnabled = true;
@@ -147,7 +162,7 @@ void Prepare(Fixture& f, std::uint8_t stage, std::uint32_t level, std::uint32_t 
 
 bool Expect(std::string const& name, Fixture const& f, std::uint32_t cap, CapMode mode)
 {
-    RouteDecision const d = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+    RouteDecision const d = ResolveTieredAutoGearRoute(f.request, f.snapshot, f.facts, ScoreOf);
     bool const ok = d.cap == cap && d.mode == mode && d.action == GearAction::CommitSet &&
                     d.plan.selected[4].entryId == cap && !d.deletesGear;
     if (!ok)
@@ -227,11 +242,11 @@ int main()
     ok = Expect("T4 master avg 133 (badge gear) at stage 10: T4 tier 125 binds", f, 125, CapMode::Leveling) && ok;
     Prepare(f, 10, 70, 138, false, Repeat(Raid(RaidPoint::TbcT5, 138), 16));
     ok = Expect("T5 master avg 138 at stage 10: average binds", f, 138, CapMode::Leveling) && ok;
-    Prepare(f, 12, 70, 150, false, Join(Repeat(Raid(RaidPoint::TbcT6, 151), 3), Repeat(Raid(RaidPoint::TbcT4, 120), 5)));
+    Prepare(f, 12, 70, 150, false, Join(Repeat(Raid(RaidPoint::TbcT6, 151), 6), Repeat(Raid(RaidPoint::TbcT4, 120), 10)));
     ok = Expect("mixed master falls to the lower tier", f, 125, CapMode::Leveling) && ok;
     Prepare(f, 12, 70, 150, false, Repeat(Raid(RaidPoint::TbcT6, 151), 16), false);
     ok = Expect("unverified sources fall to the TBC floor", f, 125, CapMode::Leveling) && ok;
-    Prepare(f, 8, 70, 110, false, quest);
+    Prepare(f, 8, 70, 110, false, Repeat(Other(110), 16));
     ok = Expect("fresh 70 in quest gear: average binds", f, 110, CapMode::Leveling) && ok;
     Prepare(f, 9, 70, 160, false, Repeat(Raid(RaidPoint::TbcSunwell, 159), 16));
     ok = Expect("stage cap still binds above the worn tier", f, 125, CapMode::Leveling) && ok;
@@ -243,10 +258,10 @@ int main()
     ok = Expect("ICC 25 Heroic master at stage 18: normal 271", f, 271, CapMode::Leveling) && ok;
     Prepare(f, 9, 70, 120, false, quest);
     f.request.commandingSenderVerified = false;
-    RouteDecision const noSample = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+    RouteDecision const noSample = ResolveTieredAutoGearRoute(f.request, f.snapshot, f.facts, ScoreOf);
     ok = Check(noSample.preserve && noSample.cap == 0, "no commander average preserves") && ok;
     Prepare(f, 11, 70, 120, false, quest);
-    RouteDecision const s11 = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+    RouteDecision const s11 = ResolveTieredAutoGearRoute(f.request, f.snapshot, f.facts, ScoreOf);
     ok = Check(s11.preserve && s11.cap == 0, "stage 11 still refuses") && ok;
 
     // --- unchanged paths ---
@@ -305,7 +320,7 @@ int main()
     ok = Expect("Vanilla stage 7 legacy max-level flag: average binds", f, 70, CapMode::Leveling) && ok;
     Prepare(f, 7, 60, 70, false, {});
     f.request.commandingSenderVerified = false;
-    RouteDecision const vanillaNoSample = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+    RouteDecision const vanillaNoSample = ResolveTieredAutoGearRoute(f.request, f.snapshot, f.facts, ScoreOf);
     ok = Check(vanillaNoSample.preserve && vanillaNoSample.cap == 0, "Vanilla stage 7 with no commander average preserves") && ok;
     Prepare(f, 7, 60, 70, false, {});
     f.request.text = "match";
@@ -316,6 +331,90 @@ int main()
     Prepare(f, 7, 60, 70, false, {});
     RouteDecision const rawVanilla = ResolveAutoGearRoute(f.request, ScoreOf);
     ok = Check(rawVanilla.cap == 92 && rawVanilla.mode == CapMode::Endgame, "the unwrapped route at stage 7 is unchanged") && ok;
+
+    // --- G7: the source list must describe exactly the averaged sample ---
+    {
+        // CS01's example: 14 Naxx 10 + 2 Ulduar 25 pieces, average 230, stage 15 cap 245.
+        auto naxxUld = [] {
+            return Join(Repeat(Raid(RaidPoint::WrathT7, 230, RaidSize::Ten), 14),
+                Repeat(Raid(RaidPoint::WrathT8, 230, RaidSize::TwentyFive), 2));
+        };
+        Prepare(f, 15, 80, 230, false, naxxUld());
+        ok = Expect("G7 full 14 Naxx 10 + 2 Ulduar 25 list caps at 213", f, 213, CapMode::Leveling) && ok;
+        std::vector<MasterItemSource> const onlyUld = Repeat(Raid(RaidPoint::WrathT8, 230, RaidSize::TwentyFive), 2);
+        Prepare(f, 15, 80, 230, false, onlyUld);
+        ok = Expect("G7 list of only the 2 Ulduar pieces gives no lift (213, not 230)", f, 213, CapMode::Leveling) && ok;
+        RouteDecision const truncated = ResolveTieredAutoGearRoute(f.request, f.snapshot, f.facts, ScoreOf);
+        ok = Check(truncated.cap <= 213, "G7 truncated list never goes above 213") && ok;
+        ok = Check(!ResolveBoundMasterTier(TierEra::Wrath, f.slots, f.snapshot, f.facts).known,
+                 "G7 truncated list is not a known tier") && ok;
+
+        // Same answer through the pure helpers for every failure mode.
+        auto liftOf = [](Fixture const& fx) { return ResolveBoundMasterTier(TierEra::Wrath, fx.slots, fx.snapshot, fx.facts); };
+        std::vector<MasterItemSource> const fullUld = Repeat(Raid(RaidPoint::WrathT8, 230, RaidSize::TwentyFive), 16);
+        Prepare(f, 15, 80, 230, false, fullUld);
+        MasterTier const good = liftOf(f);
+        ok = Check(good.known && good.ceiling == 239, "G7 bound full Ulduar 25 list lifts to 239 (control)") && ok;
+        ok = Expect("G7 bound full Ulduar 25 list: average 230 binds", f, 230, CapMode::Leveling) && ok;
+
+        Prepare(f, 15, 80, 230, false, Repeat(Raid(RaidPoint::WrathT8, 230, RaidSize::TwentyFive), 15));
+        ok = Check(!liftOf(f).known && liftOf(f).ceiling == 213, "G7 missing one entry: floor 213") && ok;
+        ok = Expect("G7 missing one entry: route 213", f, 213, CapMode::Leveling) && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.sources.push_back(Raid(RaidPoint::WrathT8, 230, RaidSize::TwentyFive));
+        f.facts.sources = f.sources;
+        ok = Check(!liftOf(f).known && liftOf(f).ceiling == 213, "G7 extra entry: floor 213") && ok;
+        ok = Expect("G7 extra entry: route 213", f, 213, CapMode::Leveling) && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.sources[5].itemLevel = 232;
+        ok = Check(!liftOf(f).known, "G7 one slot item level differs from the equipped sample: no lift") && ok;
+        ok = Expect("G7 mismatched slot: route 213", f, 213, CapMode::Leveling) && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.slots[3] = 0;  // that slot is now empty on the commander, the list still claims a raid piece
+        f.request.commandingSenderSlots = f.slots;
+        ok = Check(!liftOf(f).known, "G7 list claims a piece in an empty slot: no lift") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.slots[3] = 0;
+        f.sources[3] = MasterItemSource{};
+        f.request.commandingSenderSlots = f.slots;
+        f.facts.sources = f.sources;
+        MasterTier const withEmpty = liftOf(f);
+        ok = Check(withEmpty.known && withEmpty.ceiling == 239, "G7 an aligned empty slot is skipped (control)") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.facts.equipmentRevision = 6;
+        ok = Check(!liftOf(f).known, "G7 stale equipment revision: no lift") && ok;
+        ok = Expect("G7 stale revision: route 213", f, 213, CapMode::Leveling) && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.facts.senderGuid = 43;
+        ok = Check(!liftOf(f).known, "G7 list from another sender: no lift") && ok;
+        ok = Expect("G7 other sender: route 213", f, 213, CapMode::Leveling) && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.snapshot.equipmentRevision = 8;  // the commander re-equipped; the old verified list is reused
+        ok = Check(!liftOf(f).known, "G7 reused list after re-equip: no lift") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.facts.senderGuid = 0;
+        f.facts.equipmentRevision = 0;
+        f.snapshot = SenderSnapshot{};
+        ok = Check(!liftOf(f).known, "G7 unbound list (no identity or revision): no lift") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        RouteDecision const noSnapshot = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+        ok = Check(noSnapshot.cap == 213, "G7 the snapshot-less overload gives no lift") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld, false);
+        ok = Check(!liftOf(f).known, "G7 unverified list: no lift") && ok;
+
+        Prepare(f, 10, 70, 138, false, Repeat(Raid(RaidPoint::TbcT5, 138), 2));
+        ok = Expect("G7 TBC truncated T5 list: TBC floor 125", f, 125, CapMode::Leveling) && ok;
+    }
 
     // The route itself is not edited (PR #42 also changes it): unwrapped, it
     // still gives the stage cap; only the wrapper applies the worn tier.
