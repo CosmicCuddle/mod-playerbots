@@ -35,6 +35,8 @@ on:
       - review/cs01-pb59-pb37-pb38-factory-compose-20261117
     paths:
       - src/Bot/AutoGearFactoryPlanningGuard.h
+      - src/Bot/AutoGearSetSolver.h
+      - src/Bot/AutoGearWeaponDomain.h
       - src/Bot/Factory/PlayerbotFactory.cpp
       - tests/pb59_autogear_factory_seam.cpp
       - tests/test_pb59_autogear_factory_seam.py
