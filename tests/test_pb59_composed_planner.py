@@ -18,7 +18,7 @@ from pathlib import Path
 # reduce, the coverage without a deliberate reviewed runner change.
 SOURCES = (
     ("pb59_autogear_selection_plan.cpp", 74),
-    ("pb59_autogear_command_route.cpp", 25),
+    ("pb59_autogear_command_route.cpp", 31),
     ("pb59_autogear_variant_solver.cpp", 21),
     ("pb59_autogear_cp23_known_defects.cpp", 36),
     ("pb59_autogear_candidate_collector.cpp", 36),
