@@ -1,0 +1,280 @@
+// CP32: at TBC and Wrath max level, normal autogear is
+// min(commander average, worn raid tier ceiling, stage cap). Owner decision
+// 18 Nov 2026 14:49 UK. BiS, leveling, match and Vanilla are unchanged.
+#include "AutoGearMasterTier.h"
+#include <iostream>
+#include <string>
+#include <vector>
+
+using namespace PlayerbotsAutoGearSelection;
+using PlayerbotsAutoGearWeapons::Bit;
+using PlayerbotsAutoGearWeapons::Kind;
+
+namespace
+{
+int g_checks = 0;
+
+bool Check(bool condition, std::string const& text)
+{
+    ++g_checks;
+    if (!condition)
+    {
+        std::cerr << "FAIL " << text << "\n";
+        return false;
+    }
+    return true;
+}
+
+std::uint32_t ScoreOf(std::uint32_t id, std::int32_t, std::uint32_t) { return id; }
+
+MasterItemSource Raid(RaidPoint point, std::uint32_t itemLevel, RaidSize size = RaidSize::Unknown,
+    bool heroic = false)
+{
+    MasterItemSource item;
+    item.itemLevel = itemLevel;
+    item.raidSourceKnown = true;
+    item.point = point;
+    item.size = size;
+    item.heroic = heroic;
+    return item;
+}
+
+MasterItemSource Other(std::uint32_t itemLevel)
+{
+    MasterItemSource item;
+    item.itemLevel = itemLevel;
+    item.raidSourceKnown = true;
+    item.point = RaidPoint::None;
+    return item;
+}
+
+std::vector<MasterItemSource> Repeat(MasterItemSource item, std::size_t count)
+{
+    return std::vector<MasterItemSource>(count, item);
+}
+
+std::vector<MasterItemSource> Join(std::vector<MasterItemSource> left, std::vector<MasterItemSource> const& right)
+{
+    left.insert(left.end(), right.begin(), right.end());
+    return left;
+}
+
+ItemFact Chest(std::uint32_t itemLevel)
+{
+    ItemFact fact;
+    fact.id = itemLevel;
+    fact.itemLevel = itemLevel;
+    fact.requiredLevel = 1;
+    fact.slot = 4;
+    fact.armorSubtype = 1;
+    fact.sourceKnown = true;
+    fact.metadataKnown = true;
+    fact.equipKnown = true;
+    fact.equipAllowed = true;
+    fact.scoreKnown = true;
+    fact.setEvidenceKnown = true;
+    return fact;
+}
+
+std::vector<ItemFact> const& Pool()
+{
+    static std::vector<ItemFact> const pool = [] {
+        std::vector<ItemFact> facts;
+        for (std::uint32_t level = 60; level <= 284; ++level)
+            facts.push_back(Chest(level));
+        return facts;
+    }();
+    return pool;
+}
+
+struct Fixture
+{
+    std::vector<std::uint32_t> slots;
+    std::vector<MasterItemSource> sources;
+    RouteRequest request;
+    TierFacts facts;
+};
+
+// A commander at the given stage and level with a flat average.
+void Prepare(Fixture& f, std::uint8_t stage, std::uint32_t level, std::uint32_t average, bool bis,
+    std::vector<MasterItemSource> sources, bool sourcesVerified = true)
+{
+    f.slots.assign(16, average);
+    f.sources = std::move(sources);
+    f.facts.sourcesVerified = sourcesVerified;
+    f.facts.sources = f.sources;
+    RouteRequest& r = f.request;
+    r = RouteRequest{};
+    r.commandEnabled = true;
+    r.ipCapEnabled = true;
+    r.bis = bis;
+    r.populationKnown = true;
+    r.population = Population::RandomBot;
+    r.playerContextVerified = true;
+    r.progressionContextVerified = true;
+    r.rawStage = stage;
+    r.effectiveStage = stage;
+    r.qualityLimit = 4;
+    r.senderLevelKnown = true;
+    r.senderLevel = level;
+    r.firstStageAfterLeveling = level == 60 && stage == 0;
+    r.senderFixedKnown = true;
+    r.senderFixedAverage = average;
+    r.commandingSenderVerified = true;
+    r.commandingSenderSlots = f.slots;
+    BotView bot;
+    bot.levelKnown = true;
+    bot.level = 80;
+    bot.classKnown = true;
+    bot.classId = 8;
+    bot.specKnown = true;
+    bot.roleKnown = true;
+    bot.role = Role::Caster;
+    bot.armorKnown = true;
+    bot.armorMask = std::uint32_t{1} << 1;
+    bot.weaponsKnown = true;
+    bot.weapons.mainhand = Bit(Kind::OneHand);
+    r.selection.bot = bot;
+    r.selection.facts = Pool();
+    r.selection.eligibleMask = 1u << 4;
+    r.selection.requiredMask = 1u << 4;
+    r.selection.completeMask = 1u << 4;
+    r.selection.authorityValid = true;
+    r.selection.bags = BagSpace::Enough;
+}
+
+bool Expect(std::string const& name, Fixture const& f, std::uint32_t cap, CapMode mode)
+{
+    RouteDecision const d = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+    bool const ok = d.cap == cap && d.mode == mode && d.action == GearAction::CommitSet &&
+                    d.plan.selected[4].entryId == cap && !d.deletesGear;
+    if (!ok)
+        std::cerr << "  got cap=" << d.cap << " mode=" << static_cast<int>(d.mode)
+                  << " action=" << static_cast<int>(d.action) << "\n";
+    return Check(ok, name);
+}
+}  // namespace
+
+static_assert(EraForStage(7) == TierEra::None && EraForStage(8) == TierEra::Tbc && EraForStage(13) == TierEra::Wrath);
+static_assert(RaidPointCeiling(RaidPoint::WrathT7, RaidSize::Unknown) == 213);
+static_assert(EraFloorCeiling(TierEra::Tbc) == 125 && EraFloorCeiling(TierEra::Wrath) == 213);
+
+int main()
+{
+    bool ok = true;
+    auto tier = [](TierEra era, std::vector<MasterItemSource> const& items) { return ResolveMasterTier(era, items); };
+    std::vector<MasterItemSource> const quest = Repeat(Other(110), 8);
+
+    // --- tier resolution ---
+    MasterTier const t4 = tier(TierEra::Tbc, Join(Repeat(Raid(RaidPoint::TbcT4, 120), 8), quest));
+    ok = Check(t4.known && t4.ceiling == 125 && t4.raidPieces == 8, "T4 master resolves to 125") && ok;
+    MasterTier const t5 = tier(TierEra::Tbc, Repeat(Raid(RaidPoint::TbcT5, 133), 16));
+    ok = Check(t5.known && t5.ceiling == 141, "full T5 master resolves to 141") && ok;
+    MasterTier const stray = tier(TierEra::Tbc, Join(Repeat(Raid(RaidPoint::TbcT4, 120), 5), {Raid(RaidPoint::TbcSunwell, 159)}));
+    ok = Check(stray.ceiling == 125, "one Sunwell piece among T4 stays T4") && ok;
+    MasterTier const minority = tier(TierEra::Tbc, Join(Repeat(Raid(RaidPoint::TbcT6, 151), 3), Repeat(Raid(RaidPoint::TbcT4, 120), 5)));
+    ok = Check(minority.ceiling == 125, "a T6 minority falls to the lower tier") && ok;
+    MasterTier const half = tier(TierEra::Tbc, Join(Repeat(Raid(RaidPoint::TbcT6, 151), 4), Repeat(Raid(RaidPoint::TbcT4, 120), 4)));
+    ok = Check(half.known && half.ceiling == 156, "half T6 reaches T6") && ok;
+    MasterTier const single = tier(TierEra::Tbc, Join({Raid(RaidPoint::TbcT6, 151)}, quest));
+    ok = Check(!single.known && single.ceiling == 125, "a single raid piece is unclear: era floor") && ok;
+    MasterTier const none = tier(TierEra::Tbc, quest);
+    ok = Check(!none.known && none.ceiling == 125, "no raid source: TBC floor 125") && ok;
+    MasterTier const empty = tier(TierEra::Wrath, {});
+    ok = Check(!empty.known && empty.ceiling == 213, "no data: Wrath floor 213") && ok;
+    MasterTier const voa = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::Ambiguous, 245), 8));
+    ok = Check(!voa.known && voa.ceiling == 213, "cross-phase Vault of Archavon gives no tier") && ok;
+    MasterTier const wrongEra = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::TbcSunwell, 159), 8));
+    ok = Check(!wrongEra.known && wrongEra.ceiling == 213, "TBC raid gear is no Wrath tier evidence") && ok;
+    std::vector<MasterItemSource> unknownSource = Repeat(Raid(RaidPoint::TbcT6, 151), 8);
+    for (MasterItemSource& item : unknownSource)
+        item.raidSourceKnown = false;
+    ok = Check(tier(TierEra::Tbc, unknownSource).ceiling == 125, "unknown sources fall to the floor") && ok;
+    std::vector<MasterItemSource> broken = Repeat(Raid(RaidPoint::TbcT6, 151), 8);
+    broken[3].itemLevel = 0;
+    ok = Check(!tier(TierEra::Tbc, broken).known && tier(TierEra::Tbc, broken).ceiling == 125,
+             "a broken slot record falls to the floor") &&
+         ok;
+    ok = Check(tier(TierEra::None, Repeat(Raid(RaidPoint::TbcT6, 151), 8)).ceiling == 0, "Vanilla has no tier ceiling") &&
+         ok;
+
+    // --- Wrath 10/25 overlap ---
+    MasterTier const naxx25 = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathT7, 226, RaidSize::TwentyFive), 10));
+    ok = Check(naxx25.ceiling == 226, "Naxx 25 master: 226") && ok;
+    MasterTier const naxx10 = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathT7, 213, RaidSize::Ten), 10));
+    ok = Check(naxx10.ceiling == 213, "Naxx 10 master: 213") && ok;
+    MasterTier const naxxUnknown = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathT7, 226), 10));
+    ok = Check(naxxUnknown.ceiling == 213, "Naxx of unknown size uses the 10-man ceiling") && ok;
+    MasterTier const uld10 = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathT8, 219, RaidSize::Ten), 10));
+    ok = Check(uld10.ceiling == 232, "Ulduar 10 master: 232") && ok;
+    MasterTier const uld25 = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathT8, 232, RaidSize::TwentyFive), 10));
+    ok = Check(uld25.ceiling == 239, "Ulduar 25 master: 239") && ok;
+    MasterTier const toc25h = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathT9, 258, RaidSize::TwentyFive, true), 10));
+    ok = Check(toc25h.ceiling == 245, "ToC 25 Heroic counts as ToC 25 normal 245 until the Heroic check") && ok;
+    MasterTier const icc = tier(TierEra::Wrath, Repeat(Raid(RaidPoint::WrathT10, 264, RaidSize::TwentyFive), 10));
+    ok = Check(icc.ceiling == 271, "ICC 25 master: 271") && ok;
+    MasterTier const split = tier(TierEra::Wrath,
+        Join(Repeat(Raid(RaidPoint::WrathT7, 226, RaidSize::TwentyFive), 6), Repeat(Raid(RaidPoint::WrathT8, 219, RaidSize::Ten), 2)));
+    ok = Check(split.ceiling == 226, "mostly Naxx 25 with two Ulduar 10 pieces stays 226") && ok;
+
+    // --- route: TBC/Wrath max level, normal autogear ---
+    Fixture f;
+    Prepare(f, 9, 70, 120, false, Join(Repeat(Raid(RaidPoint::TbcT4, 120), 8), quest));
+    ok = Expect("T4 master avg 120 at stage 9: average binds", f, 120, CapMode::Leveling) && ok;
+    Prepare(f, 10, 70, 133, false, Join(Repeat(Raid(RaidPoint::TbcT4, 125), 8), quest));
+    ok = Expect("T4 master avg 133 (badge gear) at stage 10: T4 tier 125 binds", f, 125, CapMode::Leveling) && ok;
+    Prepare(f, 10, 70, 138, false, Repeat(Raid(RaidPoint::TbcT5, 138), 16));
+    ok = Expect("T5 master avg 138 at stage 10: average binds", f, 138, CapMode::Leveling) && ok;
+    Prepare(f, 12, 70, 150, false, Join(Repeat(Raid(RaidPoint::TbcT6, 151), 3), Repeat(Raid(RaidPoint::TbcT4, 120), 5)));
+    ok = Expect("mixed master falls to the lower tier", f, 125, CapMode::Leveling) && ok;
+    Prepare(f, 12, 70, 150, false, Repeat(Raid(RaidPoint::TbcT6, 151), 16), false);
+    ok = Expect("unverified sources fall to the TBC floor", f, 125, CapMode::Leveling) && ok;
+    Prepare(f, 8, 70, 110, false, quest);
+    ok = Expect("fresh 70 in quest gear: average binds", f, 110, CapMode::Leveling) && ok;
+    Prepare(f, 9, 70, 160, false, Repeat(Raid(RaidPoint::TbcSunwell, 159), 16));
+    ok = Expect("stage cap still binds above the worn tier", f, 125, CapMode::Leveling) && ok;
+    Prepare(f, 15, 80, 230, false, Repeat(Raid(RaidPoint::WrathT7, 226, RaidSize::TwentyFive), 16));
+    ok = Expect("Naxx 25 master avg 230 at stage 15: 226", f, 226, CapMode::Leveling) && ok;
+    Prepare(f, 16, 80, 225, false, Repeat(Raid(RaidPoint::WrathT8, 219, RaidSize::Ten), 16));
+    ok = Expect("Ulduar 10 master avg 225 at stage 16: average binds", f, 225, CapMode::Leveling) && ok;
+    Prepare(f, 18, 80, 280, false, Repeat(Raid(RaidPoint::WrathT10, 277, RaidSize::TwentyFive, true), 16));
+    ok = Expect("ICC 25 Heroic master at stage 18: normal 271", f, 271, CapMode::Leveling) && ok;
+    Prepare(f, 9, 70, 120, false, quest);
+    f.request.commandingSenderVerified = false;
+    RouteDecision const noSample = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+    ok = Check(noSample.preserve && noSample.cap == 0, "no commander average preserves") && ok;
+    Prepare(f, 11, 70, 120, false, quest);
+    RouteDecision const s11 = ResolveTieredAutoGearRoute(f.request, f.facts, ScoreOf);
+    ok = Check(s11.preserve && s11.cap == 0, "stage 11 still refuses") && ok;
+
+    // --- unchanged paths ---
+    Prepare(f, 10, 70, 120, true, Repeat(Raid(RaidPoint::TbcT4, 120), 16));
+    ok = Expect("BiS keeps the stage cap regardless of worn tier", f, 141, CapMode::Endgame) && ok;
+    Prepare(f, 18, 80, 220, true, {});
+    ok = Expect("Wrath BiS keeps the stage cap", f, 284, CapMode::Endgame) && ok;
+    Prepare(f, 8, 65, 100, false, Repeat(Raid(RaidPoint::TbcSunwell, 159), 16));
+    ok = Expect("leveling at stage 8 is unchanged", f, 100, CapMode::Leveling) && ok;
+    Prepare(f, 13, 75, 180, false, {});
+    ok = Expect("leveling at stage 13 is unchanged", f, 180, CapMode::Leveling) && ok;
+    Prepare(f, 7, 60, 70, false, Repeat(Raid(RaidPoint::TbcT4, 120), 16));
+    ok = Expect("Vanilla stage 7 max level is unchanged (stage cap)", f, 92, CapMode::Endgame) && ok;
+    Prepare(f, 0, 60, 62, false, {});
+    ok = Expect("Vanilla first stage after leveling is unchanged (average)", f, 62, CapMode::Leveling) && ok;
+    Prepare(f, 0, 60, 62, true, {});
+    ok = Expect("Vanilla first-stage BiS is unchanged (stage cap)", f, 66, CapMode::Endgame) && ok;
+    std::vector<std::uint32_t> master(16, 110);
+    Prepare(f, 10, 70, 138, false, Repeat(Raid(RaidPoint::TbcT5, 138), 16));
+    f.request.text = "match";
+    f.request.masterSampleVerified = true;
+    f.request.masterSlots = master;
+    ok = Expect("match keeps the master's own average", f, 110, CapMode::Match) && ok;
+
+    // The route itself is not edited (PR #42 also changes it): unwrapped, it
+    // still gives the stage cap; only the wrapper applies the worn tier.
+    Prepare(f, 10, 70, 133, false, Repeat(Raid(RaidPoint::TbcT4, 125), 16));
+    RouteDecision const raw = ResolveAutoGearRoute(f.request, ScoreOf);
+    ok = Check(raw.cap == 141 && raw.mode == CapMode::Endgame, "the unwrapped route is unchanged") && ok;
+
+    std::cout << "checks=" << g_checks << "\n";
+    return ok ? 0 : 1;
+}
