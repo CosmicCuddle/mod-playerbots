@@ -333,20 +333,26 @@ namespace PlayerbotsAutoGearSelection
         return {point, RaidPointCeiling(point, RaidSize::TwentyFive), RaidPointHeroicCeiling(point, RaidSize::TwentyFive)};
     }
 
-    // True only when a bound source list shows the master wearing Heroic gear
-    // of `required` or a later Heroic tier: at least two such pieces and at
-    // least half of the master's Wrath raid pieces. Any unclear entry (a
-    // Heroic flag on a raid without Heroic, an ambiguous or unknown-difficulty
-    // raid piece claimed Heroic, an item level above that Heroic ceiling)
-    // makes the whole answer false.
+    // True only when a bound source list shows the master wearing Heroic-level
+    // gear for `required`: at least two qualifying pieces and at least half
+    // of the master's Wrath raid pieces. A qualifying piece is either Heroic
+    // from `required` or a later Heroic tier, or (CP38b, owner delegated
+    // 19 Nov 2026 17:11 UK) a known-normal piece from a later tier (ToC <
+    // ICC < Ruby Sanctum) whose item level is at least `unlockLevel`, the
+    // Heroic level being unlocked. Any unclear entry (a Heroic flag on a raid
+    // without Heroic, an ambiguous or unknown-difficulty raid piece claimed
+    // Heroic, an item level above its difficulty's ceiling) makes the whole
+    // answer false. unlockLevel 0 means the tier's 25-man Heroic ceiling.
     constexpr bool MasterWearsHeroic(RaidPoint required, std::span<std::uint32_t const> slots,
-        SenderSnapshot const& snapshot, TierFacts const& facts)
+        SenderSnapshot const& snapshot, TierFacts const& facts, std::uint32_t unlockLevel = 0)
     {
         std::uint32_t const need = HeroicRank(required);
         if (need == 0 || !TierSourcesBound(slots, snapshot, facts))
             return false;
+        if (unlockLevel == 0)
+            unlockLevel = RaidPointHeroicCeiling(required, RaidSize::TwentyFive);
         std::uint32_t raidPieces = 0;
-        std::uint32_t heroicPieces = 0;
+        std::uint32_t qualifying = 0;
         for (MasterItemSource const& item : facts.sources)
         {
             if (item.itemLevel == 0)
@@ -360,14 +366,23 @@ namespace PlayerbotsAutoGearSelection
             if (item.point == RaidPoint::Ambiguous || EraForPoint(item.point) != TierEra::Wrath)
                 continue;
             ++raidPieces;
-            if (!item.heroicKnown || !item.heroic)
+            if (!item.heroicKnown)
+                continue;  // difficulty unknown: never qualifies
+            std::uint32_t const rank = HeroicRank(item.point);
+            if (item.heroic)
+            {
+                if (item.itemLevel > RaidPointHeroicCeiling(item.point, item.size))
+                    return false;
+                if (rank >= need)
+                    ++qualifying;
                 continue;
-            if (item.itemLevel > RaidPointHeroicCeiling(item.point, item.size))
-                return false;
-            if (HeroicRank(item.point) >= need)
-                ++heroicPieces;
+            }
+            if (item.itemLevel > RaidPointCeiling(item.point, item.size))
+                return false;  // a normal piece above its normal ceiling is unclear
+            if (rank > need && item.itemLevel >= unlockLevel)
+                ++qualifying;
         }
-        return heroicPieces >= 2 && heroicPieces * 2 >= raidPieces;
+        return qualifying >= 2 && qualifying * 2 >= raidPieces;
     }
 
     // The BiS ceiling from the Heroic check, or 0 when the stage has no
@@ -378,7 +393,8 @@ namespace PlayerbotsAutoGearSelection
         StageHeroicSplit const split = HeroicSplitForStage(rawStage);
         if (split.point == RaidPoint::None)
             return 0;
-        return MasterWearsHeroic(split.point, slots, snapshot, facts) ? split.heroicCeiling : split.normalCeiling;
+        return MasterWearsHeroic(split.point, slots, snapshot, facts, split.heroicCeiling) ? split.heroicCeiling
+                                                                                          : split.normalCeiling;
     }
 
     // Wraps ResolveAutoGearRoute without changing it. At a TBC or Wrath stage

@@ -3,6 +3,8 @@
 // already wears Heroic gear of that tier or a later one; missing, unclear or
 // unbound evidence falls to that tier's 25-man normal ceiling. The stage cap
 // and era ceiling still apply.
+// CP38b (owner delegated 19 Nov 2026 17:11 UK): known-normal pieces from a
+// later tier at or above the Heroic level being unlocked also qualify.
 #include "AutoGearMasterTier.h"
 #include <iostream>
 #include <string>
@@ -227,7 +229,7 @@ int main()
     Prepare(f, 16, Toc25N());
     ok = Expect("stage 16, master in ToC 25 normal: 245", f, 245) && ok;
     Prepare(f, 16, Icc25N());
-    ok = Expect("stage 16, master in ICC normal (no Heroic): ToC normal 245", f, 245) && ok;
+    ok = Expect("stage 16, master in ICC 25 normal 264 (CP38b later-tier normal >= 258): ToC Heroic 258", f, 258) && ok;
     Prepare(f, 18, Rs25N());
     ok = Expect("stage 18, master in Ruby Sanctum normal: 271", f, 271) && ok;
     Prepare(f, 17, Repeat(Other(245), 16));
@@ -290,6 +292,62 @@ int main()
     Prepare(f, 17, Icc25H());
     ok = Check(!MasterWearsHeroic(RaidPoint::WrathT10, f.slots, SenderSnapshot{}, f.facts), "no snapshot: not Heroic") && ok;
     ok = Check(!MasterWearsHeroic(RaidPoint::WrathT8, f.slots, f.snapshot, f.facts), "Ulduar can never be the required Heroic tier") && ok;
+
+    // --- CP38b: later-tier normal pieces at or above the Heroic level ---
+    Prepare(f, 16, Repeat(Piece(RaidPoint::WrathT10, 258, RaidSize::TwentyFive, false), 16));
+    ok = Expect("CP38b ICC normal at exactly 258 unlocks ToC Heroic 258", f, 258) && ok;
+    Prepare(f, 16, Repeat(Piece(RaidPoint::WrathT10, 251, RaidSize::Ten, false), 16));
+    ok = Expect("CP38b ICC 10 normal 251 (below 258) does not unlock: 245", f, 245) && ok;
+    Prepare(f, 16, Repeat(Piece(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten, false), 16));
+    ok = Expect("CP38b Ruby Sanctum 10 normal 258 unlocks ToC Heroic 258", f, 258) && ok;
+    Prepare(f, 16, Join(Repeat(Piece(RaidPoint::WrathT10, 264, RaidSize::TwentyFive, false), 1),
+                        Repeat(Piece(RaidPoint::WrathT9, 245, RaidSize::TwentyFive, false), 15)));
+    ok = Expect("CP38b one later-tier normal piece is not enough: 245", f, 245) && ok;
+    Prepare(f, 16, Join(Repeat(Piece(RaidPoint::WrathT10, 264, RaidSize::TwentyFive, false), 5),
+                        Repeat(Piece(RaidPoint::WrathT9, 245, RaidSize::TwentyFive, false), 11)));
+    ok = Expect("CP38b later-tier normal minority (5 of 16): 245", f, 245) && ok;
+    Prepare(f, 16, Join(Join(Repeat(Piece(RaidPoint::WrathT9, 258, RaidSize::TwentyFive, true), 4),
+                             Repeat(Piece(RaidPoint::WrathT10, 264, RaidSize::TwentyFive, false), 4)),
+                        Repeat(Piece(RaidPoint::WrathT9, 245, RaidSize::TwentyFive, false), 8)));
+    ok = Expect("CP38b mix: 4 ToC Heroic + 4 ICC normal (8 of 16) unlocks 258", f, 258) && ok;
+    Prepare(f, 16, Join(Join(Repeat(Piece(RaidPoint::WrathT9, 258, RaidSize::TwentyFive, true), 3),
+                             Repeat(Piece(RaidPoint::WrathT10, 251, RaidSize::Ten, false), 4)),
+                        Repeat(Piece(RaidPoint::WrathT9, 245, RaidSize::TwentyFive, false), 9)));
+    ok = Expect("CP38b mix with below-threshold normal pieces (3 of 16 qualify): 245", f, 245) && ok;
+    Prepare(f, 16, Repeat(Piece(RaidPoint::WrathT9, 245, RaidSize::TwentyFive, false), 16));
+    ok = Expect("CP38b same-tier normal never unlocks its own Heroic: 245", f, 245) && ok;
+    Prepare(f, 16, Repeat(Piece(RaidPoint::WrathT10, 264, RaidSize::TwentyFive, false, false), 16));
+    ok = Expect("CP38b later-tier pieces with unknown difficulty do not count: 245", f, 245) && ok;
+    Prepare(f, 16, Repeat(Piece(RaidPoint::WrathT10, 271, RaidSize::Ten, false), 16));
+    ok = Expect("CP38b ICC 10 normal claimed at 271 (above its 264): unclear, 245", f, 245) && ok;
+    Prepare(f, 17, Rs25N());
+    ok = Expect("CP38b Ruby Sanctum normal 271 is below ICC Heroic 284: 271", f, 271) && ok;
+    Prepare(f, 18, Repeat(Piece(RaidPoint::WrathRubySanctum, 271, RaidSize::TwentyFive, false), 16));
+    ok = Expect("CP38b stage 18: no later tier can reach 284 at normal: 271", f, 271) && ok;
+    Prepare(f, 16, Icc25N());
+    f.facts.equipmentRevision = 8;
+    ok = Expect("CP38b later-tier normal with a stale list: 245", f, 245) && ok;
+    Prepare(f, 16, Icc25N());
+    f.sources.pop_back();
+    f.facts.sources = f.sources;
+    ok = Expect("CP38b later-tier normal with a missing entry: 245", f, 245) && ok;
+    Prepare(f, 16, Icc25N());
+    f.slots[0] = 251;
+    f.request.commandingSenderSlots = f.slots;
+    ok = Expect("CP38b later-tier normal with a mismatched item level: 245", f, 245) && ok;
+    Prepare(f, 16, Icc25N());
+    f.request.scoreLimit = 250;
+    ok = Expect("CP38b unlock never passes a lower configured limit: 250", f, 250) && ok;
+    Prepare(f, 16, Icc25N(), true, 12);
+    ok = Expect("CP38b raw 16 at TBC effective 12: era ceiling 159", f, 159) && ok;
+    Prepare(f, 15, Icc25N());
+    ok = Expect("CP38b stage 15: stage cap 245 still binds", f, 245) && ok;
+    Prepare(f, 16, Rs25N());
+    ok = Expect("CP38b stage 16 Ruby Sanctum normal 271: stage cap 258", f, 258) && ok;
+    Prepare(f, 16, Icc25N());
+    ok = Check(MasterWearsHeroic(RaidPoint::WrathT9, f.slots, f.snapshot, f.facts, 258), "CP38b helper: ICC normal 264 meets 258") && ok;
+    ok = Check(!MasterWearsHeroic(RaidPoint::WrathT9, f.slots, f.snapshot, f.facts, 265), "CP38b helper: ICC normal 264 misses 265") && ok;
+    ok = Check(!MasterWearsHeroic(RaidPoint::WrathT10, f.slots, f.snapshot, f.facts), "CP38b helper: same tier normal never meets its own Heroic") && ok;
 
     // --- stage cap and era ceiling still bind ---
     Prepare(f, 15, Toc25H());
