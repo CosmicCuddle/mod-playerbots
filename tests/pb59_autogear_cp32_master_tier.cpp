@@ -7,6 +7,7 @@
 // exact averaged sample (length, per-slot item level, sender, revision).
 // CP36: Ruby Sanctum is its own point (10-man 258, 25-man 271), apart from
 // ICC (264/271); Zul'Aman stays T5 141.
+// CP38: BiS at stages with a Heroic split needs master Heroic evidence.
 #include "AutoGearMasterTier.h"
 #include <iostream>
 #include <string>
@@ -269,8 +270,10 @@ int main()
     // --- unchanged paths ---
     Prepare(f, 10, 70, 120, true, Repeat(Raid(RaidPoint::TbcT4, 120), 16));
     ok = Expect("BiS keeps the stage cap regardless of worn tier", f, 141, CapMode::Endgame) && ok;
+    Prepare(f, 14, 80, 220, true, {});
+    ok = Expect("Wrath BiS keeps the stage cap where there is no Heroic split", f, 226, CapMode::Endgame) && ok;
     Prepare(f, 18, 80, 220, true, {});
-    ok = Expect("Wrath BiS keeps the stage cap", f, 284, CapMode::Endgame) && ok;
+    ok = Expect("Wrath stage 18 BiS without Heroic evidence: ICC normal 271 (CP38)", f, 271, CapMode::Endgame) && ok;
     Prepare(f, 8, 65, 100, false, Repeat(Raid(RaidPoint::TbcSunwell, 159), 16));
     ok = Expect("leveling at stage 8 is unchanged", f, 100, CapMode::Leveling) && ok;
     Prepare(f, 13, 75, 180, false, {});
@@ -445,7 +448,7 @@ int main()
     Prepare(f, 16, 80, 262, false, Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 16));
     ok = Expect("RS 10 master at stage 16: 258 (stage cap 258 too)", f, 258, CapMode::Leveling) && ok;
     Prepare(f, 18, 80, 265, true, Repeat(Raid(RaidPoint::WrathRubySanctum, 258, RaidSize::Ten), 16));
-    ok = Expect("RS 10 master BiS keeps the stage cap 284", f, 284, CapMode::Endgame) && ok;
+    ok = Expect("RS 10 normal master BiS at stage 18: normal 271 (CP38 Heroic check)", f, 271, CapMode::Endgame) && ok;
 
     // The route itself is not edited (PR #42 also changes it): unwrapped, it
     // still gives the stage cap; only the wrapper applies the worn tier.

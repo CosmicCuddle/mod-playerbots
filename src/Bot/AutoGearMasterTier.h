@@ -50,6 +50,8 @@ namespace PlayerbotsAutoGearSelection
         RaidPoint point = RaidPoint::None;
         RaidSize size = RaidSize::Unknown;
         bool heroic = false;
+        // CP38: heroic counts only when the caller knows the difficulty.
+        bool heroicKnown = false;
     };
 
     enum class TierEra : std::uint8_t
@@ -266,6 +268,119 @@ namespace PlayerbotsAutoGearSelection
         return ResolveMasterTier(era, std::span<MasterItemSource const>(occupied.data(), count));
     }
 
+    // ---- CP38: master-Heroic check for autogear bis --------------------
+    // Owner decision 18 Nov 2026 12:23 UK. BiS may reach a raid tier's
+    // Heroic item levels only when the master already wears Heroic gear of
+    // that tier or a later one. Missing, unclear or unbound evidence falls
+    // to that tier's 25-man normal ceiling. The stage cap and era ceiling
+    // (TBC 159, Wrath 284) still apply on top.
+
+    // Heroic item-level ceilings from the item records (boss loot; ToC
+    // Tribute chests, 258 / 272, are a limited bonus and are not used).
+    // Ulduar, Naxxramas, Obsidian Sanctum, Eye of Eternity, Onyxia and all
+    // TBC raids have no Heroic difficulty: 0.
+    constexpr std::uint32_t RaidPointHeroicCeiling(RaidPoint point, RaidSize size)
+    {
+        bool const big = size == RaidSize::TwentyFive;
+        switch (point)
+        {
+            case RaidPoint::WrathT9:
+                return big ? 258 : 245;
+            case RaidPoint::WrathT10:
+                return big ? 284 : 271;
+            case RaidPoint::WrathRubySanctum:
+                return big ? 284 : 271;
+            default:
+                return 0;
+        }
+    }
+
+    // Order of the raid points that have a Heroic difficulty. 0 = none.
+    constexpr std::uint32_t HeroicRank(RaidPoint point)
+    {
+        switch (point)
+        {
+            case RaidPoint::WrathT9:
+                return 1;
+            case RaidPoint::WrathT10:
+                return 2;
+            case RaidPoint::WrathRubySanctum:
+                return 3;
+            default:
+                return 0;
+        }
+    }
+
+    // The Heroic tier the stage cap can reach, by raw IP stage. Only stages
+    // whose content has a Heroic difficulty have one: 15 ToC, 16 ToC Heroic
+    // (cap 258), 17-18 ICC / Ruby Sanctum Heroic (cap 284).
+    struct StageHeroicSplit
+    {
+        RaidPoint point = RaidPoint::None;  // None: no Heroic split here
+        std::uint32_t normalCeiling = 0;     // 25-man normal
+        std::uint32_t heroicCeiling = 0;     // 25-man Heroic
+    };
+
+    constexpr StageHeroicSplit HeroicSplitForStage(std::uint8_t rawStage)
+    {
+        RaidPoint point = RaidPoint::None;
+        if (rawStage == 15 || rawStage == 16)
+            point = RaidPoint::WrathT9;
+        else if (rawStage == 17 || rawStage == 18)
+            point = RaidPoint::WrathT10;
+        if (point == RaidPoint::None)
+            return {};
+        return {point, RaidPointCeiling(point, RaidSize::TwentyFive), RaidPointHeroicCeiling(point, RaidSize::TwentyFive)};
+    }
+
+    // True only when a bound source list shows the master wearing Heroic gear
+    // of `required` or a later Heroic tier: at least two such pieces and at
+    // least half of the master's Wrath raid pieces. Any unclear entry (a
+    // Heroic flag on a raid without Heroic, an ambiguous or unknown-difficulty
+    // raid piece claimed Heroic, an item level above that Heroic ceiling)
+    // makes the whole answer false.
+    constexpr bool MasterWearsHeroic(RaidPoint required, std::span<std::uint32_t const> slots,
+        SenderSnapshot const& snapshot, TierFacts const& facts)
+    {
+        std::uint32_t const need = HeroicRank(required);
+        if (need == 0 || !TierSourcesBound(slots, snapshot, facts))
+            return false;
+        std::uint32_t raidPieces = 0;
+        std::uint32_t heroicPieces = 0;
+        for (MasterItemSource const& item : facts.sources)
+        {
+            if (item.itemLevel == 0)
+                continue;
+            if (item.heroic && (!item.heroicKnown || !item.raidSourceKnown))
+                return false;
+            if (!item.raidSourceKnown || item.point == RaidPoint::None)
+                continue;
+            if (item.heroic && HeroicRank(item.point) == 0)
+                return false;  // Heroic claimed for a raid that has none
+            if (item.point == RaidPoint::Ambiguous || EraForPoint(item.point) != TierEra::Wrath)
+                continue;
+            ++raidPieces;
+            if (!item.heroicKnown || !item.heroic)
+                continue;
+            if (item.itemLevel > RaidPointHeroicCeiling(item.point, item.size))
+                return false;
+            if (HeroicRank(item.point) >= need)
+                ++heroicPieces;
+        }
+        return heroicPieces >= 2 && heroicPieces * 2 >= raidPieces;
+    }
+
+    // The BiS ceiling from the Heroic check, or 0 when the stage has no
+    // Heroic split (the stage cap alone applies).
+    constexpr std::uint32_t HeroicBisCeiling(std::uint8_t rawStage, std::span<std::uint32_t const> slots,
+        SenderSnapshot const& snapshot, TierFacts const& facts)
+    {
+        StageHeroicSplit const split = HeroicSplitForStage(rawStage);
+        if (split.point == RaidPoint::None)
+            return 0;
+        return MasterWearsHeroic(split.point, slots, snapshot, facts) ? split.heroicCeiling : split.normalCeiling;
+    }
+
     // Wraps ResolveAutoGearRoute without changing it. At a TBC or Wrath stage
     // with a max-level commander, normal forms take the route's existing
     // post-leveling average path with the average lowered to the worn tier,
@@ -275,7 +390,7 @@ namespace PlayerbotsAutoGearSelection
     // still takes the stage cap and match its own sample. Everything else
     // (stage 0, leveling, Unknown, tier sync) passes through.
     template <class Scorer>
-    RouteDecision ResolveTieredAutoGearRoute(RouteRequest const& request, SenderSnapshot const& snapshot,
+    RouteDecision ResolveTieredAutoGearRouteNormal(RouteRequest const& request, SenderSnapshot const& snapshot,
         TierFacts const& facts, Scorer const& scorer)
     {
         TierEra const era = EraForStage(request.rawStage);
@@ -310,6 +425,27 @@ namespace PlayerbotsAutoGearSelection
         tiered.commandingSenderVerified = bounded[0] != 0;
         tiered.commandingSenderSlots = bounded;
         return ResolveAutoGearRoute(tiered, scorer);
+    }
+
+    // Full wrapper: the worn-tier rule for normal forms (above) plus the
+    // CP38 Heroic check for BiS forms, applied by lowering the request's
+    // configured item-level limit (the route's existing min with the stage
+    // cap and era ceiling), never raising it. Tier sync is untouched.
+    template <class Scorer>
+    RouteDecision ResolveTieredAutoGearRoute(RouteRequest const& request, SenderSnapshot const& snapshot,
+        TierFacts const& facts, Scorer const& scorer)
+    {
+        if (!request.bis || request.tierSync)
+            return ResolveTieredAutoGearRouteNormal(request, snapshot, facts, scorer);
+        std::uint32_t const heroicBound = HeroicBisCeiling(request.rawStage,
+            request.commandingSenderVerified ? request.commandingSenderSlots : std::span<std::uint32_t const>{},
+            snapshot, facts);
+        if (heroicBound == 0)
+            return ResolveTieredAutoGearRouteNormal(request, snapshot, facts, scorer);
+        RouteRequest bounded = request;
+        if (bounded.scoreLimit == 0 || heroicBound < bounded.scoreLimit)
+            bounded.scoreLimit = heroicBound;
+        return ResolveTieredAutoGearRouteNormal(bounded, snapshot, facts, scorer);
     }
 
     // Without a commander snapshot no source list can be bound: no tier lift.
