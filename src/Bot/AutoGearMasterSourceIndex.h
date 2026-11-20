@@ -247,21 +247,28 @@ namespace PlayerbotsAutoGearMasterSource
                     buckets[item].insert(bucket);
             }
 
-            // Core Creature::InitEntry: missing difficulty data falls back
-            // from Heroic to the same-size normal, then down to the base.
-            std::uint32_t TemplateFor(std::uint32_t base, std::uint8_t difficulty) const
+            // Core Creature::InitEntry: Heroic may select a normal loot
+            // template on fallback. Preserve both the selected template and
+            // the source difficulty; a normal table is not Heroic item proof.
+            struct SelectedTemplate
+            {
+                std::uint32_t entry = 0;
+                std::uint8_t sourceDifficulty = 0;
+            };
+
+            SelectedTemplate TemplateFor(std::uint32_t base, std::uint8_t difficulty) const
             {
                 auto const baseIt = creatures.find(base);
                 if (baseIt == creatures.end())
-                    return 0;
+                    return {};
                 for (std::uint8_t diff = difficulty; diff > 0;)
                 {
                     std::uint32_t const clone = baseIt->second.difficultyEntry[diff - 1];
                     if (clone && creatures.count(clone))
-                        return clone;
+                        return {clone, diff};
                     diff = diff >= 2 ? diff - 2 : diff - 1;
                 }
-                return base;
+                return {base, 0};
             }
 
             void Run(std::map<std::uint32_t, SourceEntry>& entries)
@@ -271,12 +278,21 @@ namespace PlayerbotsAutoGearMasterSource
                     {
                         if (!(spawn.spawnMask & (1u << diff)))
                             continue;
-                        std::uint32_t const entry = TemplateFor(spawn.id, diff);
-                        auto const it = creatures.find(entry);
+                        SelectedTemplate const selected = TemplateFor(spawn.id, diff);
+                        auto const it = creatures.find(selected.entry);
                         if (it == creatures.end() || !it->second.lootId)
                             continue;
                         reachedCreatureLoot.insert(it->second.lootId);
-                        Record(creatureLoot, it->second.lootId, {spawn.map, diff});
+                        Bucket bucket{spawn.map, diff};
+                        RaidBucket const raid = ClassifyBucket(spawn.map, diff);
+                        // When a Heroic mode falls back to a lower-difficulty
+                        // creature's normal loot table, do not lift Heroic BiS
+                        // from that table. Its acquisition context alone does
+                        // not prove a Heroic-specific item source.
+                        if (raid.verdict == Verdict::Raid && raid.heroic &&
+                            selected.sourceDifficulty != diff)
+                            bucket = Unattributed;
+                        Record(creatureLoot, it->second.lootId, bucket);
                     }
                 for (SpawnRow const& spawn : rows.chestSpawns)
                 {
