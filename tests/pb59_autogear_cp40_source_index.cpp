@@ -5,6 +5,7 @@
 // capture freshness, and core-only vs IP-applied effective world rows.
 #include "AutoGearMasterSourceIndex.h"
 #include "fixtures/pb59_cp40_world_rows.h"
+#include <array>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -194,6 +195,37 @@ void TestHeroicLootFallback()
         "IP Naxx40 10H fallback retains Vanilla-only classification");
 }
 
+// CP41: a known raid spawn must not hide a different, unspawned
+// creature template that reuses the exact same loot table. Its possible
+// script-summoned origin cannot be attributed to the mapped raid.
+void TestSharedLootIdAlternateTemplate()
+{
+    std::array<CreatureTemplateRow, 2> templates{};
+    templates[0].entry = 91001;
+    templates[0].lootId = 91010;
+    templates[1].entry = 91002;
+    templates[1].lootId = 91010; // same loot root, no known spawn
+    std::array<LootRow, 1> loot{{{91010, 91011, 0}}};
+    std::array<SpawnRow, 2> spawns{{{91001, 631, 1}, {91002, 631, 1}}};
+    WorldRows rows;
+    rows.creatures = templates;
+    rows.creatureLoot = loot;
+    rows.creatureSpawns = std::span<SpawnRow const>(spawns.data(), 1);
+    Check(IsUnknown(SourceIndex::Build(rows).Lookup(91011)),
+        "shared raid loot id reused by an unspawned template is unknown");
+
+    // Both templates explicitly spawn only in the same raid bucket.
+    rows.creatureSpawns = spawns;
+    Check(Is(SourceIndex::Build(rows).Lookup(91011), Verdict::Raid,
+             RaidPoint::WrathT10, RaidSize::Ten, false),
+        "both templates attributed to the same raid bucket remain valid");
+
+    // A separate world-map source must still spoil the raid-only claim.
+    spawns[1].map = 36;
+    Check(IsUnknown(SourceIndex::Build(rows).Lookup(91011)),
+        "a shared loot id reached by raid and nonraid templates is unknown");
+}
+
 void TestAdapter()
 {
     Effective const world = IpWorld();
@@ -314,6 +346,7 @@ int main()
     TestIndex();
     TestBucketTable();
     TestHeroicLootFallback();
+    TestSharedLootIdAlternateTemplate();
     TestAdapter();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
