@@ -97,6 +97,7 @@ struct Fixture
     RouteRequest request;
     TierFacts facts;
     SenderSnapshot snapshot;
+    std::vector<SlotIdentity> identities;
 };
 
 // A level 80 commander whose equipped item levels are exactly the sources'.
@@ -111,9 +112,23 @@ void Prepare(Fixture& f, std::uint8_t stage, std::vector<MasterItemSource> sourc
     f.facts.sourcesVerified = true;
     f.facts.sources = f.sources;
     f.facts.senderGuid = 42;
+    f.facts.captureSession = 3;
     f.facts.equipmentRevision = 9;
+    f.snapshot = SenderSnapshot{};
     f.snapshot.senderGuid = 42;
+    f.snapshot.captureSession = 3;
     f.snapshot.equipmentRevision = 9;
+    // CP40b: the captured identity sample, each source naming the same item.
+    f.identities.assign(f.slots.size(), SlotIdentity{});
+    for (std::size_t i = 0; i < f.slots.size(); ++i)
+    {
+        if (f.slots[i] == 0)
+            continue;
+        f.identities[i] = SlotIdentity{2000 + i, 50000 + static_cast<std::uint32_t>(i), f.slots[i]};
+        f.sources[i].itemGuid = f.identities[i].itemGuid;
+        f.sources[i].entry = f.identities[i].entry;
+    }
+    f.snapshot.slots = f.identities;
     RouteRequest& r = f.request;
     r = RouteRequest{};
     r.commandEnabled = true;

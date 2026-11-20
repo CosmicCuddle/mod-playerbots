@@ -52,6 +52,19 @@ namespace PlayerbotsAutoGearSelection
         bool heroic = false;
         // CP38: heroic counts only when the caller knows the difficulty.
         bool heroicKnown = false;
+        // CP40b: the item instance this source describes (0 for an empty slot).
+        std::uint64_t itemGuid = 0;
+        std::uint32_t entry = 0;
+    };
+
+    // CP40b: one slot of the commander's captured 19-slot sample (counted
+    // slots only; body, tabard and empty slots are all zero).
+    struct SlotIdentity
+    {
+        std::uint64_t itemGuid = 0;
+        std::uint32_t entry = 0;
+        std::uint32_t itemLevel = 0;
+        constexpr bool operator==(SlotIdentity const&) const = default;
     };
 
     enum class TierEra : std::uint8_t
@@ -200,49 +213,63 @@ namespace PlayerbotsAutoGearSelection
     // commanding sender, in the same order and length as
     // commandingSenderSlots (empty slots read itemLevel 0, no raid source).
     // The list is bound to the snapshot it was read from; see TierSourcesBound.
+    // CP40b (owner 20 Nov 2026 12:16 UK): session and revision are 64-bit,
+    // exactly as Core's PB59 capture stamp; nothing is narrowed.
     struct TierFacts
     {
         bool sourcesVerified = false;
         std::span<MasterItemSource const> sources{};
         std::uint64_t senderGuid = 0;          // whose equipment was read
-        std::uint32_t equipmentRevision = 0;   // equipment revision it was read at
+        std::uint64_t captureSession = 0;      // Core capture session it was read in
+        std::uint64_t equipmentRevision = 0;   // equipment revision it was read at
     };
 
-    // The commander snapshot the route's commandingSenderSlots came from.
+    // The commander capture the route's commandingSenderSlots came from:
+    // sender GUID, 64-bit session and revision, and the same 19-slot
+    // item GUID / entry / item-level sample.
     struct SenderSnapshot
     {
         std::uint64_t senderGuid = 0;
-        std::uint32_t equipmentRevision = 0;
+        std::uint64_t captureSession = 0;
+        std::uint64_t equipmentRevision = 0;
+        std::span<SlotIdentity const> slots{};
     };
 
-    // G7 (CS01 #59 comment 6984350322): a source list may lift the tier only
-    // when it describes exactly the sample the route averages. A missing or
-    // extra entry, a slot whose item level differs from the equipped sample,
-    // another sender, or another (stale or reused) equipment revision means
-    // the list proves nothing, even when it is marked verified.
+    // G7 (CS01 #59 comment 6984350322) and CP40b: a source list may lift the
+    // tier only when it describes exactly the sample the route averages. A
+    // missing or extra entry, a slot whose item level, item GUID or entry
+    // differs from the captured sample, another sender, another session or
+    // another (stale or reused) equipment revision means the list proves
+    // nothing, even when it is marked verified.
     constexpr bool TierSourcesBound(std::span<std::uint32_t const> slots, SenderSnapshot const& snapshot,
         TierFacts const& facts)
     {
         if (!facts.sourcesVerified || facts.sources.empty())
             return false;
-        if (snapshot.senderGuid == 0 || snapshot.equipmentRevision == 0)
+        if (snapshot.senderGuid == 0 || snapshot.captureSession == 0 || snapshot.equipmentRevision == 0)
             return false;
-        if (facts.senderGuid != snapshot.senderGuid || facts.equipmentRevision != snapshot.equipmentRevision)
+        if (facts.senderGuid != snapshot.senderGuid || facts.captureSession != snapshot.captureSession ||
+            facts.equipmentRevision != snapshot.equipmentRevision)
             return false;
-        if (facts.sources.size() != slots.size())
+        if (facts.sources.size() != slots.size() || snapshot.slots.size() != slots.size())
             return false;
         bool occupied = false;
         for (std::size_t i = 0; i < slots.size(); ++i)
         {
             MasterItemSource const& source = facts.sources[i];
-            if (source.itemLevel != slots[i])
+            SlotIdentity const& captured = snapshot.slots[i];
+            if (source.itemLevel != slots[i] || captured.itemLevel != slots[i])
+                return false;
+            if (source.itemGuid != captured.itemGuid || source.entry != captured.entry)
                 return false;
             if (slots[i] == 0)
             {
-                if (source.raidSourceKnown || source.point != RaidPoint::None)
-                    return false;  // an empty slot cannot carry a raid source
+                if (source.raidSourceKnown || source.point != RaidPoint::None || captured != SlotIdentity{})
+                    return false;  // an empty slot cannot carry a raid source or an item
                 continue;
             }
+            if (captured.itemGuid == 0 || captured.entry == 0)
+                return false;  // an occupied slot must name its item instance
             occupied = true;
         }
         return occupied;

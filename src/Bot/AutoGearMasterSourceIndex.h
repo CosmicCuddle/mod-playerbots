@@ -330,6 +330,11 @@ namespace PlayerbotsAutoGearMasterSource
     };
 
     // ---- Adapter: one commander capture -> slots + TierFacts -----------
+    // CP40b (owner 20 Nov 2026 12:16 UK): 64-bit session and revision as in
+    // Core's PB59 capture stamp, the sender GUID, and the same 19-slot item
+    // GUID / entry / item-level sample. Nothing is narrowed or invented.
+    using PlayerbotsAutoGearSelection::SlotIdentity;
+
     constexpr std::size_t EquipmentSlots = 19;
     constexpr std::size_t BodySlot = 3;
     constexpr std::size_t TabardSlot = 18;
@@ -359,53 +364,48 @@ namespace PlayerbotsAutoGearMasterSource
         Bound,
         IndexNotBuilt,
         MissingIdentity,     // guid, session or revision is zero
-        RevisionTooWide,     // owner 11:50 UK: reject, do not widen TierFacts
         IncompleteSlot       // an occupied slot the sample cannot count
     };
 
-    // Owns the source array; Facts() points into it, so read Facts() from
-    // the object that stays alive for the route call.
-    class BoundMasterSources
+    // The counted 19-slot sample of one capture, as the route sees it.
+    // Mirrors the TrainerAction sender sample: body and tabard are not
+    // counted; an occupied slot without entry or item level, an heirloom or
+    // a scaling item, or an empty slot with stray data, makes the whole
+    // capture unusable.
+    class CaptureSample
     {
     public:
-        BindResult result = BindResult::IndexNotBuilt;
-        std::array<std::uint32_t, EquipmentSlots> slots{};
-        std::array<MasterItemSource, EquipmentSlots> sources{};
-        SenderSnapshot snapshot{};
+        BindResult result = BindResult::MissingIdentity;
+        std::uint64_t senderGuid = 0;
+        std::uint64_t captureSession = 0;
+        std::uint64_t equipmentRevision = 0;
+        std::array<std::uint32_t, EquipmentSlots> levels{};
+        std::array<SlotIdentity, EquipmentSlots> identities{};
 
-        bool Bound() const { return result == BindResult::Bound; }
+        bool Usable() const { return result == BindResult::Bound; }
 
-        TierFacts Facts() const
+        // Points into this object: call it on the object that outlives the route call.
+        SenderSnapshot Snapshot() const
         {
-            TierFacts facts;
-            if (!Bound())
-                return facts;  // unverified: no tier lift
-            facts.sourcesVerified = true;
-            facts.sources = std::span<MasterItemSource const>(sources.data(), sources.size());
-            facts.senderGuid = snapshot.senderGuid;
-            facts.equipmentRevision = snapshot.equipmentRevision;
-            return facts;
+            if (!Usable())
+                return {};
+            return SenderSnapshot{senderGuid, captureSession, equipmentRevision,
+                std::span<SlotIdentity const>(identities.data(), identities.size())};
+        }
+
+        bool SameCapture(CaptureSample const& other) const
+        {
+            return Usable() && other.Usable() && senderGuid == other.senderGuid &&
+                captureSession == other.captureSession && equipmentRevision == other.equipmentRevision &&
+                levels == other.levels && identities == other.identities;
         }
     };
 
-    // Mirrors the TrainerAction sender sample: body and tabard are not
-    // counted; an occupied slot without entry or item level, an heirloom
-    // or a scaling item makes the whole capture unusable.
-    inline BoundMasterSources BindMasterSources(SourceIndex const& index, CapturedEquipment const& capture)
+    inline CaptureSample SampleCapture(CapturedEquipment const& capture)
     {
-        BoundMasterSources bound;
-        if (!index.Built())
-            return bound;
+        CaptureSample sample;
         if (!capture.guid || !capture.session || !capture.revision)
-        {
-            bound.result = BindResult::MissingIdentity;
-            return bound;
-        }
-        if (capture.revision > std::numeric_limits<std::uint32_t>::max())
-        {
-            bound.result = BindResult::RevisionTooWide;
-            return bound;
-        }
+            return sample;
         for (std::size_t i = 0; i < EquipmentSlots; ++i)
         {
             if (i == BodySlot || i == TabardSlot)
@@ -414,24 +414,82 @@ namespace PlayerbotsAutoGearMasterSource
             if (!slot.itemGuid)
             {
                 if (!(slot == CapturedSlot{}))
-                {
-                    bound = BoundMasterSources{};
-                    bound.result = BindResult::IncompleteSlot;
-                    return bound;
-                }
+                    return CaptureSample{BindResult::IncompleteSlot};
                 continue;
             }
             if (!slot.entry || !slot.itemLevel || slot.quality == HeirloomQuality ||
                 slot.scalingDistribution || slot.scalingValue)
-            {
-                bound = BoundMasterSources{};
-                bound.result = BindResult::IncompleteSlot;
-                return bound;
-            }
-            bound.slots[i] = slot.itemLevel;
+                return CaptureSample{BindResult::IncompleteSlot};
+            sample.levels[i] = slot.itemLevel;
+            sample.identities[i] = SlotIdentity{slot.itemGuid, slot.entry, slot.itemLevel};
+        }
+        sample.senderGuid = capture.guid;
+        sample.captureSession = capture.session;
+        sample.equipmentRevision = capture.revision;
+        sample.result = BindResult::Bound;
+        return sample;
+    }
+
+    // Owns the source array; Facts() points into it.
+    class BoundMasterSources
+    {
+    public:
+        BindResult result = BindResult::IndexNotBuilt;
+        CaptureSample sample{};
+        std::array<MasterItemSource, EquipmentSlots> sources{};
+
+        bool Bound() const { return result == BindResult::Bound; }
+        std::array<std::uint32_t, EquipmentSlots> const& Slots() const { return sample.levels; }
+
+        TierFacts Facts() const
+        {
+            TierFacts facts;
+            if (!Bound())
+                return facts;  // unverified: no tier lift
+            facts.sourcesVerified = true;
+            facts.sources = std::span<MasterItemSource const>(sources.data(), sources.size());
+            facts.senderGuid = sample.senderGuid;
+            facts.captureSession = sample.captureSession;
+            facts.equipmentRevision = sample.equipmentRevision;
+            return facts;
+        }
+
+        // Freshness: the facts are handed out only while a current capture
+        // of the commander is the very capture they were bound to (same
+        // sender, session, revision and 19-slot sample). Stale, mismatched
+        // or unusable: unverified facts, so no tier lift.
+        TierFacts FreshFacts(CapturedEquipment const& current) const
+        {
+            if (!Bound() || !sample.SameCapture(SampleCapture(current)))
+                return TierFacts{};
+            return Facts();
+        }
+    };
+
+    inline BoundMasterSources BindMasterSources(SourceIndex const& index, CapturedEquipment const& capture)
+    {
+        BoundMasterSources bound;
+        if (!index.Built())
+            return bound;
+        bound.sample = SampleCapture(capture);
+        if (!bound.sample.Usable())
+        {
+            bound.result = bound.sample.result;
+            bound.sample = CaptureSample{bound.result};
+            return bound;
+        }
+        for (std::size_t i = 0; i < EquipmentSlots; ++i)
+        {
+            SlotIdentity const& identity = bound.sample.identities[i];
+            if (!identity.itemGuid)
+                continue;
             MasterItemSource& source = bound.sources[i];
-            source.itemLevel = slot.itemLevel;
-            SourceEntry const found = index.Lookup(slot.entry);
+            source.itemLevel = identity.itemLevel;
+            source.itemGuid = identity.itemGuid;
+            source.entry = identity.entry;
+            // Entry-level "can drop only from X" evidence, never proof that
+            // this item instance came from X.
+            SourceEntry const found = index.Lookup(identity.entry);
             if (found.verdict == Verdict::Raid)
             {
                 source.raidSourceKnown = true;
@@ -441,14 +499,14 @@ namespace PlayerbotsAutoGearMasterSource
                 source.heroicKnown = true;  // from the loot record, never the map
             }
         }
-        bound.snapshot.senderGuid = capture.guid;
-        bound.snapshot.equipmentRevision = static_cast<std::uint32_t>(capture.revision);
         bound.result = BindResult::Bound;
         return bound;
     }
 }
 
-// Core seam: PB59::EquipmentFacts lives in CS01's unmerged Core header.
+// Core seam: PB59::EquipmentFacts lives in CS01's unmerged Core header. It
+// is only included in an integrated build that carries that header; the
+// stamp's session and revision are copied at full 64-bit width.
 #if __has_include("EquipmentCaptureState.h")
 #include "EquipmentCaptureState.h"
 namespace PlayerbotsAutoGearMasterSource

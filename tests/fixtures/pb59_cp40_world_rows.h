@@ -7,13 +7,18 @@
 //   data/sql/world/base/naxx40_creatures.sql (@CENTRY = 351000):
 //   creature_template line 40, creature_loot_template line 1379,
 //   reference_loot_template line 2444, creature spawn line 2646.
+//   dungeon_onyxia.sql lines 6, 81, 579, 587 (Onyxia 40, 301000);
+//   professions.sql line 58 (DELETE of Magtheridon's 34846 row).
 // Only the rows on the loot path of each sampled item are kept; the
-// verdicts below were also checked against the full core tables.
+// verdicts were also checked against the full effective tables (core base
+// + core updates, then + IP world SQL, loaded in a scratch MySQL).
+// IpWorld() is the effective IP-applied world; CoreWorld() is core alone.
 #pragma once
 
 #include "AutoGearMasterSourceIndex.h"
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace Cp40Fixture
 {
@@ -33,8 +38,10 @@ namespace Cp40Fixture
     constexpr std::uint32_t KaraRing = 28757;       // Ring of a Thousand Marks 125: Prince Malchezaar
     constexpr std::uint32_t KaraBadge = 29434;      // Badge of Justice: Prince loot + quest 9583 reward
     constexpr std::uint32_t Naxx40Severance = 22815; // Severance 81: IP Patchwerk 40 (351028), 10H spawn
+    constexpr std::uint32_t Ony40Collar = 18205;    // Eskhandar's Collar: IP Onyxia 40 (301000), 10H spawn
+    constexpr std::uint32_t MagSack = 34846;        // Black Sack of Gems: Magtheridon in core, row deleted by IP
 
-    inline constexpr std::array<CreatureTemplateRow, 12> Creatures{{
+    inline constexpr std::array<CreatureTemplateRow, 14> Creatures{{
         {16028, {29324, 0, 0}, 16028},          // Patchwerk
         {29324, {0, 0, 0}, 29324},              // Patchwerk (1) 25
         {36612, {37957, 37958, 37959}, 36612},  // Lord Marrowgar
@@ -47,15 +54,22 @@ namespace Cp40Fixture
         {34186, {0, 0, 0}, 33700},              // its 25-man clone (lootid 33700)
         {15690, {0, 0, 0}, 15690},              // Prince Malchezaar
         {351028, {0, 0, 0}, 351028},            // IP Patchwerk 40
+        {301000, {0, 0, 0}, 301000},            // IP Onyxia 40
+        {17257, {0, 0, 0}, 17257},              // Magtheridon
     }};
 
-    inline constexpr std::array<SpawnRow, 6> CreatureSpawns{{
+    inline constexpr std::array<SpawnRow, 6> CoreSpawns{{
         {16028, 533, 3},    // Naxxramas 10N + 25N
         {36612, 631, 15},   // ICC all four
         {31125, 624, 3},    // Vault of Archavon
         {34085, 603, 3},    // Ulduar 10N + 25N
         {15690, 532, 1},    // Karazhan
+        {17257, 544, 1},    // Magtheridon's Lair
+    }};
+
+    inline constexpr std::array<SpawnRow, 2> IpSpawns{{
         {351028, 533, 4},   // IP: Naxxramas 10H = Naxx 40
+        {301000, 249, 4},   // IP: Onyxia 10H = Onyxia 40
     }};
 
     inline constexpr std::array<ChestTemplateRow, 2> Chests{{
@@ -67,7 +81,7 @@ namespace Cp40Fixture
         {202238, 631, 4},
     }};
 
-    inline constexpr std::array<LootRow, 10> CreatureLoot{{
+    inline constexpr std::array<LootRow, 9> CoreCreatureLoot{{
         {29324, 1, 34140},
         {16028, 1, 34100},
         {37959, 1, 34266},
@@ -77,7 +91,16 @@ namespace Cp40Fixture
         {33700, 1, 34156},
         {15690, 28757, 0},
         {15690, 29434, 0},
+    }};
+
+    // Present in core, deleted by IP professions.sql line 58.
+    inline constexpr std::array<LootRow, 1> CoreOnlyCreatureLoot{{
+        {17257, 34846, 0},
+    }};
+
+    inline constexpr std::array<LootRow, 2> IpCreatureLoot{{
         {351028, 304770, 304770},
+        {301000, 302630, 302630},
     }};
 
     inline constexpr std::array<LootRow, 2> GameobjectLoot{{
@@ -85,7 +108,7 @@ namespace Cp40Fixture
         {195665, 1, 34285},
     }};
 
-    inline constexpr std::array<LootRow, 13> ReferenceLoot{{
+    inline constexpr std::array<LootRow, 14> ReferenceLoot{{
         {34140, 40064, 0},
         {34100, 39261, 0},
         {34266, 50604, 0},
@@ -97,6 +120,7 @@ namespace Cp40Fixture
         {34156, 7, 34155},
         {34155, 37254, 0},
         {304770, 22815, 0},
+        {302630, 18205, 0},   // IP reference
         {34264, 51894, 0},
         {34285, 48708, 0},
     }};
@@ -110,18 +134,46 @@ namespace Cp40Fixture
         29434,  // quest_template 9583 RewardItem1
     }};
 
-    inline WorldRows Rows()
+    // Owns the concatenated rows; View() points into it.
+    struct Effective
     {
-        WorldRows rows;
-        rows.creatureLoot = CreatureLoot;
-        rows.gameobjectLoot = GameobjectLoot;
-        rows.referenceLoot = ReferenceLoot;
-        rows.creatures = Creatures;
-        rows.creatureSpawns = CreatureSpawns;
-        rows.chests = Chests;
-        rows.chestSpawns = ChestSpawns;
-        rows.vendorItems = VendorItems;
-        rows.questRewardItems = QuestRewardItems;
-        return rows;
+        std::vector<SpawnRow> spawns;
+        std::vector<LootRow> creatureLoot;
+
+        WorldRows View() const
+        {
+            WorldRows rows;
+            rows.creatureLoot = creatureLoot;
+            rows.gameobjectLoot = GameobjectLoot;
+            rows.referenceLoot = ReferenceLoot;
+            rows.creatures = Creatures;
+            rows.creatureSpawns = spawns;
+            rows.chests = Chests;
+            rows.chestSpawns = ChestSpawns;
+            rows.vendorItems = VendorItems;
+            rows.questRewardItems = QuestRewardItems;
+            return rows;
+        }
+    };
+
+    // Core alone (base + updates), before IP's world SQL.
+    inline Effective CoreWorld()
+    {
+        Effective e;
+        e.spawns.assign(CoreSpawns.begin(), CoreSpawns.end());
+        e.creatureLoot.assign(CoreCreatureLoot.begin(), CoreCreatureLoot.end());
+        e.creatureLoot.insert(e.creatureLoot.end(), CoreOnlyCreatureLoot.begin(), CoreOnlyCreatureLoot.end());
+        return e;
+    }
+
+    // The effective deployed world: core + IP world SQL.
+    inline Effective IpWorld()
+    {
+        Effective e;
+        e.spawns.assign(CoreSpawns.begin(), CoreSpawns.end());
+        e.spawns.insert(e.spawns.end(), IpSpawns.begin(), IpSpawns.end());
+        e.creatureLoot.assign(CoreCreatureLoot.begin(), CoreCreatureLoot.end());
+        e.creatureLoot.insert(e.creatureLoot.end(), IpCreatureLoot.begin(), IpCreatureLoot.end());
+        return e;
     }
 }

@@ -101,7 +101,26 @@ struct Fixture
     RouteRequest request;
     TierFacts facts;
     SenderSnapshot snapshot;
+    std::vector<SlotIdentity> identities;
 };
+
+// CP40b: the captured 19-slot identity sample behind f.slots, with each
+// aligned source naming the same item instance.
+void BindIdentities(Fixture& f)
+{
+    f.identities.assign(f.slots.size(), SlotIdentity{});
+    for (std::size_t i = 0; i < f.slots.size(); ++i)
+    {
+        if (f.slots[i] != 0)
+            f.identities[i] = SlotIdentity{1000 + i, 60000 + static_cast<std::uint32_t>(i), f.slots[i]};
+        if (i < f.sources.size() && f.sources[i].itemLevel != 0)
+        {
+            f.sources[i].itemGuid = f.identities[i].itemGuid;
+            f.sources[i].entry = f.identities[i].entry;
+        }
+    }
+    f.snapshot.slots = f.identities;
+}
 
 // A commander at the given stage and level with a flat average.
 void Prepare(Fixture& f, std::uint8_t stage, std::uint32_t level, std::uint32_t average, bool bis,
@@ -120,9 +139,13 @@ void Prepare(Fixture& f, std::uint8_t stage, std::uint32_t level, std::uint32_t 
     f.facts.sourcesVerified = sourcesVerified;
     f.facts.sources = f.sources;
     f.facts.senderGuid = 42;
+    f.facts.captureSession = 3;
     f.facts.equipmentRevision = 7;
+    f.snapshot = SenderSnapshot{};
     f.snapshot.senderGuid = 42;
+    f.snapshot.captureSession = 3;
     f.snapshot.equipmentRevision = 7;
+    BindIdentities(f);
     RouteRequest& r = f.request;
     r = RouteRequest{};
     r.commandEnabled = true;
@@ -385,6 +408,7 @@ int main()
         Prepare(f, 15, 80, 230, false, fullUld);
         f.slots[3] = 0;
         f.sources[3] = MasterItemSource{};
+        f.identities[3] = SlotIdentity{};
         f.request.commandingSenderSlots = f.slots;
         f.facts.sources = f.sources;
         MasterTier const withEmpty = liftOf(f);
@@ -403,6 +427,27 @@ int main()
         Prepare(f, 15, 80, 230, false, fullUld);
         f.snapshot.equipmentRevision = 8;  // the commander re-equipped; the old verified list is reused
         ok = Check(!liftOf(f).known, "G7 reused list after re-equip: no lift") && ok;
+
+        // CP40b trust boundary: session, 64-bit revision and item identity.
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.facts.captureSession = 4;
+        ok = Check(!liftOf(f).known, "CP40b list from another capture session: no lift") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.facts.equipmentRevision = 7 + (std::uint64_t(1) << 32);
+        ok = Check(!liftOf(f).known, "CP40b revision equal only in the low 32 bits: no lift (no truncation)") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.identities[4].itemGuid = 9999;  // same item level, another item instance in that slot
+        ok = Check(!liftOf(f).known, "CP40b same item level but another item GUID: no lift") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.sources[4].entry = 61234;
+        ok = Check(!liftOf(f).known, "CP40b source names another item entry: no lift") && ok;
+
+        Prepare(f, 15, 80, 230, false, fullUld);
+        f.snapshot.slots = {};
+        ok = Check(!liftOf(f).known, "CP40b snapshot without its 19-slot identity sample: no lift") && ok;
 
         Prepare(f, 15, 80, 230, false, fullUld);
         f.facts.senderGuid = 0;
