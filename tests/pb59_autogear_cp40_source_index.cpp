@@ -140,6 +140,60 @@ void TestBucketTable()
     Check(ClassifyBucket(409, 0).verdict == Verdict::VanillaRaid, "Molten Core is Vanilla");
 }
 
+// CP41: a Heroic map/spawn flag does not by itself prove the *loot
+// template* was Heroic. Creature::InitEntry may fall back to 10N/25N/base.
+void TestHeroicLootFallback()
+{
+    CreatureTemplateRow normal{};
+    normal.entry = 90001;
+    normal.lootId = 90010;
+    LootRow normalLoot{90010, 90011, 0};
+    SpawnRow spawn{90001, 631, 4}; // ICC 10H only
+    WorldRows rows;
+    rows.creatures = std::span<CreatureTemplateRow const>(&normal, 1);
+    rows.creatureLoot = std::span<LootRow const>(&normalLoot, 1);
+    rows.creatureSpawns = std::span<SpawnRow const>(&spawn, 1);
+
+    Check(IsUnknown(SourceIndex::Build(rows).Lookup(90011)),
+        "ICC 10H spawn using fallback 10N/base loot does not prove Heroic gear");
+
+    // 25H with no 25H clone falls back to the actual 25N template.
+    CreatureTemplateRow normal25{};
+    normal25.entry = 90002;
+    normal25.lootId = 90020;
+    normal.difficultyEntry[0] = normal25.entry;
+    std::array<CreatureTemplateRow, 2> templates{normal, normal25};
+    LootRow twentyFiveLoot{90020, 90021, 0};
+    spawn.spawnMask = 8; // ICC 25H only
+    rows.creatures = templates;
+    rows.creatureLoot = std::span<LootRow const>(&twentyFiveLoot, 1);
+    Check(IsUnknown(SourceIndex::Build(rows).Lookup(90021)),
+        "ICC 25H spawn using fallback 25N loot does not prove Heroic gear");
+
+    // An actual Heroic difficulty template still carries positive evidence.
+    CreatureTemplateRow heroic10{};
+    heroic10.entry = 90003;
+    heroic10.lootId = 90030;
+    normal.difficultyEntry[1] = heroic10.entry;
+    std::array<CreatureTemplateRow, 3> complete{normal, normal25, heroic10};
+    LootRow heroicLoot{90030, 90031, 0};
+    spawn.spawnMask = 4;
+    rows.creatures = complete;
+    rows.creatureLoot = std::span<LootRow const>(&heroicLoot, 1);
+    Check(Is(SourceIndex::Build(rows).Lookup(90031), Verdict::Raid,
+             RaidPoint::WrathT10, RaidSize::Ten, true),
+        "ICC 10H with an actual 10H loot template remains Heroic proof");
+
+    // IP 40-man Naxx uses 10H on map 533 as VANILLA, never Wrath Heroic.
+    normal.difficultyEntry = {};
+    rows.creatures = std::span<CreatureTemplateRow const>(&normal, 1);
+    rows.creatureLoot = std::span<LootRow const>(&normalLoot, 1);
+    spawn.map = 533;
+    Check(Is(SourceIndex::Build(rows).Lookup(90011), Verdict::VanillaRaid,
+             RaidPoint::None, RaidSize::Unknown, false),
+        "IP Naxx40 10H fallback retains Vanilla-only classification");
+}
+
 void TestAdapter()
 {
     Effective const world = IpWorld();
@@ -259,6 +313,7 @@ int main()
 {
     TestIndex();
     TestBucketTable();
+    TestHeroicLootFallback();
     TestAdapter();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
