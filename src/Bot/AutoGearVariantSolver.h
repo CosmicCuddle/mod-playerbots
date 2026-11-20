@@ -168,6 +168,15 @@ namespace PlayerbotsAutoGearVariant
                         !PlayerbotsAutoGearSelection::CountTotal(*held, owned))
                         return {Status::Incomplete};
                 }
+                // An empty retained table is not a zero gem or equipped count.
+                if (candidate.categoryLimit != 0)
+                {
+                    std::uint32_t outside = 0;
+                    if (!PlayerbotsAutoGearSelection::EquipOutsideCount(policy.categoryHeld, candidate.limitCategory,
+                            outside) ||
+                        outside >= candidate.categoryLimit)
+                        return {Status::Incomplete};
+                }
                 havePrevious = true;
                 previous = candidate;
                 auto [meta, inserted] = templates.emplace(candidate.entryId, candidate);
@@ -222,6 +231,15 @@ namespace PlayerbotsAutoGearVariant
             unsigned categoryHaveCount = 1;
             std::uint32_t entryLimit = entryLimitOf(candidate);
             std::uint32_t equipLimit = candidate.categoryLimit;
+            if (candidate.categoryLimit != 0)
+            {
+                std::uint32_t outside = 0;
+                if (!PlayerbotsAutoGearSelection::EquipOutsideCount(policy.categoryHeld, candidate.limitCategory,
+                        outside) ||
+                    outside >= candidate.categoryLimit)
+                    return false;
+                equipLimit = candidate.categoryLimit - outside;
+            }
             std::uint32_t haveLimit = candidate.categoryHaveLimit;
             std::uint32_t ownedEntry = 0;
             std::uint32_t ownedCategory = 0;

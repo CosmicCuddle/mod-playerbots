@@ -189,6 +189,9 @@ namespace PlayerbotsAutoGearSelection
             return finish(true, PreparationResult::InvalidPolicy, false);
         if ((in.eligibleMask & ~PlayerbotsAutoGearSet::CombatMask) != 0 || (in.completeMask & ~in.eligibleMask) != 0)
             return finish(true, PreparationResult::InvalidPolicy, false);
+        // A scheduled skip is not an empty slot. Leave the equipped item in place.
+        if (UnsearchedEligibleSlot(in.bot, in.eligibleMask))
+            return finish(true, PreparationResult::NotPrepared, false);
         // Bound and validate facts before they are matched to a native row.
         if (in.facts.size() > in.candidateBudget)
             return finish(true, PreparationResult::NotPrepared, false);
@@ -206,7 +209,8 @@ namespace PlayerbotsAutoGearSelection
             std::uint32_t room = 0;
             if (GatePossession(fact, in.retained, room) == PossessionGate::Unknown)
                 return finish(true, PreparationResult::NotPrepared, false);
-            if (fact.maxCount != 0 || fact.categoryHaveLimit != 0 || fact.randomProperty != 0)
+            if (fact.maxCount != 0 || fact.categoryHaveLimit != 0 || fact.categoryLimit != 0 ||
+                fact.randomProperty != 0)
                 needsVariant = true;
         }
         if (!needsVariant)

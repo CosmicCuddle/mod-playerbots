@@ -13,25 +13,39 @@
 namespace PlayerbotsAutoGearSelection
 {
     // Owner-approved 16 Nov 2026. Stages 0 and 1 were already 66 and 78.
-    // Stages 2 to 7 are 78, 83, 83, 83, 88, 92. Later stages stay 0.
+    // Stages 2 to 7 are 78, 83, 83, 83, 88, 92.
+    // Owner-approved 18 Nov 2026 from item-database research: stages 8 to 18
+    // are 125, 125, 141, 0, 156, 226, 226, 245, 258, 284, 284. Stage 11 is
+    // disabled in Individual Progression and stays 0, so it refuses. Wrath
+    // Naxx 25 tops out at 226, not 224, and nothing lootable reaches 290; the
+    // best drops are 284. Each cap is the 25-man normal level of the content
+    // that stage allows; Heroic splits are a later, separate check.
+    // The name is kept because other branches include this header.
     inline constexpr std::uint32_t ApprovedVanillaCompletion[19] = {
-        66, 78, 78, 83, 83, 83, 88, 92, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        66, 78, 78, 83, 83, 83, 88, 92, 125, 125, 141, 0, 156, 226, 226, 245, 258, 284, 284};
 
-    // The highest approved stage. A zero score-limit config does not replace
-    // this with a ceiling of 78. A nonzero score limit only lowers the cap.
+    // The highest approved Vanilla stage (0 to 7). Later stages do not raise
+    // it. A zero score-limit config does not replace this with a ceiling of
+    // 78. A nonzero score limit only lowers the cap.
     constexpr std::uint32_t ApprovedVanillaEraCeiling()
     {
         std::uint32_t ceiling = 0;
-        for (std::uint32_t cap : ApprovedVanillaCompletion)
+        for (std::uint32_t stage = 0; stage < PlayerbotsAutoGearCap::TbcEntryStage; ++stage)
         {
-            if (cap > ceiling)
-                ceiling = cap;
+            if (ApprovedVanillaCompletion[stage] > ceiling)
+                ceiling = ApprovedVanillaCompletion[stage];
         }
         return ceiling;
     }
 
+    // Owner-approved 18 Nov 2026: Wrath 284 expansion ceiling (12:23 UK) and
+    // TBC 159, the highest actual Sunwell drop (16:49 UK; was 164).
+    inline constexpr std::uint32_t ApprovedTbcEraCeiling = 159;
+    inline constexpr std::uint32_t ApprovedWrathEraCeiling = 284;
+
     inline constexpr std::array<std::uint32_t, 3> ApprovedEraFloors{{0, 0, 0}};
-    inline constexpr std::array<std::uint32_t, 3> ApprovedEraCeilings{{ApprovedVanillaEraCeiling(), 0, 0}};
+    inline constexpr std::array<std::uint32_t, 3> ApprovedEraCeilings{
+        {ApprovedVanillaEraCeiling(), ApprovedTbcEraCeiling, ApprovedWrathEraCeiling}};
 
     constexpr PlayerbotsAutoGearCap::Policy ApprovedCapPolicy()
     {

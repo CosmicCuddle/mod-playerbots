@@ -39,6 +39,41 @@ namespace PlayerbotsAutoGearSelection
         return CapMode::Endgame;
     }
 
+    // Owner decision 18 Nov 2026 13:06 UK. "Still leveling" follows the
+    // commander's IP stage: stages 0-7 below 60, TBC stages 8-12 below 70,
+    // Wrath stages 13-18 below 80. Stage 11 is disabled and stays unknown.
+    // Unknown level or stage is Unknown, which callers must preserve on.
+    enum class SenderPhase : std::uint8_t
+    {
+        Unknown,
+        Leveling,
+        MaxLevel
+    };
+
+    constexpr std::uint32_t StageMaxLevel(std::uint8_t rawStage)
+    {
+        if (rawStage < PlayerbotsAutoGearCap::TbcEntryStage)
+            return 60;
+        if (rawStage == 11)
+            return 0;
+        if (rawStage < PlayerbotsAutoGearCap::WrathEntryStage)
+            return 70;
+        if (rawStage <= PlayerbotsAutoGearCap::LastSupportedStage)
+            return 80;
+        return 0;
+    }
+
+    constexpr SenderPhase SenderPhaseForStage(bool levelKnown, std::uint32_t level, bool stageKnown,
+        std::uint8_t rawStage)
+    {
+        if (!levelKnown || level == 0 || !stageKnown)
+            return SenderPhase::Unknown;
+        std::uint32_t const maxLevel = StageMaxLevel(rawStage);
+        if (maxLevel == 0)
+            return SenderPhase::Unknown;
+        return level < maxLevel ? SenderPhase::Leveling : SenderPhase::MaxLevel;
+    }
+
     constexpr bool KnownCommandForm(CommandForm form)
     {
         switch (form)

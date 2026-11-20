@@ -80,8 +80,8 @@ int main()
     match.matchAverage = 50;
     ok = Check(ComposeCap(match).cap == 50, "match uses only its own supplied target") && ok;
 
-    ok = Check(kApproved[2] == 78 && kApproved[7] == 92 && kApproved[8] == 0,
-            "stages 2 to 7 are the approved caps and later stages stay unset") &&
+    ok = Check(kApproved[2] == 78 && kApproved[7] == 92 && kApproved[8] == 125 && kApproved[11] == 0,
+            "stages 2 to 7 keep their caps, stage 8 is 125 and disabled stage 11 stays unset") &&
          ok;
 
     if (!ok)

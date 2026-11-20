@@ -642,14 +642,15 @@ Playerbots.AutoGearScoreLimit = 0
 # Disabled by default. The current source candidate refuses commands when enabled
 # until IP supplies a safe cache-only sender snapshot and values are reviewed.
 # Missing/zero stage caps or era ceilings refuse the command before changing gear.
-# CompletionCaps has 19 entries for raw stages 0..18. Only stages 0 and 1 have
-# provisional candidate values (66, 78); all values await owner review.
+# CompletionCaps has 19 entries for raw stages 0..18. Owner-approved values
+# (16 and 18 Nov 2026) match AutoGearSelectionCap.h. Stage 11 is disabled in
+# Individual Progression and stays 0, so it refuses.
 # EraEntryFloors and EraCeilings have Vanilla,TBC,Wrath entries in that order.
 # The existing AutoGearScoreLimit and lower requested ilvl remain restrictive.
 Playerbots.AutoGearIPCap.Enable = 0
-Playerbots.AutoGearIPCap.CompletionCaps = 66,78,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Playerbots.AutoGearIPCap.CompletionCaps = 66,78,78,83,83,83,88,92,125,125,141,0,156,226,226,245,258,284,284
 Playerbots.AutoGearIPCap.EraEntryFloors = 0,0,0
-Playerbots.AutoGearIPCap.EraCeilings = 78,0,0
+Playerbots.AutoGearIPCap.EraCeilings = 92,164,284
 
 # Enable/Disable cheats for bots
 # "food" (bots eat or drink without using food or drinks from their inventory)
