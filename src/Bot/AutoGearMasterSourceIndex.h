@@ -206,6 +206,7 @@ namespace PlayerbotsAutoGearMasterSource
             std::map<std::uint32_t, std::uint32_t> chests;
             std::map<std::uint32_t, std::set<Bucket>> buckets;
             std::set<std::uint32_t> reachedCreatureLoot, reachedChestLoot;
+            std::set<std::uint32_t> reachedCreatureTemplates; // selected exact template entries, not merely shared loot ids
             std::set<std::uint32_t> poisoned;  // vendor, quest, container
 
             explicit Builder(WorldRows const& source) : rows(source)
@@ -282,6 +283,7 @@ namespace PlayerbotsAutoGearMasterSource
                         auto const it = creatures.find(selected.entry);
                         if (it == creatures.end() || !it->second.lootId)
                             continue;
+                        reachedCreatureTemplates.insert(it->first);
                         reachedCreatureLoot.insert(it->second.lootId);
                         Bucket bucket{spawn.map, diff};
                         RaidBucket const raid = ClassifyBucket(spawn.map, diff);
@@ -306,6 +308,14 @@ namespace PlayerbotsAutoGearMasterSource
                             Record(gameobjectLoot, chest->second, {spawn.map, diff});
                         }
                 }
+                // A second creature template can reuse a loot id reached by a
+                // mapped raid spawn, while that second template has no static
+                // spawn. Script-summoned uses of that template remain unknown:
+                // loot-id reachability alone must not hide the alternate source.
+                for (auto const& [templateEntry, info] : creatures)
+                    if (info.lootId && !reachedCreatureTemplates.count(templateEntry) &&
+                        reachedCreatureLoot.count(info.lootId))
+                        Record(creatureLoot, info.lootId, Unattributed);
                 // Loot no spawn reaches (script-summoned bosses and chests,
                 // unused templates) proves nothing and spoils the entry.
                 for (auto it = creatureLoot.begin(); it != creatureLoot.end(); it = creatureLoot.upper_bound(it->first))
