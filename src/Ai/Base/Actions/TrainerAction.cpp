@@ -824,6 +824,9 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     facts.altCommandAllowed = sPlayerbotAIConfig.AutoGearCommandAltBots != 0;
     facts.qualityLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
     facts.scoreLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);
+    facts.useConfigCaps = true;
+    facts.configCompletionCaps = sPlayerbotAIConfig.AutoGearIPCompletionCaps;
+    facts.configEraCeilings = sPlayerbotAIConfig.AutoGearIPEraCeilings;
     facts.randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
     facts.randomAccount = sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId());
 #if defined(COSMIC_PB59_AUTOGEAR_PROGRESSION_API)

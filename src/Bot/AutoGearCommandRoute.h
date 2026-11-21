@@ -49,6 +49,8 @@ namespace PlayerbotsAutoGearSelection
         // Facts were fully enumerated and the required domain is empty.
         bool domainProvenEmpty = false;
         PlanInput selection{};
+        // Optional tighter policy (config). Null uses the approved table. Valid for this call only.
+        PlayerbotsAutoGearCap::Policy const* policy = nullptr;
     };
 
     struct RouteDecision
@@ -77,7 +79,7 @@ namespace PlayerbotsAutoGearSelection
         cap.progressionContext = request.progressionContextVerified;
         cap.rawStage = request.rawStage;
         cap.effectiveStage = request.effectiveStage;
-        cap.policy = ApprovedCapPolicy();
+        cap.policy = request.policy ? *request.policy : ApprovedCapPolicy();
         cap.scoreLimit = request.scoreLimit;
     }
 
