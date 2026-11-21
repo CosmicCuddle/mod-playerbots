@@ -1,5 +1,21 @@
 # Custom Modifications Register
 
+## PB57-TAXI-WATCHDOG-20261121 — no-progress flight recovery for bots
+
+- **Owner/component:** CosmicCuddle / `mod-playerbots`.
+- **Parent/source reference:** `feature/codex-pb57-spline-attribution-20261114` @ `8ec174c0` (kept unchanged; its diagnostics still name the interrupting action). Coordination [#57](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/57) / [#59 C2](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/59#issuecomment-7061116709).
+- **Intended behavior:** every 5 s a bot in taxi state is checked for flight progress:
+  - progress means the flight generator is active, its spline is moving, and the route node changed or the bot moved;
+  - after `Playerbots.TaxiWatchdog.Timeout` seconds (default 900) with no progress, the taxi state is cleared as a normal landing would and the bot is teleported to its next or source flight master, else its hearthstone;
+  - at most 3 recoveries per bot per hour, 10 minutes apart, then it logs once and stops;
+  - humans and self-bots are never touched, and bots are never killed.
+- **Affected files:** `src/Bot/TaxiWatchdog.h`, `src/Bot/PlayerbotAI.cpp/.h`, `src/PlayerbotAIConfig.cpp/.h`, `conf/playerbots.conf.dist`, `tests/pb57_taxi_watchdog.cpp`, this Register.
+- **Dependencies:** Core `FlightPathMovementGenerator::GetCurrentNode`, `Player::CleanupAfterTaxiFlight`, `TeleportTo`, `sTaxiNodesStore`. No SQL, DBC or client change.
+- **Risks:** a teleport to the flight master is visible to nearby players. The root cause of the stalls is still unattributed.
+- **Tests:** 190 model checks pass on GCC/Clang/ASan, with 12/12 mutants killed. The integrated worldserver compiles. In-game flights are not tested.
+- **Live status:** default OFF; not merged or deployed.
+- **Rollback:** set `Playerbots.TaxiWatchdog.Enable = 0` or revert the branch; no persistent data is changed.
+
 ## PB57-TAXI-SPLINE-ATTRIBUTION-20261114 — flight interruption diagnostics
 
 - **Owner/component:** CosmicCuddle / `mod-playerbots`.
