@@ -8,8 +8,11 @@
 #define PLAYERBOTS_DUNGEON_LEVEL_BRACKET_H
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <span>
+#include <string_view>
+#include <vector>
 
 namespace PlayerbotsDungeonBracket
 {
@@ -108,6 +111,107 @@ namespace PlayerbotsDungeonBracket
         if (level > maximum)
             return {Result::AboveMaximum, minimum, maximum};
         return {Result::Allowed, minimum, maximum};
+    }
+
+    // Owner-reviewed bracket for a map/difficulty whose source rows cannot give one bracket
+    // (several wings with different LFG ranges, or no rows). Never replaces a resolved bracket.
+    struct OverrideRange
+    {
+        std::uint32_t mapId;
+        std::uint32_t difficulty;
+        std::uint32_t minLevel;
+        std::uint32_t maxLevel;
+    };
+
+    constexpr Decision ApplyReviewedOverride(Decision decision, std::span<OverrideRange const> overrides,
+        std::uint32_t mapId, std::uint32_t difficulty, std::uint32_t level)
+    {
+        if (decision.result != Result::AmbiguousBracket && decision.result != Result::MissingBracket)
+            return decision;
+        for (OverrideRange const& range : overrides)
+        {
+            if (range.mapId != mapId || range.difficulty != difficulty)
+                continue;
+            if (!range.minLevel || range.minLevel > range.maxLevel)
+                return decision;
+            if (level < range.minLevel)
+                return {Result::BelowMinimum, range.minLevel, range.maxLevel};
+            if (level > range.maxLevel)
+                return {Result::AboveMaximum, range.minLevel, range.maxLevel};
+            return {Result::Allowed, range.minLevel, range.maxLevel};
+        }
+        return decision;
+    }
+
+    // The startup index cannot know whether a holiday is running. Copies the rows and marks the exact
+    // selected seasonal row active or not; with no selection, or too many rows to copy, nothing is active.
+    template <std::size_t N>
+    constexpr std::span<Row const> WithSeasonActivity(std::span<Row const> rows, std::uint32_t selectedDungeonId,
+        bool selectedSeasonActive, std::array<Row, N>& scratch)
+    {
+        if (!selectedDungeonId || rows.size() > N)
+            return rows;
+        for (std::size_t i = 0; i < rows.size(); ++i)
+        {
+            scratch[i] = rows[i];
+            scratch[i].seasonActive =
+                scratch[i].seasonal && scratch[i].id == selectedDungeonId && selectedSeasonActive;
+        }
+        return std::span<Row const>(scratch.data(), rows.size());
+    }
+
+    // "map:difficulty:min:max" entries separated by commas. Any malformed or duplicate entry rejects the
+    // whole list, so a typo never half-applies.
+    inline bool ParseOverrides(std::string_view text, std::vector<OverrideRange>& out)
+    {
+        out.clear();
+        auto number = [](std::string_view part, std::uint32_t& value)
+        {
+            if (part.empty() || part.size() > 6)
+                return false;
+            value = 0;
+            for (char ch : part)
+            {
+                if (ch < '0' || ch > '9')
+                    return false;
+                value = value * 10 + static_cast<std::uint32_t>(ch - '0');
+            }
+            return true;
+        };
+        while (!text.empty())
+        {
+            std::size_t const comma = text.find(',');
+            std::string_view entry = text.substr(0, comma);
+            text = comma == std::string_view::npos ? std::string_view{} : text.substr(comma + 1);
+            while (!entry.empty() && entry.front() == ' ')
+                entry.remove_prefix(1);
+            while (!entry.empty() && entry.back() == ' ')
+                entry.remove_suffix(1);
+            if (entry.empty())
+                continue;
+            std::uint32_t fields[4]{};
+            for (std::uint32_t& field : fields)
+            {
+                std::size_t const colon = entry.find(':');
+                if (!number(entry.substr(0, colon), field))
+                {
+                    out.clear();
+                    return false;
+                }
+                entry = colon == std::string_view::npos ? std::string_view{} : entry.substr(colon + 1);
+            }
+            OverrideRange const range{fields[0], fields[1], fields[2], fields[3]};
+            bool duplicate = false;
+            for (OverrideRange const& existing : out)
+                duplicate = duplicate || (existing.mapId == range.mapId && existing.difficulty == range.difficulty);
+            if (!entry.empty() || !range.minLevel || range.minLevel > range.maxLevel || duplicate)
+            {
+                out.clear();
+                return false;
+            }
+            out.push_back(range);
+        }
+        return true;
     }
 }
 

@@ -488,8 +488,18 @@ Playerbots.ApplyInstanceStrategies = 1
 # Restrict headless bots to the authoritative level bracket for non-raid dungeon entry.
 # Applies to ordinary entrances, teleports, LFG and login; humans are unaffected.
 # Requires reviewed LFG/DBC and access-requirement rows plus LFG thread-safety review before enabling.
+# An LFG group's exact selected dungeon decides its bracket; a holiday dungeon (Headless Horseman,
+# Ahune, Coren Direbrew, Crown Chemical Co.) is exempt only while that selection's event is active.
 # Default: 0 (disabled)
 Playerbots.EnforceDungeonLevelBracket = 0
+
+# Reviewed brackets for dungeon maps whose LFG rows give no single bracket (several wings with different
+# ranges, e.g. Scarlet Monastery 189, Blackrock Depths 230, Maraudon 349, Dire Maul 429), or none at all.
+# Never replaces a bracket the data already resolves. Format: map:difficulty:min:max, comma separated.
+# Any malformed or duplicate entry disables the whole list. Without an entry, bots are denied such maps
+# unless they enter through LFG with an exact dungeon selected.
+# Default: "" (none)
+Playerbots.DungeonLevelBracket.Overrides = ""
 
 # Enable auto avoid aoe strategy
 # Default: 1 (enabled)

@@ -487,6 +487,10 @@ bool PlayerbotAIConfig::Initialize()
     RandomBotReactStrategies = sConfigMgr->GetOption<std::string>("Playerbots.RandomBotReactStrategies", "");
     ApplyInstanceStrategies = sConfigMgr->GetOption<bool>("Playerbots.ApplyInstanceStrategies", true);
     EnforceDungeonLevelBracket = sConfigMgr->GetOption<bool>("Playerbots.EnforceDungeonLevelBracket", false);
+    if (!PlayerbotsDungeonBracket::ParseOverrides(
+            sConfigMgr->GetOption<std::string>("Playerbots.DungeonLevelBracket.Overrides", ""),
+            DungeonLevelBracketOverrides))
+        LOG_ERROR("server.loading", "Playerbots.DungeonLevelBracket.Overrides is malformed; no overrides applied");
 
     CommandPrefix = sConfigMgr->GetOption<std::string>("Playerbots.CommandPrefix", "");
     CommandSeparator = sConfigMgr->GetOption<std::string>("Playerbots.CommandSeparator", "\\\\");
