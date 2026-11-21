@@ -23,6 +23,7 @@
 #include "PlayerbotIdentityGeneration.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
+#include "AutoGearSourceIndexStore.h"
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
@@ -555,6 +556,12 @@ public:
 
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
+
+        if (sPlayerbotAIConfig.AutoGearIPCapEnable)
+        {
+            LOG_INFO("server.loading", "Loading AutoGear raid source index...");
+            PlayerbotsAutoGearMasterSource::SourceIndexStore::LoadFromWorldDatabase();
+        }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
     }
