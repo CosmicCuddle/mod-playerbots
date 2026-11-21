@@ -2375,7 +2375,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                 ItemTemplate const* iProto = sObjectMgr->GetItemTemplate(itemId);
                 if (!iProto)
                     continue;
-                if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(iProto->ItemLevel, maxRawItemLevel))
+                if (!AllowsCappedItem(iProto))
                     continue;
 
                 // BuyCount by default
@@ -2422,7 +2422,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         {
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
             if (!proto) continue;
-            if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, maxRawItemLevel)) continue;
+            if (!AllowsCappedItem(proto)) continue;
             // Respect gear quality limit: trinket must not exceed itemQuality setting
             if (static_cast<int32>(proto->Quality) > static_cast<int32>(itemQuality)) continue;
             if (proto->RequiredLevel > level) continue;
@@ -2550,7 +2550,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                         if (!proto)
                             continue;
 
-                        if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, maxRawItemLevel))
+                        if (!AllowsCappedItem(proto))
                             continue;
 
                         if (shouldCheckGS && gearScoreLimit != 0 &&
@@ -4030,7 +4030,7 @@ void PlayerbotFactory::InitAmmo()
         return;
 
     ItemTemplate const* ammoProto = sObjectMgr->GetItemTemplate(entry);
-    if (!ammoProto || !PlayerbotsAutoGearCap::AllowsRawItemLevel(ammoProto->ItemLevel, maxRawItemLevel))
+    if (!ammoProto || !AllowsCappedItem(ammoProto))
         return;
 
     DestroyObsoleteAmmo(bot, ammoProto);
@@ -4355,10 +4355,12 @@ InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
 }
 
 void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance,
-                                bool applyFinishers, uint32 maxRawItemLevel)
+                                bool applyFinishers, uint32 maxRawItemLevel,
+                                PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter)
 {
     uint32 gs = ilvl == 0 ? 0 : CalcMixedGearScore(ilvl, itemQuality);
     PlayerbotFactory factory(bot, bot->GetLevel(), itemQuality, gs, maxRawItemLevel);
+    factory.SetSourceFilter(sourceFilter);
     factory.InitEquipment(incremental, secondChance);
 
     if (!applyFinishers)
@@ -5546,7 +5548,7 @@ void PlayerbotFactory::ApplyEnchantAndGemsNew(bool /*destroyOld*/)
     for (uint32 const& enchantGem : enchantGemIdCache)
     {
         ItemTemplate const* gemTemplate = sObjectMgr->GetItemTemplate(enchantGem);
-        if (!gemTemplate || !PlayerbotsAutoGearCap::AllowsRawItemLevel(gemTemplate->ItemLevel, maxRawItemLevel))
+        if (!gemTemplate || !AllowsCappedItem(gemTemplate))
             continue;
 
         GemPropertiesEntry const* gemProperties = sGemPropertiesStore.LookupEntry(gemTemplate->GemProperties);

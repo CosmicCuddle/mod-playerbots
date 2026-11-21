@@ -163,6 +163,9 @@ namespace PlayerbotsAutoGearMasterSource
         RaidPoint point = RaidPoint::None;
         RaidSize size = RaidSize::Unknown;
         bool heroic = false;
+        // The one (map, difficulty) bucket that proved the verdict. Zero when Unknown.
+        std::uint32_t map = 0;
+        std::uint8_t difficulty = 0;
     };
 
     class SourceIndex
@@ -346,7 +349,8 @@ namespace PlayerbotsAutoGearMasterSource
                     RaidBucket const raid = ClassifyBucket(bucket.first, bucket.second);
                     if (raid.verdict == Verdict::Unknown)
                         continue;
-                    entries[item] = SourceEntry{raid.verdict, raid.point, raid.size, raid.heroic};
+                    entries[item] =
+                        SourceEntry{raid.verdict, raid.point, raid.size, raid.heroic, bucket.first, bucket.second};
                 }
             }
         };

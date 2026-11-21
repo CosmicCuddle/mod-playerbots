@@ -9,10 +9,12 @@
 #include "AutoGearCapCommand.h"
 #include "AutoGearCommandRoute.h"
 #include "AutoGearProgressionCap.h"
+#include "AutoGearSourceAccess.h"
 #include "AutoGearSourceIndexStore.h"
 #include "AutoGearSlotPolicy.h"
 #include "BisListMgr.h"
 #include "BudgetValues.h"
+#include "Config.h"
 #include "Event.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
@@ -645,7 +647,10 @@ namespace
     class PlayerAutoGearInventory
     {
     public:
-        PlayerAutoGearInventory(Player* bot, uint32 quality) : _bot(bot), _quality(quality) {}
+        PlayerAutoGearInventory(Player* bot, uint32 quality, PlayerbotsAutoGearSourceAccess::Filter const* sources)
+            : _bot(bot), _quality(quality), _sources(sources)
+        {
+        }
 
         PlayerbotsAutoGearExec::Snapshot Capture() const
         {
@@ -702,7 +707,7 @@ namespace
         {
             // No second chance: that pass destroys the equipped item before searching.
             PlayerbotFactory::AutoGear(_bot, quality, cap, incremental, /*secondChance*/ false,
-                                       /*applyFinishers*/ false, cap);
+                                       /*applyFinishers*/ false, cap, _sources);
         }
 
         void ApplyBisOverlay(uint32 cap)
@@ -724,7 +729,7 @@ namespace
                 // Reputation is never granted here; an item the bot cannot use keeps the factory pick.
                 if (slot >= EQUIPMENT_SLOT_END || !proto ||
                     !PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, cap) ||
-                    _bot->CanUseItem(proto) != EQUIP_ERR_OK)
+                    (_sources && !_sources->Allows(entry)) || _bot->CanUseItem(proto) != EQUIP_ERR_OK)
                     continue;
                 Item* current = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
                 if (current && current->GetEntry() == entry)
@@ -749,6 +754,7 @@ namespace
         void ApplyFinishers(uint32 cap)
         {
             PlayerbotFactory factory(_bot, _bot->GetLevel(), _quality, 0, cap);
+            factory.SetSourceFilter(_sources);
             factory.InitAmmo();
             if (_bot->GetLevel() >= sPlayerbotAIConfig.MinEnchantingBotLevel)
                 factory.ApplyEnchantAndGemsNew();
@@ -778,6 +784,7 @@ namespace
 
         Player* _bot;
         uint32 _quality;
+        PlayerbotsAutoGearSourceAccess::Filter const* _sources;
     };
 
     std::string RefusalText(PlayerbotsAutoGearExec::Refusal refusal)
@@ -870,7 +877,27 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     auto const& decision = resolved.decision;
     PlayerbotsAutoGearExec::Plan const& plan = resolved.plan;
 
-    PlayerAutoGearInventory inventory(bot, plan.quality);
+    // C1-B: offer no item whose only proven source is a raid the commander cannot enter yet, using IP's
+    // own entry gates at the commander's effective stage. Without the index that cannot be checked, so
+    // the command keeps the current gear instead of falling back to the item-level cap alone.
+    PlayerbotsAutoGearSourceAccess::Filter sources;
+    sources.index = PlayerbotsAutoGearMasterSource::SourceIndexStore::Get();
+    sources.effectiveStage = request.effectiveStage;
+    sources.gates.zulGurub =
+        sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulGurubProgression", 3, false);
+    sources.gates.zulAman = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulAmanProgression", 12, false);
+    if (plan.Runs() && !sources.index)
+    {
+        LOG_ERROR("playerbots", "PB59 AutoGear bot={} sender={} refused: the raid source index is not loaded",
+            bot->GetGUID().ToString(), sender->GetGUID().ToString());
+        ai->Whisper(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                        "autogear_ip_sources_error",
+                        "I can't check where gear comes from right now, so I'm keeping my current gear.", {}),
+            sender->GetName());
+        return false;
+    }
+
+    PlayerAutoGearInventory inventory(bot, plan.quality, &sources);
     PlayerbotsAutoGearExec::Outcome const outcome = PlayerbotsAutoGearExec::Execute(inventory, plan);
 
     LOG_INFO("playerbots",
