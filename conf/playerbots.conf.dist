@@ -646,6 +646,11 @@ Playerbots.AutoGearScoreLimit = 0
 # current gear. Random bots move items above the cap into empty bag slots first
 # (reset moves everything); alt bots are never stripped and cannot reset.
 # Nothing the bot owned is destroyed; full bags refuse the command.
+# Items whose only proven source is a raid the commanding player cannot enter
+# yet under Individual Progression (e.g. Blackwing Lair before Onyxia, Zul'Gurub
+# before IndividualProgression.RequiredZulGurubProgression) are never offered.
+# Enabling this loads a raid source index from the world database at startup
+# (a few seconds); if it cannot load, capped commands keep the current gear.
 # Missing/zero stage caps or era ceilings refuse the command before changing gear.
 # These tables can only lower the caps compiled into AutoGearSelectionCap.h; a
 # higher value here has no effect.
