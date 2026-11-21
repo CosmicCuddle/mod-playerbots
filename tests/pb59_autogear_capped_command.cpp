@@ -602,6 +602,48 @@ void TestStageTransition()
           "downgrade strip with full bags is refused, gear stays");
 }
 
+// Owner rules for a max-level commander (18 Nov 2026): Vanilla stages 1-7 cap normal forms at
+// min(equipped average, stage cap); TBC/Wrath also bound the average by the worn raid tier, which is
+// the era's lowest tier without verified item sources. BiS keeps the stage cap.
+void TestMaxLevelAverageRule()
+{
+    struct Case
+    {
+        std::uint8_t stage;
+        std::uint32_t level;
+        std::uint32_t average;
+        bool bis;
+        std::uint32_t expected;
+        char const* name;
+    };
+    Case const cases[] = {
+        {1, 60, 70, false, 70, "stage 1, average 70: capped at 70, not 78"},
+        {1, 60, 90, false, 78, "stage 1, average 90: stage cap 78"},
+        {3, 60, 80, false, 80, "stage 3, average 80 below cap 83"},
+        {7, 60, 95, false, 92, "stage 7, average 95: stage cap 92"},
+        {1, 60, 70, true, 78, "stage 1 BiS keeps the stage cap"},
+        {10, 70, 150, false, 125, "TBC stage 10 without item sources: T4 floor 125, not 141"},
+        {10, 70, 110, false, 110, "TBC stage 10, average 110 below the floor"},
+        {13, 80, 240, false, 213, "Wrath stage 13 without item sources: T7 10-man floor 213, not 226"},
+    };
+    for (Case const& c : cases)
+    {
+        FakeInventory inventory = StandardInventory();
+        CommandFacts facts = MaxLevelSender(c.stage, c.average);
+        facts.senderLevel = c.level;
+        facts.bis = c.bis;
+        Run const run = Execute(facts, inventory);
+        Check(run.outcome.ran && run.resolved.plan.cap == c.expected,
+              std::string(c.name) + " (got " + std::to_string(run.resolved.plan.cap) + ")");
+    }
+    // The average needs a verified sample; without one the command preserves.
+    FakeInventory inventory = StandardInventory();
+    CommandFacts facts = MaxLevelSender(1, 70);
+    facts.senderSlotsComplete = false;
+    Run const run = Execute(facts, inventory);
+    Check(!run.outcome.ran && inventory.Untouched(), "stage 1 max-level commander without a sample preserves");
+}
+
 // The planner is the last boundary before mutation; check it without the route in front.
 void TestPlannerDirect()
 {
@@ -718,6 +760,7 @@ int main()
     TestStageTransition();
     TestBagAccounting();
     TestPlannerDirect();
+    TestMaxLevelAverageRule();
     TestConfigTables();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;

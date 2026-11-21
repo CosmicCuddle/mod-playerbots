@@ -12,6 +12,7 @@
 
 #include "AutoGearCappedExecution.h"
 #include "AutoGearCommandRoute.h"
+#include "AutoGearMasterTier.h"
 
 // Turns the facts the world thread read from the bot and the commanding player into one
 // execution plan. Every command form goes through this single function.
@@ -101,9 +102,12 @@ ResolvedCommand ResolveCommand(CommandFacts const& facts, SearchAtLevel const& s
             policy.eraCeilings[era] = Tighter(ApprovedEraCeilings[era], facts.configEraCeilings[era]);
     }
     request.policy = &policy;
-    // The set selector is not fed; the route still resolves the verified stage cap.
-    resolved.decision = ResolveAutoGearRoute(request, [](std::uint32_t, std::int32_t, std::uint32_t) { return 0u; });
-
+    // The set selector is not fed; the route still resolves the verified stage cap. The tiered
+    // wrapper applies the owner's average rules: Vanilla stages 1-7 with a max-level commander use
+    // min(average, stage cap); TBC/Wrath also bound the average by the worn raid tier, which falls
+    // to the era's lowest tier until a verified source list can lift it.
+    resolved.decision =
+        ResolveTieredAutoGearRoute(request, TierFacts{}, [](std::uint32_t, std::int32_t, std::uint32_t) { return 0u; });
     request.policy = nullptr;  // the local policy does not outlive this call
 
     PlanInput input;

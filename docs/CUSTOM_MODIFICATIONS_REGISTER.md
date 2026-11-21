@@ -11,9 +11,10 @@
   - **Alt bots:** never stripped, and reset is refused.
   - **Nothing destroyed:** nothing the bot owned is deleted. Items the command created above the cap are revoked.
   - **Config tables:** the IP cap tables can only lower the approved caps.
+  - **Max-level commanders** go through `ResolveTieredAutoGearRoute`. At Vanilla stages 1-7 the cap is min(equipped average, stage cap). At TBC/Wrath the average is also bounded by the worn raid tier, which is the era floor (T4 125 / T7 213) until verified item sources exist. BiS keeps the stage cap.
 - **Affected files:** `src/Bot/AutoGearCapCommand.h`, `src/Bot/AutoGearCappedExecution.h`, `src/Bot/AutoGearCommandRoute.h`, `src/Ai/Base/Actions/TrainerAction.cpp`, `conf/playerbots.conf.dist` (comments), `tests/pb59_autogear_capped_command.cpp`, this Register.
 - **Dependencies:** Core `TryReadPB59AutoGearProgression` / `CapturePB59Equipment` (Core PR56 `c9dced25`) and the IP provider `c1725f84`.
-- **Tests:** 164 model checks pass on GCC/Clang/ASan. The integrated worldserver compiles and the dry-run gate is clean. No in-game command has been run.
+- **Tests:** 173 model checks pass on GCC/Clang/ASan. The integrated worldserver compiles and the dry-run gate is clean. No in-game command has been run.
 - **Live status:** IP cap and AutoGear OFF; not merged or deployed.
 - **Rollback:** keep `Playerbots.AutoGearIPCap.Enable = 0` or revert the branch; no persistent data is changed.
 
