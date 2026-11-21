@@ -1,5 +1,22 @@
 # Custom Modifications Register
 
+## PB59-AUTOGEAR-CAPPED-EXECUTOR-20261121 — IP-capped command → equipment
+
+- **Owner/component:** CosmicCuddle / `mod-playerbots`.
+- **Parent/source reference:** CS01 DRAFT PR43 `e055efc8` on Grok PR37 `cefa1d9d` (both unchanged). Coordination [#59 C1](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/59#issuecomment-7061116709); DRAFT PR #44.
+- **Intended behavior:**
+  - **Gearing:** with `Playerbots.AutoGearIPCap.Enable`, the queued world-thread autogear/bis command now gears the bot under the commanding human's IP stage cap and the stricter score limit.
+  - **One boundary:** every command form resolves through a single `ResolveCommand` path.
+  - **Random bots:** gear above the cap moves to empty bag slots first.
+  - **Alt bots:** never stripped, and reset is refused.
+  - **Nothing destroyed:** nothing the bot owned is deleted. Items the command created above the cap are revoked.
+  - **Config tables:** the IP cap tables can only lower the approved caps.
+- **Affected files:** `src/Bot/AutoGearCapCommand.h`, `src/Bot/AutoGearCappedExecution.h`, `src/Bot/AutoGearCommandRoute.h`, `src/Ai/Base/Actions/TrainerAction.cpp`, `conf/playerbots.conf.dist` (comments), `tests/pb59_autogear_capped_command.cpp`, this Register.
+- **Dependencies:** Core `TryReadPB59AutoGearProgression` / `CapturePB59Equipment` (Core PR56 `c9dced25`) and the IP provider `c1725f84`.
+- **Tests:** 164 model checks pass on GCC/Clang/ASan. The integrated worldserver compiles and the dry-run gate is clean. No in-game command has been run.
+- **Live status:** IP cap and AutoGear OFF; not merged or deployed.
+- **Rollback:** keep `Playerbots.AutoGearIPCap.Enable = 0` or revert the branch; no persistent data is changed.
+
 ## PB59-AUTOGEAR-IP-CAP-SEAMS-20261114 — command sender and default-off cap candidate
 
 - **Owner/component:** CosmicCuddle / `mod-playerbots`, with optional Individual Progression read-only authority.
