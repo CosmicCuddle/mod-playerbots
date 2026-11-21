@@ -454,6 +454,8 @@ public:
             AltMaintenanceKeyring,
             AltMaintenanceGemsEnchants;
     int32 AutoGearCommand, AutoGearCommandAltBots, AutoGearQualityLimit, AutoGearScoreLimit;
+    bool TaxiWatchdogEnable;
+    uint32 TaxiWatchdogTimeout;
     int32 AutoGearBisCommand;
 
     uint32 UseGroundMountAtMinLevel;

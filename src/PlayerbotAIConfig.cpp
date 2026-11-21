@@ -698,6 +698,8 @@ bool PlayerbotAIConfig::Initialize()
     AutoGearBisCommand = sConfigMgr->GetOption<int32>("Playerbots.AutoGearBisCommand", 0);
     AutoGearQualityLimit = sConfigMgr->GetOption<int32>("Playerbots.AutoGearQualityLimit", 3);
     AutoGearScoreLimit = sConfigMgr->GetOption<int32>("Playerbots.AutoGearScoreLimit", 0);
+    TaxiWatchdogEnable = sConfigMgr->GetOption<bool>("Playerbots.TaxiWatchdog.Enable", false);
+    TaxiWatchdogTimeout = std::max<uint32>(60, sConfigMgr->GetOption<uint32>("Playerbots.TaxiWatchdog.Timeout", 900));
 
     RandomBotXPRate = sConfigMgr->GetOption<float>("Playerbots.RandomBotXPRate", 1.0);
     RandomBotAllianceRatio = sConfigMgr->GetOption<int32>("Playerbots.RandomBotAllianceRatio", 50);
