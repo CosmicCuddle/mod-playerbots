@@ -7,6 +7,7 @@
 #include "AutoGearSourceIndexStore.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <memory>
 #include <vector>
 
@@ -31,7 +32,9 @@ void LoadLoot(char const* sql, std::vector<LootRow>& rows)
     do
     {
         Field* fields = result->Fetch();
-        rows.push_back({fields[0].Get<uint32>(), fields[1].Get<uint32>(), fields[2].Get<uint32>()});
+        // Reference is a signed column; Core's LootMgr reads it as int32 and follows std::abs(reference).
+        rows.push_back(
+            {fields[0].Get<uint32>(), fields[1].Get<uint32>(), static_cast<uint32>(std::abs(fields[2].Get<int32>()))});
     } while (result->NextRow());
 }
 
@@ -75,12 +78,17 @@ void SourceIndexStore::LoadFromWorldDatabase()
         do
         {
             Field* fields = result->Fetch();
-            chests.push_back({fields[0].Get<uint32>(), fields[1].Get<uint32>()});
+            if (int32 const lootId = fields[1].Get<int32>(); lootId > 0)  // Data1 is a signed column
+                chests.push_back({fields[0].Get<uint32>(), static_cast<uint32>(lootId)});
         } while (result->NextRow());
     if (QueryResult result = WorldDatabase.Query(SourceQueries::VendorItems))
         do
-            vendorItems.push_back(result->Fetch()[0].Get<uint32>());
-        while (result->NextRow());
+        {
+            // A negative item names another vendor list (Core's LoadReferenceVendor); that list's own
+            // rows are already in this result.
+            if (int32 const item = result->Fetch()[0].Get<int32>(); item > 0)
+                vendorItems.push_back(static_cast<uint32>(item));
+        } while (result->NextRow());
     if (QueryResult result = WorldDatabase.Query(SourceQueries::QuestRewards))
         do
         {
