@@ -1,0 +1,663 @@
+// Runtime AutoGear under the commanding player's Individual Progression cap.
+// Drives the same ResolveCommand -> ResolveAutoGearRoute -> PlanExecution -> Execute path the
+// world-thread command uses, against a fake inventory with failure injection.
+// This is a model of the live adapter: it does not prove Worldserver or client gameplay.
+#include "AutoGearCapCommand.h"
+#include "AutoGearSlotPolicy.h"
+#include <cstdlib>
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace
+{
+    using namespace PlayerbotsAutoGearExec;
+    using PlayerbotsAutoGearSelection::CommandForm;
+
+    int g_checks = 0;
+    int g_failures = 0;
+
+    void Check(bool ok, std::string const& what)
+    {
+        ++g_checks;
+        if (!ok)
+        {
+            ++g_failures;
+            std::cerr << "FAIL: " << what << "\n";
+        }
+    }
+
+    constexpr PlayerbotsAutoGearSlots::Layout Layout = {0, 1, 3, 4, 6, 7, 10, 11, 12, 13, 15, 16, 17, 18};
+    auto const Searched = [](std::uint32_t level, std::uint8_t slot)
+    { return PlayerbotsAutoGearSlots::SearchAtLevel(level, slot, Layout); };
+
+    // Candidate the fake factory can create for every combat slot.
+    struct Candidate
+    {
+        std::uint32_t entry;
+        std::uint32_t itemLevel;
+    };
+
+    class FakeInventory
+    {
+    public:
+        std::array<ItemFact, EquipmentSlots> equipped{};
+        std::vector<ItemFact> bags;
+        std::uint32_t bagCapacity = 16;
+        std::vector<Candidate> catalog;            // factory candidates, any slot
+        std::map<std::uint8_t, Candidate> bisTable;  // BiS rows
+        std::uint64_t nextGuid = 1000;
+
+        // Failure injection.
+        int failMoveAfter = -1;      // the Nth MoveEquippedToBags fails (0-based)
+        bool factoryIgnoresCap = false;
+        bool failDestroy = false;
+        bool failBisEquip = false;
+
+        // Observations.
+        int moves = 0;
+        int factoryRuns = 0;
+        bool lastIncremental = true;
+        std::uint32_t lastFactoryCap = 0;
+        int bisRuns = 0;
+        int finisherRuns = 0;
+        int destroyed = 0;
+        int originalsDestroyed = 0;
+        std::vector<std::uint64_t> originals;
+
+        void Equip(std::uint8_t slot, std::uint32_t entry, std::uint32_t itemLevel)
+        {
+            equipped[slot] = {nextGuid++, entry, itemLevel};
+            originals.push_back(equipped[slot].guid);
+        }
+
+        Snapshot Capture() const
+        {
+            Snapshot snapshot;
+            snapshot.equipped = equipped;
+            for (ItemFact const& item : equipped)
+                if (item.guid)
+                    snapshot.carried.push_back(item.guid);
+            for (ItemFact const& item : bags)
+                snapshot.carried.push_back(item.guid);
+            snapshot.freeBagSlots = bagCapacity - static_cast<std::uint32_t>(bags.size());
+            return snapshot;
+        }
+
+        bool MoveEquippedToBags(std::uint8_t slot)
+        {
+            int const index = moves++;
+            if (!equipped[slot].guid)
+                return true;
+            if (index == failMoveAfter || bags.size() >= bagCapacity)
+                return false;
+            bags.push_back(equipped[slot]);
+            equipped[slot] = {};
+            return true;
+        }
+
+        void RunFactory(std::uint32_t /*quality*/, std::uint32_t cap, bool incremental)
+        {
+            ++factoryRuns;
+            lastIncremental = incremental;
+            lastFactoryCap = cap;
+            for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+            {
+                if (!IsCombatSlot(slot))
+                    continue;
+                Candidate const* best = nullptr;
+                for (Candidate const& candidate : catalog)
+                    if ((factoryIgnoresCap || candidate.itemLevel <= cap) &&
+                        (!best || candidate.itemLevel > best->itemLevel))
+                        best = &candidate;
+                if (!best)
+                    continue;
+                if (equipped[slot].guid)
+                {
+                    if (!incremental || best->itemLevel <= equipped[slot].itemLevel)
+                        continue;
+                    if (!MoveEquippedToBags(slot))
+                        continue;
+                }
+                equipped[slot] = {nextGuid++, best->entry, best->itemLevel};
+            }
+        }
+
+        void ApplyBisOverlay(std::uint32_t cap)
+        {
+            ++bisRuns;
+            for (auto const& [slot, candidate] : bisTable)
+            {
+                if (candidate.itemLevel > cap || equipped[slot].entry == candidate.entry)
+                    continue;
+                ItemFact const previous = equipped[slot];
+                if (previous.guid && !MoveEquippedToBags(slot))
+                    continue;
+                if (failBisEquip)
+                {
+                    // Restore the previous item from the bags.
+                    for (auto it = bags.begin(); it != bags.end(); ++it)
+                        if (it->guid == previous.guid)
+                        {
+                            equipped[slot] = *it;
+                            bags.erase(it);
+                            break;
+                        }
+                    continue;
+                }
+                equipped[slot] = {nextGuid++, candidate.entry, candidate.itemLevel};
+            }
+        }
+
+        void ApplyFinishers(std::uint32_t /*cap*/) { ++finisherRuns; }
+
+        bool DestroyCreatedEquipped(std::uint8_t slot, std::uint64_t guid)
+        {
+            if (failDestroy || equipped[slot].guid != guid)
+                return false;
+            for (std::uint64_t original : originals)
+                if (original == guid)
+                    ++originalsDestroyed;
+            equipped[slot] = {};
+            ++destroyed;
+            return true;
+        }
+
+        std::uint32_t MaxEquippedNewItemLevel() const
+        {
+            std::uint32_t maximum = 0;
+            for (ItemFact const& item : equipped)
+            {
+                bool original = false;
+                for (std::uint64_t guid : originals)
+                    original = original || guid == item.guid;
+                if (item.guid && !original)
+                    maximum = std::max(maximum, item.itemLevel);
+            }
+            return maximum;
+        }
+
+        std::size_t OwnedOriginalsStillCarried() const
+        {
+            std::size_t count = 0;
+            for (std::uint64_t guid : originals)
+            {
+                bool found = false;
+                for (ItemFact const& item : equipped)
+                    found = found || item.guid == guid;
+                for (ItemFact const& item : bags)
+                    found = found || item.guid == guid;
+                count += found ? 1 : 0;
+            }
+            return count;
+        }
+
+        bool Untouched() const { return moves == 0 && factoryRuns == 0 && bisRuns == 0 && finisherRuns == 0; }
+    };
+
+    FakeInventory StandardInventory()
+    {
+        FakeInventory inventory;
+        inventory.catalog = {{100, 50}, {101, 66}, {102, 67}, {103, 78}, {104, 79}, {105, 92}, {106, 200}};
+        return inventory;
+    }
+
+    CommandFacts MaxLevelSender(std::uint8_t stage, std::uint32_t slotLevel = 90)
+    {
+        CommandFacts facts;
+        facts.commandEnabled = true;
+        facts.altCommandAllowed = true;
+        facts.qualityLimit = 4;
+        facts.randomBot = true;
+        facts.randomAccount = true;
+        facts.progressionKnown = true;
+        facts.rawStage = stage;
+        facts.effectiveStage = stage;
+        facts.senderLevel = 60;
+        facts.senderSlotsComplete = true;
+        facts.senderIsMaster = true;
+        for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+            if (IsCombatSlot(slot))
+                facts.senderSlots[slot] = slotLevel;
+        return facts;
+    }
+
+    struct Run
+    {
+        ResolvedCommand resolved;
+        Outcome outcome;
+    };
+
+    Run Execute(CommandFacts const& facts, FakeInventory& inventory)
+    {
+        Run run;
+        run.resolved = ResolveCommand(facts, Searched);
+        run.outcome = PlayerbotsAutoGearExec::Execute(inventory, run.resolved.plan);
+        return run;
+    }
+
+    void TestStageCaps()
+    {
+        // Stage 0 sender at level 60 uses the first-stage-after-leveling average; a high sample keeps 66.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(0);
+            Run const run = Execute(facts, inventory);
+            Check(run.outcome.ran && run.resolved.plan.cap == 66, "stage 0 plain autogear runs at cap 66");
+            Check(inventory.MaxEquippedNewItemLevel() == 66, "stage 0 equips 66, never 67");
+            Check(run.outcome.capHeld && run.outcome.revoked == 0, "stage 0 cap held without revocation");
+        }
+        // Stage 1 after Ragnaros: 78, never 79.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(1);
+            Run const run = Execute(facts, inventory);
+            Check(run.outcome.ran && run.resolved.plan.cap == 78, "stage 1 autogear runs at cap 78");
+            Check(inventory.MaxEquippedNewItemLevel() == 78, "stage 1 equips 78, never 79");
+        }
+    }
+
+    void TestCommandForms()
+    {
+        struct FormCase
+        {
+            bool bis;
+            char const* argument;
+            CommandForm form;
+            bool runs;
+            std::uint32_t cap;
+            char const* name;
+        };
+        // Stage 1 (cap 78), sender average 90, random bot.
+        FormCase const cases[] = {
+            {false, "", CommandForm::Plain, true, 78, "autogear"},
+            {false, "reset", CommandForm::Reset, true, 78, "autogear reset"},
+            {false, "match", CommandForm::Match, true, 78, "autogear match (master avg 90 > cap)"},
+            {false, "blue", CommandForm::Quality, true, 78, "autogear blue"},
+            {false, "70", CommandForm::Numeric, true, 70, "autogear 70 (below cap)"},
+            {false, "200", CommandForm::Numeric, true, 78, "autogear 200 clamps to cap"},
+            {false, "reset 200", CommandForm::Reset, true, 78, "autogear reset 200 clamps to cap"},
+            {true, "", CommandForm::Bis, true, 78, "autogear bis"},
+            {true, "70", CommandForm::BisNumeric, true, 70, "autogear bis 70"},
+            {true, "300", CommandForm::BisNumeric, true, 78, "autogear bis 300 clamps to cap"},
+            {false, "3", CommandForm::Plain, false, 0, "autogear 3 is quality-like and rejected"},
+            {false, "nonsense", CommandForm::Plain, false, 0, "garbage argument rejected"},
+            {false, "-5", CommandForm::Plain, false, 0, "negative argument rejected"},
+            {false, "0", CommandForm::Plain, false, 0, "typed zero rejected"},
+        };
+        for (FormCase const& c : cases)
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(1);
+            facts.bis = c.bis;
+            facts.argument = c.argument;
+            Run const run = Execute(facts, inventory);
+            Check(run.outcome.ran == c.runs, std::string(c.name) + ": runs as expected");
+            if (!c.runs)
+            {
+                Check(inventory.Untouched(), std::string(c.name) + ": inventory untouched");
+                continue;
+            }
+            Check(run.resolved.decision.form == c.form, std::string(c.name) + ": form");
+            Check(run.resolved.plan.cap == c.cap, std::string(c.name) + ": cap");
+            Check(inventory.lastFactoryCap == c.cap, std::string(c.name) + ": factory search bounded by cap");
+            Check(inventory.MaxEquippedNewItemLevel() <= c.cap, std::string(c.name) + ": no new item above cap");
+            Check(run.resolved.plan.bisOverlay == c.bis, std::string(c.name) + ": BiS overlay only for BiS");
+            Check(inventory.originalsDestroyed == 0, std::string(c.name) + ": no original destroyed");
+        }
+    }
+
+    void TestConfigCapInteraction()
+    {
+        struct ScoreCase
+        {
+            std::uint8_t stage;
+            std::uint32_t scoreLimit;
+            std::uint32_t expected;
+        };
+        ScoreCase const cases[] = {{0, 0, 66}, {0, 60, 60}, {0, 66, 66}, {0, 200, 66}, {1, 70, 70}, {1, 78, 78}, {1, 79, 78}};
+        for (ScoreCase const& c : cases)
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(c.stage);
+            facts.scoreLimit = c.scoreLimit;
+            Run const run = Execute(facts, inventory);
+            Check(run.outcome.ran && run.resolved.plan.cap == c.expected,
+                "stage " + std::to_string(c.stage) + " score limit " + std::to_string(c.scoreLimit) +
+                    " gives the stricter cap " + std::to_string(c.expected));
+        }
+    }
+
+    void TestFailClosed()
+    {
+        // Unknown IP context (no provider, two providers, no IP module) never means unlimited.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(1);
+            facts.progressionKnown = false;
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && run.outcome.refusal == Refusal::NotVerified && inventory.Untouched(),
+                "missing IP progression preserves gear");
+        }
+        // Stage 11 is disabled in IP and has no cap.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(11);
+            facts.senderLevel = 70;
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && inventory.Untouched(), "disabled stage 11 preserves gear");
+        }
+        // Stage above the supported table.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(19);
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && inventory.Untouched(), "unsupported stage 19 preserves gear");
+        }
+        // Effective stage above raw stage is inconsistent.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(1);
+            facts.effectiveStage = 2;
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && inventory.Untouched(), "effective stage above raw preserves gear");
+        }
+        // Sender equipment sample incomplete: leveling needs it, so preserve.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(0);
+            facts.senderLevel = 40;
+            facts.senderSlotsComplete = false;
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && inventory.Untouched(), "leveling sender without a sample preserves gear");
+        }
+        // Command disabled in config.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(1);
+            facts.commandEnabled = false;
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && run.outcome.refusal == Refusal::Rejected && inventory.Untouched(),
+                "disabled command rejected");
+        }
+        // BiS needs epic quality limit and a PvE spec.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(1);
+            facts.bis = true;
+            facts.qualityLimit = 3;
+            Check(!Execute(facts, inventory).outcome.ran && inventory.Untouched(), "BiS below epic quality rejected");
+            facts.qualityLimit = 4;
+            facts.bisPvpSpec = true;
+            Check(!Execute(facts, inventory).outcome.ran && inventory.Untouched(), "BiS for a PvP spec rejected");
+        }
+    }
+
+    void TestLevelingSender()
+    {
+        // Level 40 commander at stage 0: cap is the fixed-denominator average of counted slots.
+        FakeInventory inventory = StandardInventory();
+        CommandFacts facts = MaxLevelSender(0, 0);
+        facts.senderLevel = 40;
+        std::uint32_t counted = 0;
+        for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+            if (IsCombatSlot(slot) && Searched(40, slot))
+                ++counted;
+        // Fill only half of the counted slots at 60: empty slots count as zero.
+        std::uint32_t filled = 0;
+        for (std::uint8_t slot = 0; slot < EquipmentSlots && filled < counted / 2; ++slot)
+            if (IsCombatSlot(slot) && Searched(40, slot))
+            {
+                facts.senderSlots[slot] = 60;
+                ++filled;
+            }
+        std::uint32_t const expected = 60 * filled / counted;
+        Run const run = Execute(facts, inventory);
+        Check(run.outcome.ran && run.resolved.plan.cap == expected,
+            "leveling cap is the fixed average " + std::to_string(expected) + ", empty slots lower it");
+        Check(inventory.MaxEquippedNewItemLevel() <= expected, "leveling bot gets nothing above the fixed average");
+    }
+
+    void TestPopulation()
+    {
+        // Alt bot: allowed when configured, but never stripped and reset is refused.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.Equip(0, 900, 92);  // alt's own over-cap helm
+            CommandFacts facts = MaxLevelSender(1);
+            facts.randomBot = false;
+            facts.randomAccount = false;
+            Run const run = Execute(facts, inventory);
+            Check(run.outcome.ran && run.outcome.stripped == 0 && run.outcome.retainedOverCap == 1,
+                "alt bot keeps its own over-cap item");
+            Check(inventory.equipped[0].entry == 900, "alt bot helm untouched");
+        }
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.Equip(0, 900, 60);
+            CommandFacts facts = MaxLevelSender(1);
+            facts.randomBot = false;
+            facts.randomAccount = false;
+            facts.argument = "reset";
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && run.outcome.refusal == Refusal::ResetNotAllowed && inventory.Untouched(),
+                "alt bot reset refused without touching gear");
+        }
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(1);
+            facts.randomBot = false;
+            facts.randomAccount = false;
+            facts.altCommandAllowed = false;
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && run.outcome.refusal == Refusal::Rejected && inventory.Untouched(),
+                "alt bot refused when AutoGearCommandAltBots is off");
+        }
+        // Random bot on a non-random account (or the reverse) is unknown.
+        {
+            FakeInventory inventory = StandardInventory();
+            CommandFacts facts = MaxLevelSender(1);
+            facts.randomAccount = false;
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && inventory.Untouched(), "mismatched random bot/account preserves gear");
+        }
+    }
+
+    void TestRandomBotStrip()
+    {
+        // Over-cap original goes to bags; factory fills the slot within the cap; nothing destroyed.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.Equip(0, 900, 92);
+            inventory.Equip(4, 901, 60);
+            Run const run = Execute(MaxLevelSender(0), inventory);
+            Check(run.outcome.ran && run.outcome.stripped == 1, "random bot over-cap helm stripped");
+            Check(inventory.equipped[0].itemLevel == 66, "helm slot refilled at cap 66");
+            Check(inventory.OwnedOriginalsStillCarried() == 2 && inventory.originalsDestroyed == 0,
+                "every original still owned");
+        }
+        // No legal candidate: the over-cap slot stays visibly empty.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.catalog = {{105, 92}};
+            inventory.Equip(0, 900, 92);
+            Run const run = Execute(MaxLevelSender(0), inventory);
+            Check(run.outcome.ran && !inventory.equipped[0].guid, "no legal item leaves the random bot unequipped");
+            Check(inventory.OwnedOriginalsStillCarried() == 1, "stripped helm is in the bags");
+        }
+        // Reset strips every combat item first, then gears non-incrementally.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.Equip(0, 900, 60);
+            inventory.Equip(4, 901, 60);
+            inventory.Equip(SlotBody, 902, 1);
+            CommandFacts facts = MaxLevelSender(1);
+            facts.argument = "reset";
+            Run const run = Execute(facts, inventory);
+            Check(run.outcome.ran && run.outcome.stripped == 2 && !inventory.lastIncremental,
+                "reset strips combat slots and gears from scratch");
+            Check(inventory.equipped[SlotBody].entry == 902, "shirt is never stripped");
+            Check(inventory.OwnedOriginalsStillCarried() == 3, "reset destroys nothing");
+        }
+    }
+
+    void TestFailureInjection()
+    {
+        // Bags too full for the planned strip: nothing changes.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.Equip(0, 900, 60);
+            inventory.Equip(4, 901, 60);
+            inventory.bagCapacity = 1;
+            CommandFacts facts = MaxLevelSender(1);
+            facts.argument = "reset";
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && run.outcome.refusal == Refusal::BagsFull, "full bags refuse reset");
+            Check(inventory.Untouched() && inventory.equipped[0].entry == 900, "full bags leave gear equipped");
+        }
+        // A move fails part way: moved items stay in bags, the factory never runs.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.Equip(0, 900, 60);
+            inventory.Equip(4, 901, 60);
+            inventory.Equip(6, 903, 60);
+            inventory.failMoveAfter = 1;
+            CommandFacts facts = MaxLevelSender(1);
+            facts.argument = "reset";
+            Run const run = Execute(facts, inventory);
+            Check(!run.outcome.ran && run.outcome.refusal == Refusal::StripFailed && run.outcome.stripped == 1,
+                "mid-strip failure is classified, not reported as rollback");
+            Check(inventory.factoryRuns == 0, "no gearing after a failed strip");
+            Check(inventory.OwnedOriginalsStillCarried() == 3, "mid-strip failure loses nothing");
+        }
+        // Factory creates an over-cap item: it is revoked, originals untouched.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.factoryIgnoresCap = true;
+            inventory.Equip(4, 901, 60);
+            Run const run = Execute(MaxLevelSender(0), inventory);
+            Check(run.outcome.ran && run.outcome.revoked > 0 && run.outcome.capHeld,
+                "over-cap item created by the command is revoked");
+            Check(inventory.MaxEquippedNewItemLevel() <= 66 && inventory.originalsDestroyed == 0,
+                "revocation only touches created items");
+        }
+        // Revocation itself fails: reported as a broken cap, never as success.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.factoryIgnoresCap = true;
+            inventory.failDestroy = true;
+            Run const run = Execute(MaxLevelSender(0), inventory);
+            Check(run.outcome.ran && !run.outcome.capHeld, "failed revocation reports the cap as broken");
+        }
+        // BiS equip fails: the previous item goes back on.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.catalog = {{101, 50}};
+            inventory.bisTable[0] = {777, 70};
+            inventory.failBisEquip = true;
+            CommandFacts facts = MaxLevelSender(1);
+            facts.bis = true;
+            Run const run = Execute(facts, inventory);
+            Check(run.outcome.ran && inventory.equipped[0].entry == 101, "failed BiS equip restores the factory pick");
+        }
+        // BiS row above the cap is skipped.
+        {
+            FakeInventory inventory = StandardInventory();
+            inventory.catalog = {{101, 50}};
+            inventory.bisTable[0] = {777, 79};
+            inventory.bisTable[4] = {778, 78};
+            CommandFacts facts = MaxLevelSender(1);
+            facts.bis = true;
+            Run const run = Execute(facts, inventory);
+            Check(run.outcome.ran && inventory.equipped[0].entry == 101 && inventory.equipped[4].entry == 778,
+                "BiS rows above the cap never equip");
+        }
+    }
+
+    void TestStageTransition()
+    {
+        // Same random bot: stage 0 gear, then the commander kills Ragnaros.
+        FakeInventory inventory = StandardInventory();
+        inventory.bagCapacity = 64;
+        Run const first = Execute(MaxLevelSender(0), inventory);
+        Check(first.outcome.ran && inventory.MaxEquippedNewItemLevel() == 66, "stage 0 gearing");
+        Run const second = Execute(MaxLevelSender(1), inventory);
+        Check(second.outcome.ran && inventory.MaxEquippedNewItemLevel() == 78, "stage 1 upgrades to 78");
+        // A lower commander stage strips the over-cap items from this random bot into its bags.
+        Run const third = Execute(MaxLevelSender(0), inventory);
+        Check(third.outcome.ran && third.outcome.stripped > 0, "lower commander stage strips over-cap random bot gear");
+        for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+            Check(!IsCombatSlot(slot) || inventory.equipped[slot].itemLevel <= 66,
+                "slot " + std::to_string(slot) + " is within the stage 0 cap");
+
+        // The same downgrade with bags already full of the replaced gear preserves instead.
+        FakeInventory full = StandardInventory();
+        Execute(MaxLevelSender(0), full);
+        Execute(MaxLevelSender(1), full);
+        Run const blocked = Execute(MaxLevelSender(0), full);
+        Check(!blocked.outcome.ran && blocked.outcome.refusal == Refusal::BagsFull,
+            "downgrade strip with full bags is refused, gear stays");
+    }
+
+    // The planner is the last boundary before mutation; check it without the route in front.
+    void TestPlannerDirect()
+    {
+        PlanInput input;
+        input.capVerified = true;
+        input.cap = 78;
+        input.populationKnown = true;
+        input.population = Population::RandomBot;
+        Check(PlanExecution(input).Runs(), "verified cap and random bot runs");
+        input.cap = 0;
+        Check(!PlanExecution(input).Runs(), "a verified zero cap is never unlimited");
+        input.cap = 78;
+        input.capVerified = false;
+        Check(!PlanExecution(input).Runs(), "unverified cap preserves");
+        input.capVerified = true;
+        for (Population population : {Population::Unknown, Population::AddClass})
+        {
+            input.population = population;
+            Check(PlanExecution(input).refusal == Refusal::UnknownPopulation, "unknown/AddClass population preserves");
+        }
+        input.population = Population::RandomBot;
+        input.populationKnown = false;
+        Check(PlanExecution(input).refusal == Refusal::UnknownPopulation, "unproven population preserves");
+        input.populationKnown = true;
+        input.routeRejected = true;
+        Check(PlanExecution(input).refusal == Refusal::Rejected, "route rejection wins");
+        FakeInventory inventory = StandardInventory();
+        Check(!PlayerbotsAutoGearExec::Execute(inventory, PlanExecution(input)).ran && inventory.Untouched(),
+            "a refused plan never touches the inventory");
+    }
+
+    void TestBagAccounting()
+    {
+        // Strip followed by incremental replacement never needs more bag slots than were checked.
+        FakeInventory inventory = StandardInventory();
+        for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+            if (IsCombatSlot(slot))
+                inventory.Equip(slot, 800 + slot, 92);
+        inventory.bagCapacity = 17;
+        Run const run = Execute(MaxLevelSender(1), inventory);
+        Check(run.outcome.ran && run.outcome.stripped == 17, "all 17 over-cap combat items stripped");
+        Check(inventory.OwnedOriginalsStillCarried() == 17, "all 17 originals are in the bags");
+    }
+}
+
+int main()
+{
+    TestStageCaps();
+    TestCommandForms();
+    TestConfigCapInteraction();
+    TestFailClosed();
+    TestLevelingSender();
+    TestPopulation();
+    TestRandomBotStrip();
+    TestFailureInjection();
+    TestStageTransition();
+    TestBagAccounting();
+    TestPlannerDirect();
+    std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
+    return g_failures == 0 ? 0 : 1;
+}

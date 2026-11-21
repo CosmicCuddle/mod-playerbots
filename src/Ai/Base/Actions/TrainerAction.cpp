@@ -6,8 +6,10 @@
 
 #include "TrainerAction.h"
 #include "AiFactory.h"
+#include "AutoGearCapCommand.h"
 #include "AutoGearCommandRoute.h"
 #include "AutoGearProgressionCap.h"
+#include "AutoGearSlotPolicy.h"
 #include "BisListMgr.h"
 #include "BudgetValues.h"
 #include "Event.h"
@@ -623,70 +625,265 @@ static bool PreserveAutoGearPlan(Player* /*bot*/, PlayerbotAI* /*botAI*/, Event 
     return false;
 }
 
+namespace
+{
+    constexpr PlayerbotsAutoGearSlots::Layout CommandSlotLayout = {
+        EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_NECK, EQUIPMENT_SLOT_BODY, EQUIPMENT_SLOT_CHEST,
+        EQUIPMENT_SLOT_LEGS, EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_FINGER1, EQUIPMENT_SLOT_FINGER2,
+        EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2, EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND,
+        EQUIPMENT_SLOT_RANGED, EQUIPMENT_SLOT_TABARD};
+    constexpr uint16 BIS_ILVL_FALLBACK_WINDOW = 20;
+    constexpr uint8 BIS_TAB_DRUID_BEAR = 10;
+
+    static_assert(EQUIPMENT_SLOT_END == PlayerbotsAutoGearExec::EquipmentSlots);
+    static_assert(EQUIPMENT_SLOT_BODY == PlayerbotsAutoGearExec::SlotBody);
+    static_assert(EQUIPMENT_SLOT_TABARD == PlayerbotsAutoGearExec::SlotTabard);
+
+    // Live inventory for PlayerbotsAutoGearExec::Execute. Runs on the world thread only, after the
+    // queued command re-resolved both players. Nothing here destroys an item the bot owned before.
+    class PlayerAutoGearInventory
+    {
+    public:
+        PlayerAutoGearInventory(Player* bot, uint32 quality) : _bot(bot), _quality(quality) {}
+
+        PlayerbotsAutoGearExec::Snapshot Capture() const
+        {
+            PlayerbotsAutoGearExec::Snapshot snapshot;
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            {
+                Item* item = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                if (!item)
+                    continue;
+                ItemTemplate const* proto = item->GetTemplate();
+                snapshot.equipped[slot] = {item->GetGUID().GetRawValue(), item->GetEntry(), proto ? proto->ItemLevel : 0};
+                snapshot.carried.push_back(item->GetGUID().GetRawValue());
+            }
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            {
+                if (Item* item = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    snapshot.carried.push_back(item->GetGUID().GetRawValue());
+                else
+                    ++snapshot.freeBagSlots;
+            }
+            for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+            {
+                Bag* bag = _bot->GetBagByPos(bagSlot);
+                if (!bag)
+                    continue;
+                // Equipment only fits general-purpose containers.
+                bool const general = bag->GetTemplate() && bag->GetTemplate()->BagFamily == 0;
+                for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                {
+                    if (Item* item = bag->GetItemByPos(slot))
+                        snapshot.carried.push_back(item->GetGUID().GetRawValue());
+                    else if (general)
+                        ++snapshot.freeBagSlots;
+                }
+            }
+            return snapshot;
+        }
+
+        bool MoveEquippedToBags(uint8 slot)
+        {
+            Item* item = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!item)
+                return true;
+            ItemPosCountVec dest;
+            if (_bot->CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) != EQUIP_ERR_OK ||
+                _bot->CanUnequipItem((INVENTORY_SLOT_BAG_0 << 8) | slot, false) != EQUIP_ERR_OK)
+                return false;
+            _bot->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
+            _bot->StoreItem(dest, item, true);
+            return !_bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        }
+
+        void RunFactory(uint32 quality, uint32 cap, bool incremental)
+        {
+            // No second chance: that pass destroys the equipped item before searching.
+            PlayerbotFactory::AutoGear(_bot, quality, cap, incremental, /*secondChance*/ false,
+                                       /*applyFinishers*/ false, cap);
+        }
+
+        void ApplyBisOverlay(uint32 cap)
+        {
+            uint8 const cls = _bot->getClass();
+            uint8 const tab = AiFactory::GetPlayerSpecTab(_bot);
+            uint8 const faction = _bot->GetTeamId() == TEAM_ALLIANCE ? 1 : 2;
+            uint16 const target = static_cast<uint16>(std::min<uint32>(cap, std::numeric_limits<uint16>::max()));
+            std::map<uint8, uint32> bisMap;
+            if (cls == CLASS_DRUID && tab == DRUID_TAB_FERAL && PlayerbotAI::IsTank(_bot))
+                bisMap = sBisListMgr->GetBisForNearest(target, BIS_ILVL_FALLBACK_WINDOW, cls, BIS_TAB_DRUID_BEAR,
+                                                       faction);
+            if (bisMap.empty())
+                bisMap = sBisListMgr->GetBisForNearest(target, BIS_ILVL_FALLBACK_WINDOW, cls, tab, faction);
+
+            for (auto const& [slot, entry] : bisMap)
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+                // Reputation is never granted here; an item the bot cannot use keeps the factory pick.
+                if (slot >= EQUIPMENT_SLOT_END || !proto ||
+                    !PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, cap) ||
+                    _bot->CanUseItem(proto) != EQUIP_ERR_OK)
+                    continue;
+                Item* current = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                if (current && current->GetEntry() == entry)
+                    continue;
+                uint16 dest = 0;
+                if (_bot->CanEquipNewItem(slot, dest, entry, true) != EQUIP_ERR_OK)
+                    continue;
+                ObjectGuid const previous = current ? current->GetGUID() : ObjectGuid::Empty;
+                if (current && !MoveEquippedToBags(slot))
+                    continue;
+                if (_bot->CanEquipNewItem(slot, dest, entry, false) != EQUIP_ERR_OK ||
+                    !_bot->EquipNewItem(dest, entry, true))
+                {
+                    if (!previous.IsEmpty())
+                        RestoreToSlot(previous, slot);
+                    continue;
+                }
+                _bot->AutoUnequipOffhandIfNeed();
+            }
+        }
+
+        void ApplyFinishers(uint32 cap)
+        {
+            PlayerbotFactory factory(_bot, _bot->GetLevel(), _quality, 0, cap);
+            factory.InitAmmo();
+            if (_bot->GetLevel() >= sPlayerbotAIConfig.MinEnchantingBotLevel)
+                factory.ApplyEnchantAndGemsNew();
+            _bot->DurabilityRepairAll(false, 1.0f, false);
+        }
+
+        bool DestroyCreatedEquipped(uint8 slot, uint64 guid)
+        {
+            Item* item = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!item || item->GetGUID().GetRawValue() != guid)
+                return false;
+            _bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+            return !_bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        }
+
+    private:
+        void RestoreToSlot(ObjectGuid guid, uint8 slot)
+        {
+            Item* item = _bot->GetItemByGuid(guid);
+            uint16 dest = 0;
+            if (!item || _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) ||
+                _bot->CanEquipItem(slot, dest, item, false) != EQUIP_ERR_OK)
+                return;
+            _bot->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
+            _bot->EquipItem(dest, item, true);
+        }
+
+        Player* _bot;
+        uint32 _quality;
+    };
+
+    std::string RefusalText(PlayerbotsAutoGearExec::Refusal refusal)
+    {
+        using PlayerbotsAutoGearExec::Refusal;
+        switch (refusal)
+        {
+            case Refusal::Rejected:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_rejected_error", "That autogear command is not allowed for me.", {});
+            case Refusal::UnknownPopulation:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_population_error", "I can't confirm what kind of bot I am, so I won't change gear.",
+                    {});
+            case Refusal::ResetNotAllowed:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_reset_error", "Reset is only for random bots. Use autogear to upgrade instead.", {});
+            case Refusal::BagsFull:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_bags_full_error", "My bags are too full to take off my gear first.", {});
+            case Refusal::StripFailed:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_strip_failed_error",
+                    "I couldn't take off all my gear, so I stopped. Nothing was destroyed.", {});
+            case Refusal::NotVerified:
+            case Refusal::None:
+                break;
+        }
+        return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "autogear_ip_unverified_error",
+            "I can't confirm your progression right now, so I'm keeping my current gear.", {});
+    }
+}
+
 bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std::string_view argument, bool bis)
 {
-    using namespace PlayerbotsAutoGearSelection;
     if (!sPlayerbotAIConfig.AutoGearIPCapEnable || !bot || !ai || !sender ||
         !bot->IsInWorld() || !sender->IsInWorld() || !bot->GetSession() || !sender->GetSession())
         return false;
-    RouteRequest request;
-    request.ipCapEnabled = true;
-    request.bis = bis;
-    request.text = argument;
-    request.altCommandAllowed = sPlayerbotAIConfig.AutoGearCommandAltBots != 0;
-    request.qualityLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
-    request.scoreLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);
-    request.commandEnabled = bis ? sPlayerbotAIConfig.AutoGearBisCommand : sPlayerbotAIConfig.AutoGearCommand;
-    if (!request.commandEnabled || (bis && (request.qualityLimit < 4 ||
-        sRandomPlayerbotMgr.IsSpecPvp(bot->GetGUID().GetCounter(), bot->getClass()))))
-        return false;
-    bool const randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
-    bool const randomAccount = sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId());
-    request.populationKnown = randomBot == randomAccount;
-    request.population = randomBot ? Population::RandomBot : Population::AltBot;
-    request.playerContextVerified = true;
+    PlayerbotsAutoGearExec::CommandFacts facts;
+    facts.bis = bis;
+    facts.argument = argument;
+    facts.commandEnabled = bis ? sPlayerbotAIConfig.AutoGearBisCommand : sPlayerbotAIConfig.AutoGearCommand;
+    facts.bisPvpSpec = bis && sRandomPlayerbotMgr.IsSpecPvp(bot->GetGUID().GetCounter(), bot->getClass());
+    facts.altCommandAllowed = sPlayerbotAIConfig.AutoGearCommandAltBots != 0;
+    facts.qualityLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearQualityLimit);
+    facts.scoreLimit = static_cast<uint32>(sPlayerbotAIConfig.AutoGearScoreLimit);
+    facts.randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);
+    facts.randomAccount = sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId());
 #if defined(COSMIC_PB59_AUTOGEAR_PROGRESSION_API)
-    request.progressionContextVerified = sScriptMgr->TryReadPB59AutoGearProgression(sender, request.rawStage, request.effectiveStage);
+    facts.progressionKnown = sScriptMgr->TryReadPB59AutoGearProgression(sender, facts.rawStage, facts.effectiveStage);
 #endif
-    request.senderIsLeveling = sender->GetLevel() < 60;
-    request.firstStageAfterLeveling = sender->GetLevel() == 60 && request.rawStage == 0;
-    std::array<uint32, EQUIPMENT_SLOT_END> senderSlots{};
+    facts.senderLevel = sender->GetLevel();
 #if __has_include("EquipmentCaptureState.h")
-    if (auto facts = sender->CapturePB59Equipment())
+    if (auto equipment = sender->CapturePB59Equipment())
     {
-        bool complete = sender->IsPB59EquipmentCurrent(facts->stamp);
+        bool complete = sender->IsPB59EquipmentCurrent(equipment->stamp);
         for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         {
             if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
                 continue;
-            auto const& item = facts->slots[slot];
+            auto const& item = equipment->slots[slot];
             if (!item.itemGuid)
                 continue;
             if (!item.entry || !item.itemLevel || item.quality == ITEM_QUALITY_HEIRLOOM ||
                 item.scalingDistribution || item.scalingValue)
                 complete = false;
             else
-                senderSlots[slot] = item.itemLevel;
+                facts.senderSlots[slot] = item.itemLevel;
         }
-        request.commandingSenderVerified = complete;
-        request.commandingSenderSlots = senderSlots;
-        // Match is the actual bot master, not an arbitrary authorized sender.
-        // Other-master commands need the separate exact master incarnation.
-        if (ai->GetMaster() == sender && complete)
-        {
-            request.masterSampleVerified = true;
-            request.masterSlots = senderSlots;
-        }
+        facts.senderSlotsComplete = complete;
+        facts.senderIsMaster = ai->GetMaster() == sender;
     }
 #endif
-    // No native complete candidate domain or transaction executor yet. This
-    // real command now resolves a verified cap; selection and mutation remain
-    // unavailable. Never infer a proven empty domain from missing facts.
-    auto const decision = ResolveAutoGearRoute(request, [](uint32, int32, uint32) { return 0u; });
-    LOG_INFO("playerbots", "PB59 AutoGear world plan bot={} sender={} raw={} effective={} authority={} cap={} action={} form={}",
-        bot->GetGUID().GetRawValue(), sender->GetGUID().GetRawValue(), request.rawStage, request.effectiveStage,
-        request.progressionContextVerified, decision.cap, static_cast<uint32>(decision.action), static_cast<uint32>(decision.form));
-    return false;
+    PlayerbotsAutoGearExec::ResolvedCommand const resolved = PlayerbotsAutoGearExec::ResolveCommand(facts,
+        [](uint32 level, uint8 slot) { return PlayerbotsAutoGearSlots::SearchAtLevel(level, slot, CommandSlotLayout); });
+    auto const& request = resolved.request;
+    auto const& decision = resolved.decision;
+    PlayerbotsAutoGearExec::Plan const& plan = resolved.plan;
+
+    PlayerAutoGearInventory inventory(bot, plan.quality);
+    PlayerbotsAutoGearExec::Outcome const outcome = PlayerbotsAutoGearExec::Execute(inventory, plan);
+
+    LOG_INFO("playerbots",
+        "PB59 AutoGear bot={} sender={} raw={} effective={} authority={} cap={} form={} refusal={} ran={} "
+        "stripped={} new={} revoked={} capHeld={}",
+        bot->GetGUID().ToString(), sender->GetGUID().ToString(), request.rawStage, request.effectiveStage,
+        request.progressionContextVerified, decision.cap, static_cast<uint32>(decision.form),
+        static_cast<uint32>(outcome.refusal), outcome.ran, outcome.stripped, outcome.newItems, outcome.revoked,
+        outcome.capHeld);
+    if (outcome.ran && !outcome.capHeld)
+        LOG_ERROR("playerbots", "PB59 AutoGear bot={} kept a new item above cap {}", bot->GetGUID().ToString(),
+            plan.cap);
+
+    if (!outcome.ran)
+    {
+        ai->Whisper(RefusalText(outcome.refusal), sender->GetName());
+        return false;
+    }
+    std::map<std::string, std::string> phs;
+    phs["%ilvl"] = std::to_string(plan.cap);
+    phs["%count"] = std::to_string(outcome.newItems - outcome.revoked);
+    ai->Whisper(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_done_msg", "Geared up to item level %ilvl from your progression (%count new items).",
+                    phs),
+        sender->GetName());
+    return true;
 }
 
 bool AutoGearAction::Execute(Event event)
