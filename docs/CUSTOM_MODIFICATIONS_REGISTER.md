@@ -1,5 +1,20 @@
 # Custom Modifications Register
 
+## PB60-DUNGEON-BRACKET-RUNTIME-20261121 — LFG identity, holiday exception and reviewed overrides
+
+- **Owner/component:** CosmicCuddle / `mod-playerbots`.
+- **Parent/source reference:** `feature/codex-pb60-entry-audit-20261114` @ `e71ec28f` (resolver and fixture unchanged). Coordination [#60](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/60) / [#59 C3](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/59#issuecomment-7061116709).
+- **Intended behavior:**
+  - **LFG identity:** read in `OnPlayerCanEnterMap` only, and only for LFG groups. Core's `PlayerCannotEnter` reads the same group key on the same thread right after this hook.
+  - **Holiday exception:** applies only to the exact selected seasonal row while `LFGMgr::IsSeasonActive`.
+  - **Reviewed overrides:** `Playerbots.DungeonLevelBracket.Overrides` is used only for ambiguous or missing data.
+  - **Denial notice:** sent to the master on the world thread, at most once a minute per bot.
+- **Affected files:** `src/Bot/DungeonLevelBracket.h` (additions only), `src/Script/Playerbots.cpp`, `src/PlayerbotAIConfig.cpp/.h`, `conf/playerbots.conf.dist`, `tests/pb60_dungeon_bracket_runtime.cpp`, this Register.
+- **Data:** the installed LFGDungeons.dbc is stock. 4 Vanilla maps have several wing brackets (SM 189, BRD 230, Maraudon 349, DM 429) and are denied on portal entry unless an owner-reviewed override is set.
+- **Tests:** 35 new checks plus the existing 33 static_asserts pass on GCC/Clang/ASan. It compiles merged with the flight watchdog. Entry gameplay is not tested.
+- **Live status:** `Playerbots.EnforceDungeonLevelBracket` stays default OFF; not merged or deployed.
+- **Rollback:** keep the option off or revert the branch; no persistent data is changed.
+
 ## PB60-DUNGEON-LEVEL-BRACKET-20261114 — bot-only entry policy candidate
 
 - **Owner/component:** CosmicCuddle / `mod-playerbots` with existing Core entry hooks.
