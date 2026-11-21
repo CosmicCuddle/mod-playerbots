@@ -8,6 +8,7 @@
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
 #include "DBCEnums.h"
+#include "DungeonLevelBracket.h"
 #include "SharedDefines.h"
 #include <algorithm>
 #include <map>
@@ -283,6 +284,7 @@ public:
     std::string ReactStrategies, RandomBotReactStrategies;
     bool ApplyInstanceStrategies;
     bool EnforceDungeonLevelBracket;
+    std::vector<PlayerbotsDungeonBracket::OverrideRange> DungeonLevelBracketOverrides;
     uint32 RandomBotMinLevel, RandomBotMaxLevel;
     float RandomChangeMultiplier;
 
