@@ -992,15 +992,18 @@ void PlayerbotAI::UpdateTaxiWatchdog(uint32 elapsed)
         case PlayerbotsTaxiWatchdog::Action::Recover:
         {
             uint32 const destination = bot->m_taxi.GetTaxiDestination();
+            std::deque<uint32> const& path = bot->m_taxi.GetPath();
+            uint32 const finalNode = path.size() >= 2 ? path.back() : 0;
             uint32 const source = bot->m_taxi.GetTaxiSource();
             bool const moved = RecoverStuckTaxi();
             taxiWatchdog.Recovered(taxiWatchdogClockMs);
             LOG_WARN("playerbots",
-                     "Taxi watchdog: bot={} map={} node={} source={} destination={} inFlight={} generator={} "
+                     "Taxi watchdog: bot={} map={} node={} source={} nextHop={} final={} inFlight={} generator={} "
                      "spline={} no progress for {}s, recovery {} ({}/{})",
-                     bot->GetGUID().ToString(), sample.mapId, sample.node, source, destination, bot->IsInFlight(),
-                     sample.flightGenerator, sample.splineMoving, sPlayerbotAIConfig.TaxiWatchdogTimeout,
-                     moved ? "teleported" : "cleared in place", taxiWatchdog.Recoveries(), config.maxRecoveries);
+                     bot->GetGUID().ToString(), sample.mapId, sample.node, source, destination, finalNode,
+                     bot->IsInFlight(), sample.flightGenerator, sample.splineMoving,
+                     sPlayerbotAIConfig.TaxiWatchdogTimeout, moved ? "teleported" : "cleared in place",
+                     taxiWatchdog.Recoveries(), config.maxRecoveries);
             break;
         }
         case PlayerbotsTaxiWatchdog::Action::GiveUp:
@@ -1012,13 +1015,13 @@ void PlayerbotAI::UpdateTaxiWatchdog(uint32 elapsed)
     }
 }
 
-// Clears every piece of taxi state Core would clear on a normal landing, then moves the bot to a
-// flight master it was using, or to its hearthstone location. Never kills the bot.
+// Clears every piece of taxi state Core would clear on a normal landing, then moves the bot to the
+// flight master at the end of its route (falling back to the next hop, the source, then its
+// hearthstone location). Never kills the bot.
 bool PlayerbotAI::RecoverStuckTaxi()
 {
-    uint32 node = bot->m_taxi.GetTaxiDestination();
-    if (!node)
-        node = bot->m_taxi.GetTaxiSource();
+    // Read the route before cleanup clears it.
+    std::array<uint32, 3> const nodes = PlayerbotsTaxiWatchdog::RecoveryNodes(bot->m_taxi.GetPath());
 
     if (MotionMaster* motion = bot->GetMotionMaster())
         motion->MovementExpired();
@@ -1026,10 +1029,11 @@ bool PlayerbotAI::RecoverStuckTaxi()
     bot->CleanupAfterTaxiFlight();
     bot->StopMoving();
 
-    if (TaxiNodesEntry const* entry = node ? sTaxiNodesStore.LookupEntry(node) : nullptr)
-        if (MapMgr::IsValidMapCoord(entry->map_id, entry->x, entry->y, entry->z) &&
-            bot->TeleportTo(entry->map_id, entry->x, entry->y, entry->z, bot->GetOrientation()))
-            return true;
+    for (uint32 const node : nodes)
+        if (TaxiNodesEntry const* entry = node ? sTaxiNodesStore.LookupEntry(node) : nullptr)
+            if (MapMgr::IsValidMapCoord(entry->map_id, entry->x, entry->y, entry->z) &&
+                bot->TeleportTo(entry->map_id, entry->x, entry->y, entry->z, bot->GetOrientation()))
+                return true;
 
     return MapMgr::IsValidMapCoord(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) &&
            bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ,

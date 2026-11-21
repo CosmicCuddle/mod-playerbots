@@ -7,7 +7,9 @@
 #ifndef PLAYERBOTS_TAXI_WATCHDOG_H
 #define PLAYERBOTS_TAXI_WATCHDOG_H
 
+#include <array>
 #include <cstdint>
+#include <deque>
 
 // Detects a bot that is still in taxi state but has made no flight progress for a configured time.
 // Progress means the flight generator is active, its spline is moving, and the route node changed or
@@ -46,6 +48,33 @@ enum class Action : std::uint8_t
     Recover,
     GiveUp  // returned once when the recovery budget is spent; logging only
 };
+
+// Flight-master nodes a recovery tries, best first. The route is Core's taxi path: front() is the node
+// the current leg left from, [1] the next hop, back() the final destination. The owner's rule is to
+// land the bot at the flight master it was heading to, so the final destination comes first; the next
+// hop and the source are fallbacks for a node that cannot be used. Zero entries are unused.
+inline std::array<std::uint32_t, 3> RecoveryNodes(std::deque<std::uint32_t> const& path)
+{
+    std::array<std::uint32_t, 3> nodes{};
+    std::size_t count = 0;
+    auto add = [&](std::uint32_t node)
+    {
+        if (!node)
+            return;
+        for (std::size_t i = 0; i < count; ++i)
+            if (nodes[i] == node)
+                return;
+        nodes[count++] = node;
+    };
+    if (path.size() >= 2)
+    {
+        add(path.back());
+        add(path[1]);
+    }
+    if (!path.empty())
+        add(path.front());
+    return nodes;
+}
 
 class Watchdog
 {

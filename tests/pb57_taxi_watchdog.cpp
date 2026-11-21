@@ -1,5 +1,7 @@
 // Flight-path watchdog policy (coordination #57 / C2). Pure model: steps a clock in the same
 // 5-second samples the PlayerbotAI hook uses. It does not prove Core taxi behaviour in game.
+#include <array>
+#include <deque>
 #include <iostream>
 #include <string>
 
@@ -233,6 +235,39 @@ void TestCooldown()
 }
 }  // namespace
 
+// Owner decision (21 Nov): a recovered bot lands at the flight master it was heading to, i.e. the end
+// of its route, not the next hop. Mirrors the PlayerbotAI loop: the first usable node wins.
+std::uint32_t FirstUsable(std::array<std::uint32_t, 3> const& nodes, std::uint32_t unusable = 0)
+{
+    for (std::uint32_t node : nodes)
+        if (node && node != unusable)
+            return node;
+    return 0;  // homebind
+}
+
+void TestRecoveryNodes()
+{
+    using Nodes = std::array<std::uint32_t, 3>;
+    // Multi-hop Stormwind(2) -> Lakeshire(5) -> Darkshire(12) -> Sentinel Hill(4).
+    std::deque<std::uint32_t> route{2, 5, 12, 4};
+    Check(RecoveryNodes(route) == Nodes{4, 5, 2}, "multi-hop: final, next hop, source");
+    Check(FirstUsable(RecoveryNodes(route)) == 4, "multi-hop lands at the final flight master");
+    Check(FirstUsable(RecoveryNodes(route), 4) == 5, "unusable final falls back to the next hop");
+
+    // Core pops the front as each leg completes; the final destination never changes.
+    route.pop_front();
+    Check(RecoveryNodes(route) == Nodes{4, 12, 5}, "after one leg the final is unchanged");
+    route.pop_front();
+    Check(RecoveryNodes(route) == Nodes{4, 12, 0}, "last leg: final equals next hop, no duplicate");
+
+    Check(RecoveryNodes({7, 9}) == Nodes{9, 7, 0}, "direct flight: destination then source");
+    Check(RecoveryNodes({7}) == Nodes{7, 0, 0}, "source only");
+    Check(RecoveryNodes({}) == Nodes{0, 0, 0}, "no route: homebind");
+    Check(FirstUsable(RecoveryNodes({})) == 0, "no route falls through to homebind");
+    Check(RecoveryNodes({0, 0, 6}) == Nodes{6, 0, 0}, "zero nodes are skipped");
+    Check(RecoveryNodes({3, 8, 3}) == Nodes{3, 8, 0}, "round trip back to the source is still the final");
+}
+
 int main()
 {
     TestLongFlightNeverTriggers();
@@ -244,6 +279,7 @@ int main()
     TestNotEligible();
     TestBoundedRetries();
     TestCooldown();
+    TestRecoveryNodes();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

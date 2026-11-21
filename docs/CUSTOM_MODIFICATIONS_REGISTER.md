@@ -6,7 +6,7 @@
 - **Parent/source reference:** `feature/codex-pb57-spline-attribution-20261114` @ `8ec174c0` (kept unchanged; its diagnostics still name the interrupting action). Coordination [#57](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/57) / [#59 C2](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/59#issuecomment-7061116709).
 - **Intended behavior:** every 5 s a bot in taxi state is checked for flight progress:
   - progress means the flight generator is active, its spline is moving, and the route node changed or the bot moved;
-  - after `Playerbots.TaxiWatchdog.Timeout` seconds (default 900) with no progress, the taxi state is cleared as a normal landing would and the bot is teleported to its next or source flight master, else its hearthstone;
+  - after `Playerbots.TaxiWatchdog.Timeout` seconds (default 900) with no progress, the taxi state is cleared as a normal landing would and the bot is teleported to the flight master at the end of its route (owner decision, 21 Nov), falling back to the next hop, the source, then its hearthstone;
   - at most 3 recoveries per bot per hour, 10 minutes apart, then it logs once and stops;
   - humans and self-bots are never touched, and bots are never killed.
 - **Affected files:** `src/Bot/TaxiWatchdog.h`, `src/Bot/PlayerbotAI.cpp/.h`, `src/PlayerbotAIConfig.cpp/.h`, `conf/playerbots.conf.dist`, `tests/pb57_taxi_watchdog.cpp`, this Register.

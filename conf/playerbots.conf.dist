@@ -641,9 +641,9 @@ Playerbots.AutoGearScoreLimit = 0
 # Recover bots stuck on a flight path. A bot counts as stuck when it still has taxi state but its
 # flight has made no progress (route node or position along an active flight spline) for Timeout
 # seconds. Long flights that keep moving are never touched; humans and self-bots are never touched.
-# Recovery clears the taxi state and teleports the bot to its next or source flight master, or to its
-# hearthstone location. At most 3 recoveries per bot per hour, 10 minutes apart; then it gives up and
-# logs once. Bots are never killed.
+# Recovery clears the taxi state and teleports the bot to the flight master at the end of its route
+# (else the next hop or the source), or to its hearthstone location. At most 3 recoveries per bot per
+# hour, 10 minutes apart; then it gives up and logs once. Bots are never killed.
 # Default: 0 (disabled)
 Playerbots.TaxiWatchdog.Enable = 0
 # Seconds without flight progress before recovery (minimum 60).
