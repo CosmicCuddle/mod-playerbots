@@ -9,9 +9,10 @@
   - **Holiday exception:** applies only to the exact selected seasonal row while `LFGMgr::IsSeasonActive`.
   - **Reviewed overrides:** `Playerbots.DungeonLevelBracket.Overrides` is used only for ambiguous or missing data.
   - **Denial notice:** sent to the master on the world thread, at most once a minute per bot.
+  - **Teleports:** only GM-mode cross-map teleports are re-checked; teleports inside a dungeon the bot already entered are not re-judged.
 - **Affected files:** `src/Bot/DungeonLevelBracket.h` (additions only), `src/Script/Playerbots.cpp`, `src/PlayerbotAIConfig.cpp/.h`, `conf/playerbots.conf.dist`, `tests/pb60_dungeon_bracket_runtime.cpp`, this Register.
 - **Data:** the installed LFGDungeons.dbc is stock. 4 Vanilla maps have several wing brackets (SM 189, BRD 230, Maraudon 349, DM 429) and are denied on portal entry unless an owner-reviewed override is set.
-- **Tests:** 35 new checks plus the existing 33 static_asserts pass on GCC/Clang/ASan. It compiles merged with the flight watchdog. Entry gameplay is not tested.
+- **Tests:** 39 new checks plus the existing 33 static_asserts pass on GCC/Clang/ASan. It compiles merged with the flight watchdog. Entry gameplay is not tested.
 - **Live status:** `Playerbots.EnforceDungeonLevelBracket` stays default OFF; not merged or deployed.
 - **Rollback:** keep the option off or revert the branch; no persistent data is changed.
 

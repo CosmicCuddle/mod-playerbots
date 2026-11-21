@@ -143,6 +143,15 @@ void TestParser()
     Check(!ParseOverrides("189:0:27:45,abc", out) && out.empty(), "one bad entry rejects the whole list");
     Check(ParseOverrides("189:0:27:45,189:1:27:45", out) && out.size() == 2, "same map, other difficulty is fine");
 }
+
+void TestTeleportSeam()
+{
+    Check(!TeleportNeedsBracketCheck(false, false), "normal cross-map teleport is checked by CanEnterMap instead");
+    Check(TeleportNeedsBracketCheck(false, true), "GM-mode cross-map teleport skips Core, so it is checked here");
+    Check(!TeleportNeedsBracketCheck(true, false),
+          "teleport inside the dungeon the bot already entered is not re-judged");
+    Check(!TeleportNeedsBracketCheck(true, true), "same-map GM teleport inside the dungeon is not re-judged");
+}
 }  // namespace
 
 int main()
@@ -152,6 +161,7 @@ int main()
     TestSeasonActivityCopy();
     TestReviewedOverride();
     TestParser();
+    TestTeleportSeam();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

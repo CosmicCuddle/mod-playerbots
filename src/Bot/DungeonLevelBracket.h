@@ -160,6 +160,14 @@ namespace PlayerbotsDungeonBracket
         return std::span<Row const>(scratch.data(), rows.size());
     }
 
+    // Normal cross-map teleports reach OnPlayerCanEnterMap through PlayerCannotEnter, which GM mode skips.
+    // A same-map teleport to a dungeon map means the bot is already inside, so entry was already decided;
+    // checking again would also lose the LFG selection that admitted it (e.g. a holiday boss).
+    constexpr bool TeleportNeedsBracketCheck(bool sameMap, bool gmModeTeleport)
+    {
+        return !sameMap && gmModeTeleport;
+    }
+
     // "map:difficulty:min:max" entries separated by commas. Any malformed or duplicate entry rejects the
     // whole list, so a typo never half-applies.
     inline bool ParseOverrides(std::string_view text, std::vector<OverrideRange>& out)

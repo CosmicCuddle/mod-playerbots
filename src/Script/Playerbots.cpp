@@ -369,9 +369,9 @@ public:
     bool OnPlayerBeforeTeleport(Player* player, uint32 mapid, float /*x*/, float /*y*/, float /*z*/,
                                 float /*orientation*/, uint32 options, Unit* /*target*/) override
     {
-        // Cross-map normal teleports reach CanEnterMap through PlayerCannotEnter.
-        // Same-map and GM-mode teleports can skip that call.
-        if (player && (player->GetMapId() == mapid || (options & TELE_TO_GM_MODE) || player->IsGameMaster()) &&
+        if (player &&
+            PlayerbotsDungeonBracket::TeleportNeedsBracketCheck(player->GetMapId() == mapid,
+                                                               (options & TELE_TO_GM_MODE) || player->IsGameMaster()) &&
             !CanBotEnterDungeon(player, sMapStore.LookupEntry(mapid), false))
             return false;
 
