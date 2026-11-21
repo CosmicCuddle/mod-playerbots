@@ -7,12 +7,13 @@
 - **Intended behavior:**
   - **LFG identity:** read in `OnPlayerCanEnterMap` only, and only for LFG groups. Core's `PlayerCannotEnter` reads the same group key on the same thread right after this hook.
   - **Holiday exception:** applies only to the exact selected seasonal row while `LFGMgr::IsSeasonActive`.
-  - **Reviewed overrides:** `Playerbots.DungeonLevelBracket.Overrides` is used only for ambiguous or missing data.
+  - **Wing brackets (owner decision, 21 Nov):** maps with several wings use each wing's own LFG bracket. The wing is the one whose `lfg_dungeon_template` entrance the teleport destination lands on (10 yards). `OnPlayerBeforeTeleport` keeps the destination for the `OnPlayerCanEnterMap` call that Core makes right after it in the same `TeleportTo`, bound to the bot, the map and one second. A login check uses the saved position. With no single wing (a summon inside, BRD's shared entrance, Dire Maul side doors, Core's area-trigger pre-check) the bot must fit at least one wing.
+  - **Reviewed overrides:** `Playerbots.DungeonLevelBracket.Overrides` is used only for ambiguous or missing data, before the wing rule.
   - **Denial notice:** sent to the master on the world thread, at most once a minute per bot.
   - **Teleports:** only GM-mode cross-map teleports are re-checked; teleports inside a dungeon the bot already entered are not re-judged.
 - **Affected files:** `src/Bot/DungeonLevelBracket.h` (additions only), `src/Script/Playerbots.cpp`, `src/PlayerbotAIConfig.cpp/.h`, `conf/playerbots.conf.dist`, `tests/pb60_dungeon_bracket_runtime.cpp`, this Register.
-- **Data:** the installed LFGDungeons.dbc is stock. 4 Vanilla maps have several wing brackets (SM 189, BRD 230, Maraudon 349, DM 429) and are denied on portal entry unless an owner-reviewed override is set.
-- **Tests:** 39 new checks plus the existing 33 static_asserts pass on GCC/Clang/ASan. It compiles merged with the flight watchdog. Entry gameplay is not tested.
+- **Data:** the installed LFGDungeons.dbc is stock. 4 Vanilla maps have several wing brackets (SM 189, BRD 230, Maraudon 349, DM 429). SM's 4 portals, Maraudon's 2 and Dire Maul's main East/West/North portals land exactly on a wing entrance. BRD's two wings share one entrance.
+- **Tests:** 85 checks plus the existing 33 static_asserts pass on GCC/Clang/ASan. Entry gameplay is not tested.
 - **Live status:** `Playerbots.EnforceDungeonLevelBracket` stays default OFF; not merged or deployed.
 - **Rollback:** keep the option off or revert the branch; no persistent data is changed.
 

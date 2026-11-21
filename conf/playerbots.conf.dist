@@ -493,11 +493,13 @@ Playerbots.ApplyInstanceStrategies = 1
 # Default: 0 (disabled)
 Playerbots.EnforceDungeonLevelBracket = 0
 
-# Reviewed brackets for dungeon maps whose LFG rows give no single bracket (several wings with different
-# ranges, e.g. Scarlet Monastery 189, Blackrock Depths 230, Maraudon 349, Dire Maul 429), or none at all.
+# Maps with several wings (Scarlet Monastery 189, Blackrock Depths 230, Maraudon 349, Dire Maul 429) use
+# each wing's own LFG bracket: the wing whose LFG entrance the bot is teleported to. When the destination
+# names no single wing (a summon inside, Blackrock Depths' shared entrance, a side door), the bot must fit
+# at least one wing's bracket.
+# Reviewed brackets below replace that rule for a map/difficulty, and also cover maps with no LFG rows.
 # Never replaces a bracket the data already resolves. Format: map:difficulty:min:max, comma separated.
-# Any malformed or duplicate entry disables the whole list. Without an entry, bots are denied such maps
-# unless they enter through LFG with an exact dungeon selected.
+# Any malformed or duplicate entry disables the whole list.
 # Default: "" (none)
 Playerbots.DungeonLevelBracket.Overrides = ""
 
