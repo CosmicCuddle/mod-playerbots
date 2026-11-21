@@ -9,6 +9,7 @@
 #include "AutoGearCapCommand.h"
 #include "AutoGearCommandRoute.h"
 #include "AutoGearProgressionCap.h"
+#include "AutoGearSourceIndexStore.h"
 #include "AutoGearSlotPolicy.h"
 #include "BisListMgr.h"
 #include "BudgetValues.h"
@@ -833,9 +834,18 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     facts.progressionKnown = sScriptMgr->TryReadPB59AutoGearProgression(sender, facts.rawStage, facts.effectiveStage);
 #endif
     facts.senderLevel = sender->GetLevel();
+    // Lives until the route call returns: the facts point into it.
+    PlayerbotsAutoGearMasterSource::BoundMasterSources tierSources;
 #if __has_include("EquipmentCaptureState.h")
     if (auto equipment = sender->CapturePB59Equipment())
     {
+        if (auto const* index = PlayerbotsAutoGearMasterSource::SourceIndexStore::Get())
+        {
+            tierSources = PlayerbotsAutoGearMasterSource::BindMasterSources(
+                *index, PlayerbotsAutoGearMasterSource::FromEquipmentFacts(*equipment));
+            facts.tierSnapshot = tierSources.sample.Snapshot();
+            facts.tierFacts = tierSources.Facts();
+        }
         bool complete = sender->IsPB59EquipmentCurrent(equipment->stamp);
         for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         {

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "AutoGearCapCommand.h"
+#include "AutoGearMasterSourceIndex.h"
 #include "AutoGearSlotPolicy.h"
 
 namespace
@@ -644,6 +645,80 @@ void TestMaxLevelAverageRule()
     Check(!run.outcome.ran && inventory.Untouched(), "stage 1 max-level commander without a sample preserves");
 }
 
+// C1-B: a G7 source index built from world rows, bound to the commander's exact capture, lifts a
+// TBC/Wrath max-level cap from the era floor to the raid tier the commander really wears.
+void TestSourceIndexTierLift()
+{
+    namespace G7 = PlayerbotsAutoGearMasterSource;
+    // Boss 9100 in Serpentshrine (map 548, normal) drops three items: Tier 5, 25-man.
+    std::vector<G7::CreatureTemplateRow> const creatures = {{9100, {}, 9100}};
+    std::vector<G7::SpawnRow> const spawns = {{9100, 548, 1}};
+    std::vector<G7::LootRow> const loot = {{9100, 30001, 0}, {9100, 30002, 0}, {9100, 30003, 0}};
+    G7::WorldRows rows;
+    rows.creatures = creatures;
+    rows.creatureSpawns = spawns;
+    rows.creatureLoot = loot;
+    G7::SourceIndex const index = G7::SourceIndex::Build(rows);
+    Check(index.RaidEntries() == 3, "three Serpentshrine drops are raid-sourced");
+
+    // Level-70 commander at stage 10 (cap 141): every combat slot is item level 140, three of them
+    // the Serpentshrine pieces.
+    G7::CapturedEquipment capture;
+    capture.guid = 77;
+    capture.session = 5;
+    capture.revision = 9;
+    std::uint32_t raidEntry = 30001;
+    for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+    {
+        if (!IsCombatSlot(slot))
+            continue;
+        std::uint32_t const entry = raidEntry <= 30003 ? raidEntry++ : 40000 + slot;
+        capture.slots[slot] = {1000u + slot, entry, 140, 4, 0, 0};
+    }
+    auto resolve = [&](G7::BoundMasterSources const& bound, bool useFacts)
+    {
+        FakeInventory inventory = StandardInventory();
+        CommandFacts facts = MaxLevelSender(10, 140);
+        facts.senderLevel = 70;
+        if (useFacts)
+        {
+            facts.tierSnapshot = bound.sample.Snapshot();
+            facts.tierFacts = bound.Facts();
+        }
+        return Execute(facts, inventory);
+    };
+    G7::BoundMasterSources const bound = G7::BindMasterSources(index, capture);
+    Check(bound.Bound(), "the capture binds to the index");
+    Run const lifted = resolve(bound, true);
+    Check(lifted.outcome.ran && lifted.resolved.plan.cap == 140,
+          "bound Tier 5 pieces lift the cap to min(140 average, 141 tier) (got " +
+              std::to_string(lifted.resolved.plan.cap) + ")");
+    Check(resolve(bound, false).resolved.plan.cap == 125, "without facts the cap stays at the T4 floor 125");
+
+    // A later capture (the commander changed gear) makes the old facts stale: no lift.
+    G7::CapturedEquipment later = capture;
+    later.revision = 10;
+    G7::BoundMasterSources const stale = bound;
+    FakeInventory inventory = StandardInventory();
+    CommandFacts facts = MaxLevelSender(10, 140);
+    facts.senderLevel = 70;
+    facts.tierSnapshot = bound.sample.Snapshot();
+    facts.tierFacts = stale.FreshFacts(later);
+    Check(Execute(facts, inventory).resolved.plan.cap == 125, "stale capture facts give no lift");
+
+    // Only one raid piece is not enough evidence of a worn tier.
+    G7::CapturedEquipment single = capture;
+    for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+        if (single.slots[slot].entry == 30002 || single.slots[slot].entry == 30003)
+            single.slots[slot].entry = 41000 + slot;
+    G7::BoundMasterSources const one = G7::BindMasterSources(index, single);
+    Check(resolve(one, true).resolved.plan.cap == 125, "a single raid piece stays at the floor");
+
+    // An index that was never built binds nothing.
+    G7::SourceIndex const empty;
+    Check(!G7::BindMasterSources(empty, capture).Bound(), "an unbuilt index never binds");
+}
+
 // The planner is the last boundary before mutation; check it without the route in front.
 void TestPlannerDirect()
 {
@@ -761,6 +836,7 @@ int main()
     TestBagAccounting();
     TestPlannerDirect();
     TestMaxLevelAverageRule();
+    TestSourceIndexTierLift();
     TestConfigTables();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
