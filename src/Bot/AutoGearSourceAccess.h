@@ -129,7 +129,8 @@ inline bool Allows(AccessEntry const& entry, std::uint8_t effectiveStage, Gates 
 // What the factory and the BiS overlay consult for one command. Built on the world thread from the
 // published (immutable) index; it lives for that one command only.
 //
-// A quest reward is only as reachable as the quest: the owner's decision of 22 Nov 2026 is that a
+// A quest reward is only as reachable as the quest. Owner instruction of 22 Nov 2026 (quoted in
+// coordination #74, comment 7079237461): a
 // reward is locked while completing its quest is locked. A quest is locked when a hand-in or start
 // item is itself locked (for example Primal Hakkari items, which only drop in Zul'Gurub, for the
 // Zandalar "Paragons of Power" rewards), when a creature it requires is spawned only in locked

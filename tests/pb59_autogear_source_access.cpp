@@ -221,7 +221,8 @@ void TestTable()
     Check(Allows(empty, 0, Gates{}), "an entry without sources has no raid evidence");
 }
 
-// Owner decision 22 Nov 2026: a quest reward is locked while completing its quest is locked.
+// Owner instruction 22 Nov 2026 (coordination #74, comment 7079237461): a quest reward is locked while
+// completing its quest is locked.
 void TestQuestRewards()
 {
     World world;

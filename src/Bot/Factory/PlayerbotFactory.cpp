@@ -4357,12 +4357,14 @@ InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
 #endif
 }
 
+// Owner instruction of 22 Nov 2026 (coordination #74, comment 7079237461); activation not approved.
 // Random bots get gear from this factory when they are created, re-randomized or level up. With
 // Playerbots.RandomBotGear.RaidSourceGate on (default off), those items follow the same raid source gate
 // as commanded autogear, at the bot's own Individual Progression stage: a tier 0 bot gets no Zul'Gurub,
 // Blackwing Lair or AQ loot, and no quest reward that needs it. Alt bots and humans are untouched. The
 // stage is read from the bot's own quest status, in the context that is already changing its gear.
-// Without IP, or without a loaded index (logged at startup), random-bot gear is unchanged.
+// Without IP, or without a loaded index (logged at startup), random-bot gear is unchanged: bots keep
+// getting gear rather than none. Whether that fallback should refuse instead is open (#74, Q-B).
 void PlayerbotFactory::InitRandomBotSourceFilter()
 {
     if (!sPlayerbotAIConfig.RandomBotGearRaidSourceGate || !bot ||
