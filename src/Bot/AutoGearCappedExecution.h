@@ -34,7 +34,8 @@ enum class Refusal : std::uint8_t
     UnknownPopulation,  // not a proven random bot or alt bot
     ResetNotAllowed,    // reset only strips random bots
     BagsFull,           // not enough free bag slots for the planned strip; nothing changed
-    StripFailed         // a move to bags failed part way; moved items stay in bags, nothing else ran
+    StripFailed,        // a move to bags failed part way; moved items stay in bags, nothing else ran
+    SourcesUnavailable  // the raid source index is not loaded: item sources cannot be checked
 };
 
 struct PlanInput
@@ -47,6 +48,7 @@ struct PlanInput
     std::uint32_t quality = 0;
     bool populationKnown = false;
     Population population = Population::Unknown;
+    bool sourcesAvailable = false;  // the raid source index is loaded; without it nothing runs
 };
 
 struct Plan
@@ -84,6 +86,13 @@ constexpr Plan PlanExecution(PlanInput const& in)
     if (in.reset && in.population != Population::RandomBot)
     {
         plan.refusal = Refusal::ResetNotAllowed;
+        return plan;
+    }
+    // Without the index the raid source gate cannot run; falling back to the item-level cap alone
+    // could hand out loot from raids the commander cannot enter. Refuse before anything changes.
+    if (!in.sourcesAvailable)
+    {
+        plan.refusal = Refusal::SourcesUnavailable;
         return plan;
     }
     plan.refusal = Refusal::None;

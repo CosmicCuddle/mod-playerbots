@@ -809,6 +809,10 @@ namespace
                 return PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "autogear_ip_strip_failed_error",
                     "I couldn't take off all my gear, so I stopped. Nothing was destroyed.", {});
+            case Refusal::SourcesUnavailable:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_sources_error",
+                    "I can't check where gear comes from right now, so I'm keeping my current gear.", {});
             case Refusal::NotVerified:
             case Refusal::None:
                 break;
@@ -871,31 +875,24 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
         facts.senderIsMaster = ai->GetMaster() == sender;
     }
 #endif
+    facts.sourcesAvailable = PlayerbotsAutoGearMasterSource::SourceIndexStore::Get() != nullptr;
     PlayerbotsAutoGearExec::ResolvedCommand const resolved = PlayerbotsAutoGearExec::ResolveCommand(facts,
         [](uint32 level, uint8 slot) { return PlayerbotsAutoGearSlots::SearchAtLevel(level, slot, CommandSlotLayout); });
     auto const& request = resolved.request;
     auto const& decision = resolved.decision;
     PlayerbotsAutoGearExec::Plan const& plan = resolved.plan;
 
-    // C1-B: offer no item whose only proven source is a raid the commander cannot enter yet, using IP's
-    // own entry gates at the commander's effective stage. Without the index that cannot be checked, so
-    // the command keeps the current gear instead of falling back to the item-level cap alone.
+    // C1-B: offer no item whose every source is a raid the commander cannot enter yet, using IP's own
+    // entry gates at the commander's effective stage. A missing index was refused by the plan
+    // (Refusal::SourcesUnavailable) before anything changed.
     PlayerbotsAutoGearSourceAccess::Filter sources;
     sources.index = PlayerbotsAutoGearMasterSource::SourceIndexStore::Get();
     sources.effectiveStage = request.effectiveStage;
-    sources.gates.zulGurub =
-        sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulGurubProgression", 3, false);
+    sources.gates.zulGurub = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulGurubProgression", 3, false);
     sources.gates.zulAman = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulAmanProgression", 12, false);
-    if (plan.Runs() && !sources.index)
-    {
+    if (plan.refusal == PlayerbotsAutoGearExec::Refusal::SourcesUnavailable)
         LOG_ERROR("playerbots", "PB59 AutoGear bot={} sender={} refused: the raid source index is not loaded",
             bot->GetGUID().ToString(), sender->GetGUID().ToString());
-        ai->Whisper(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                        "autogear_ip_sources_error",
-                        "I can't check where gear comes from right now, so I'm keeping my current gear.", {}),
-            sender->GetName());
-        return false;
-    }
 
     PlayerAutoGearInventory inventory(bot, plan.quality, &sources);
     PlayerbotsAutoGearExec::Outcome const outcome = PlayerbotsAutoGearExec::Execute(inventory, plan);

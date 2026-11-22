@@ -219,6 +219,7 @@ CommandFacts MaxLevelSender(std::uint8_t stage, std::uint32_t slotLevel = 90)
     facts.senderLevel = 60;
     facts.senderSlotsComplete = true;
     facts.senderIsMaster = true;
+    facts.sourcesAvailable = true;
     for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
         if (IsCombatSlot(slot))
             facts.senderSlots[slot] = slotLevel;
@@ -723,6 +724,7 @@ void TestSourceIndexTierLift()
 void TestPlannerDirect()
 {
     PlanInput input;
+    input.sourcesAvailable = true;
     input.capVerified = true;
     input.cap = 78;
     input.populationKnown = true;
@@ -822,6 +824,53 @@ void TestBagAccounting()
 }
 }  // namespace
 
+// CS01 #52 Part 28: without the raid source index nothing changes, before any strip or gearing.
+void TestSourcesUnavailable()
+{
+    for (bool reset : {false, true})
+    {
+        CommandFacts facts = MaxLevelSender(1);
+        facts.argument = reset ? "reset" : "";
+        facts.sourcesAvailable = false;
+        FakeInventory inventory = StandardInventory();
+        inventory.Equip(0, 900, 92);
+        inventory.Equip(4, 901, 60);
+        inventory.Equip(6, 903, 60);
+        Run const run = Execute(facts, inventory);
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::SourcesUnavailable,
+              std::string("no index refuses ") + (reset ? "reset" : "plain"));
+        Check(inventory.Untouched() && inventory.factoryRuns == 0 && inventory.OwnedOriginalsStillCarried() == 3,
+              std::string("no index changes nothing (") + (reset ? "reset" : "plain") + ")");
+    }
+    // An unverified commander is still reported as unverified, not as a missing index.
+    CommandFacts unknown = MaxLevelSender(1);
+    unknown.progressionKnown = false;
+    unknown.sourcesAvailable = false;
+    FakeInventory inventory = StandardInventory();
+    inventory.Equip(0, 900, 92);
+    Check(Execute(unknown, inventory).outcome.refusal == Refusal::NotVerified,
+          "unknown progression is reported before a missing index");
+    // Alt bot reset is refused as before, also without an index.
+    CommandFacts alt = MaxLevelSender(1);
+    alt.argument = "reset";
+    alt.randomBot = false;
+    alt.randomAccount = false;
+    alt.sourcesAvailable = false;
+    FakeInventory altInventory = StandardInventory();
+    altInventory.Equip(0, 900, 92);
+    Check(Execute(alt, altInventory).outcome.refusal == Refusal::ResetNotAllowed && altInventory.Untouched(),
+          "alt bot reset stays refused without an index");
+    // The plan itself: everything verified except the index.
+    PlanInput input;
+    input.capVerified = true;
+    input.cap = 78;
+    input.populationKnown = true;
+    input.population = Population::RandomBot;
+    Check(PlanExecution(input).refusal == Refusal::SourcesUnavailable, "PlanInput defaults to no index: refused");
+    input.sourcesAvailable = true;
+    Check(PlanExecution(input).Runs(), "with the index the same plan runs");
+}
+
 int main()
 {
     TestStageCaps();
@@ -838,6 +887,7 @@ int main()
     TestMaxLevelAverageRule();
     TestSourceIndexTierLift();
     TestConfigTables();
+    TestSourcesUnavailable();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

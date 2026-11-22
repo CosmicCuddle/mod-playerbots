@@ -43,6 +43,8 @@ struct CommandFacts
     // Commander capture bound to the G7 source index. Unverified facts give no tier lift.
     PlayerbotsAutoGearSelection::SenderSnapshot tierSnapshot{};
     PlayerbotsAutoGearSelection::TierFacts tierFacts{};
+    // The raid source index is loaded (SourceIndexStore::Get()). Without it the command refuses.
+    bool sourcesAvailable = false;
 };
 
 // Lower of approved and configured; zero in either refuses that stage or era.
@@ -122,6 +124,7 @@ ResolvedCommand ResolveCommand(CommandFacts const& facts, SearchAtLevel const& s
     input.quality = resolved.decision.quality;
     input.populationKnown = request.populationKnown;
     input.population = request.population;
+    input.sourcesAvailable = facts.sourcesAvailable;
     resolved.plan = PlanExecution(input);
     return resolved;
 }
