@@ -457,6 +457,7 @@ public:
     int32 AutoGearCommand, AutoGearCommandAltBots, AutoGearQualityLimit, AutoGearScoreLimit;
     int32 AutoGearBisCommand;
     bool AutoGearIPCapEnable;
+    bool RandomBotGearRaidSourceGate;
     std::array<uint32, 19> AutoGearIPCompletionCaps;
     std::array<uint32, 3> AutoGearIPEraEntryFloors;
     std::array<uint32, 3> AutoGearIPEraCeilings;

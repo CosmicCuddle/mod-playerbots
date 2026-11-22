@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "Config.h"
 #include "DatabaseEnv.h"
 #include "Field.h"
 #include "Log.h"
@@ -25,6 +26,9 @@ namespace
 {
 std::unique_ptr<SourceIndex const> storedIndex;
 std::atomic<SourceIndex const*> publishedIndex{nullptr};
+// Written once at startup before publishedIndex, read-only afterwards.
+std::array<std::unordered_set<std::uint32_t>, PlayerbotsAutoGearSourceAccess::StageCount> blockedByStage;
+PlayerbotsAutoGearSourceAccess::Gates loadGates;
 
 char const* FailureName(LoadFailure failure)
 {
@@ -117,13 +121,27 @@ void SourceIndexStore::LoadFromWorldDatabase()
     }
 
     storedIndex = std::make_unique<SourceIndex const>(SourceIndex::Build(rows->View()));
+    loadGates.zulGurub = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulGurubProgression", 3, false);
+    loadGates.zulAman = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulAmanProgression", 12, false);
+    blockedByStage = PlayerbotsAutoGearSourceAccess::BlockedSets(*storedIndex, loadGates);
     publishedIndex.store(storedIndex.get(), std::memory_order_release);
     LOG_INFO("server.loading",
              ">> AutoGear source index: {} raid-sourced items from {} creature, {} chest, {} reference loot rows "
              "in {} ms",
              storedIndex->RaidEntries(), rows->creatureLoot.size(), rows->gameobjectLoot.size(),
              rows->referenceLoot.size(), GetMSTimeDiffToNow(started));
+    LOG_INFO("server.loading", ">> AutoGear raid source gate: {} items refused at stage 0, {} at stage 1",
+             blockedByStage[0].size(), blockedByStage[1].size());
 }
 
 SourceIndex const* SourceIndexStore::Get() { return publishedIndex.load(std::memory_order_acquire); }
+
+std::unordered_set<std::uint32_t> const* SourceIndexStore::BlockedAtStage(std::uint8_t stage)
+{
+    if (!Get() || stage >= blockedByStage.size())
+        return nullptr;
+    return &blockedByStage[stage];
+}
+
+PlayerbotsAutoGearSourceAccess::Gates SourceIndexStore::LoadGates() { return loadGates; }
 }  // namespace PlayerbotsAutoGearMasterSource

@@ -7,7 +7,9 @@
 #ifndef PLAYERBOTS_AUTOGEAR_SOURCE_ACCESS_H
 #define PLAYERBOTS_AUTOGEAR_SOURCE_ACCESS_H
 
+#include <array>
 #include <cstdint>
+#include <unordered_set>
 
 #include "AutoGearMasterSourceIndex.h"
 
@@ -138,8 +140,18 @@ struct Filter
     SourceIndex const* index = nullptr;
     std::uint8_t effectiveStage = 0;
     Gates gates{};
+    // Optional: the items this stage refuses, precomputed from the same rules (BlockedSets). Random-bot
+    // gearing checks thousands of candidates, so it reads this instead of walking quests each time.
+    std::unordered_set<std::uint32_t> const* blocked = nullptr;
 
-    bool Allows(std::uint32_t item) const { return index && ItemReach(item, 0) != Reach::Locked; }
+    bool Allows(std::uint32_t item) const
+    {
+        if (!index)
+            return false;
+        if (blocked)
+            return !blocked->count(item);
+        return ItemReach(item, 0) != Reach::Locked;
+    }
 
     Reach ItemReach(std::uint32_t item, int depth) const
     {
@@ -201,6 +213,40 @@ struct Filter
         return Reach::Reachable;
     }
 };
+
+inline constexpr std::uint8_t StageCount = 19;  // IP ProgressionState 0..18
+
+// Every item each stage refuses. Only items some row names can be refused, so only those are walked.
+inline std::array<std::unordered_set<std::uint32_t>, StageCount> BlockedSets(SourceIndex const& index, Gates gates)
+{
+    std::array<std::unordered_set<std::uint32_t>, StageCount> blocked;
+    for (std::uint8_t stage = 0; stage < StageCount; ++stage)
+    {
+        Filter const filter{&index, stage, gates, nullptr};
+        index.ForEachAccessItem(
+            [&](std::uint32_t item)
+            {
+                if (!filter.Allows(item))
+                    blocked[stage].insert(item);
+            });
+    }
+    return blocked;
+}
+
+// IP's own definition of a character's stage (IndividualProgression::GetPlayerProgressionFromQuests):
+// the highest progression marker quest 66000 + stage the character has been rewarded. Bots carry the
+// same marker quests. Rewarded(questId) answers for one quest.
+inline constexpr std::uint32_t ProgressionMarkerQuestBase = 66000;
+
+template <class Rewarded>
+std::uint8_t StageFromMarkerQuests(Rewarded const& rewarded)
+{
+    std::uint8_t stage = 0;
+    for (std::uint8_t i = 1; i < StageCount; ++i)
+        if (rewarded(ProgressionMarkerQuestBase + i))
+            stage = i;
+    return stage;
+}
 }  // namespace PlayerbotsAutoGearSourceAccess
 
 #endif

@@ -557,7 +557,7 @@ public:
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
 
-        if (sPlayerbotAIConfig.AutoGearIPCapEnable)
+        if (sPlayerbotAIConfig.AutoGearIPCapEnable || sPlayerbotAIConfig.RandomBotGearRaidSourceGate)
         {
             LOG_INFO("server.loading", "Loading AutoGear raid source index...");
             PlayerbotsAutoGearMasterSource::SourceIndexStore::LoadFromWorldDatabase();

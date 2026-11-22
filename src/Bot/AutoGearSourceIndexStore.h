@@ -8,6 +8,7 @@
 #define PLAYERBOTS_AUTOGEAR_SOURCE_INDEX_STORE_H
 
 #include "AutoGearMasterSourceIndex.h"
+#include "AutoGearSourceAccess.h"
 #include "AutoGearSourceRowLoad.h"
 
 namespace PlayerbotsAutoGearMasterSource
@@ -57,6 +58,10 @@ class SourceIndexStore
 public:
     static void LoadFromWorldDatabase();
     static SourceIndex const* Get();
+    // Items refused at an IP stage, precomputed at load with the IP raid gates read then (LoadGates()).
+    // nullptr when the index was not built or the stage is out of range.
+    static std::unordered_set<std::uint32_t> const* BlockedAtStage(std::uint8_t stage);
+    static PlayerbotsAutoGearSourceAccess::Gates LoadGates();
 };
 }  // namespace PlayerbotsAutoGearMasterSource
 

@@ -264,6 +264,13 @@ namespace PlayerbotsAutoGearMasterSource
             return found == _creatureSpawns.end() ? nullptr : &found->second;
         }
 
+        template <class Visit>
+        void ForEachAccessItem(Visit&& visit) const
+        {
+            for (auto const& [item, entry] : _access)
+                visit(item);
+        }
+
         AccessEntry Access(std::uint32_t item) const
         {
             if (!_built || item == 0)

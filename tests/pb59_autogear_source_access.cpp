@@ -1,6 +1,7 @@
 // C1-B source selection: an IP-capped command never offers an item whose only proven source is a
 // raid the commander cannot enter yet. Required stages are Individual Progression's own entry gates.
 // Builds a small SourceIndex from world rows the same way the server does.
+#include <algorithm>
 #include <array>
 #include <iostream>
 #include <string>
@@ -322,6 +323,52 @@ void TestQuestRewards()
     Check(Offered(deepIndex, 7200, 2), "and opens with the raid");
 }
 
+// Random-bot gearing reads precomputed sets; they must say exactly what the live rule says.
+void TestBlockedSetsAndBotStage()
+{
+    SourceIndex const index = BuildFixture();
+    for (Gates gates : {Gates{}, Gates{1, 12}, Gates{5, 12}})
+    {
+        auto const blocked = BlockedSets(index, gates);
+        bool same = true;
+        std::size_t compared = 0;
+        for (std::uint8_t stage = 0; stage < StageCount; ++stage)
+        {
+            Filter const live{&index, stage, gates, nullptr};
+            Filter const fast{&index, stage, gates, &blocked[stage]};
+            index.ForEachAccessItem(
+                [&](std::uint32_t item)
+                {
+                    ++compared;
+                    same = same && live.Allows(item) == fast.Allows(item);
+                });
+            same = same && fast.Allows(NotInIndex) && live.Allows(NotInIndex);
+        }
+        Check(same && compared > 0,
+              "precomputed sets match the live rule (ZG gate " + std::to_string(gates.zulGurub) + ")");
+    }
+    auto const blocked = BlockedSets(index, Gates{});
+    Check(blocked[0].count(BlackwingItem) && blocked[0].count(ZulGurubItem) && !blocked[0].count(MoltenCoreItem),
+          "stage 0 set refuses BWL and ZG loot, not MC");
+    Check(!blocked[2].count(BlackwingItem) && blocked[2].count(ZulGurubItem), "stage 2 set opens BWL only");
+    Check(blocked[18].empty(), "nothing is refused at stage 18");
+    Filter const noIndex{nullptr, 0, {}, &blocked[0]};
+    Check(!noIndex.Allows(MoltenCoreItem), "a filter without an index still offers nothing");
+
+    // IP's stage: the highest rewarded marker quest 66000 + stage.
+    auto stageOf = [](std::initializer_list<std::uint32_t> rewarded)
+    {
+        return StageFromMarkerQuests([&](std::uint32_t quest)
+                                     { return std::find(rewarded.begin(), rewarded.end(), quest) != rewarded.end(); });
+    };
+    Check(stageOf({}) == 0, "no marker quest: stage 0");
+    Check(stageOf({66001}) == 1, "Molten Core marker: stage 1");
+    Check(stageOf({66001, 66002, 66003}) == 3, "highest marker wins");
+    Check(stageOf({66003}) == 3, "a gap does not lower the stage (as IP)");
+    Check(stageOf({66018}) == 18, "WotLK tier 5 marker: stage 18");
+    Check(stageOf({66000, 66019, 12345}) == 0, "only 66001-66018 count");
+}
+
 void TestNoIndex()
 {
     Filter const filter{nullptr, 18, Gates{}};
@@ -340,6 +387,7 @@ int main()
     TestTable();
     TestNoIndex();
     TestQuestRewards();
+    TestBlockedSetsAndBotStage();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

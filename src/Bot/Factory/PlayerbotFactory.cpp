@@ -34,6 +34,8 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "AutoGearSourceIndexStore.h"
+#include "Config.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotRepository.h"
 #include "PlayerbotSpellRepository.h"
@@ -600,6 +602,7 @@ PlayerbotFactory::PlayerbotFactory(Player* bot, uint32 level, uint32 itemQuality
     : level(level), itemQuality(itemQuality), gearScoreLimit(gearScoreLimit), maxRawItemLevel(maxRawItemLevel), bot(bot)
 {
     botAI = GET_PLAYERBOT_AI(bot);
+    InitRandomBotSourceFilter();
     if (!this->itemQuality)
     {
         uint32 gs = sPlayerbotAIConfig.RandomGearScoreLimit == 0
@@ -4352,6 +4355,28 @@ InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
             return EQUIP_ERR_CANT_DO_RIGHT_NOW;
     return EQUIP_ERR_OK;
 #endif
+}
+
+// Random bots get gear from this factory when they are created, re-randomized or level up. With
+// Playerbots.RandomBotGear.RaidSourceGate on (default off), those items follow the same raid source gate
+// as commanded autogear, at the bot's own Individual Progression stage: a tier 0 bot gets no Zul'Gurub,
+// Blackwing Lair or AQ loot, and no quest reward that needs it. Alt bots and humans are untouched. The
+// stage is read from the bot's own quest status, in the context that is already changing its gear.
+// Without IP, or without a loaded index (logged at startup), random-bot gear is unchanged.
+void PlayerbotFactory::InitRandomBotSourceFilter()
+{
+    if (!sPlayerbotAIConfig.RandomBotGearRaidSourceGate || !bot ||
+        !sConfigMgr->GetOption<bool>("IndividualProgression.Enable", false, false) ||
+        !sRandomPlayerbotMgr.IsRandomBot(bot))
+        return;
+    PlayerbotsAutoGearMasterSource::SourceIndex const* index = PlayerbotsAutoGearMasterSource::SourceIndexStore::Get();
+    if (!index)
+        return;
+    std::uint8_t const stage = PlayerbotsAutoGearSourceAccess::StageFromMarkerQuests(
+        [this](std::uint32_t quest) { return bot->GetQuestStatus(quest) == QUEST_STATUS_REWARDED; });
+    randomBotFilter = PlayerbotsAutoGearSourceAccess::Filter{
+        index, stage, PlayerbotsAutoGearMasterSource::SourceIndexStore::LoadGates(),
+        PlayerbotsAutoGearMasterSource::SourceIndexStore::BlockedAtStage(stage)};
 }
 
 void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance,

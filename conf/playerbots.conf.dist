@@ -664,6 +664,16 @@ Playerbots.AutoGearIPCap.CompletionCaps = 66,78,78,83,83,83,88,92,125,125,141,0,
 Playerbots.AutoGearIPCap.EraEntryFloors = 0,0,0
 Playerbots.AutoGearIPCap.EraCeilings = 92,164,284
 
+# Random bots get gear when they are created, re-randomized and when they level up. When enabled, that
+# gear follows the same raid source rule as the IP-capped autogear above, at the bot's own Individual
+# Progression stage: no item whose every source is a raid the bot cannot enter yet (for example no
+# Zul'Gurub, Blackwing Lair or AQ loot at stage 0), and no quest reward whose quest needs such loot.
+# Vendor items, dungeon and world drops are unaffected. Only random bots; alt bots and players are not
+# changed, and gear a bot already wears is not removed. Requires Individual Progression; loads the raid
+# source index at startup (a few seconds). If that index cannot load, random-bot gear is unchanged.
+# Default: 0 (disabled)
+Playerbots.RandomBotGear.RaidSourceGate = 0
+
 # Enable/Disable cheats for bots
 # "food" (bots eat or drink without using food or drinks from their inventory)
 # "gold" (bots have infinite gold)
