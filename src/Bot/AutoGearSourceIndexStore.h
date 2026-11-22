@@ -8,6 +8,7 @@
 #define PLAYERBOTS_AUTOGEAR_SOURCE_INDEX_STORE_H
 
 #include "AutoGearMasterSourceIndex.h"
+#include "AutoGearSourceRowLoad.h"
 
 namespace PlayerbotsAutoGearMasterSource
 {
@@ -30,9 +31,23 @@ inline constexpr char const* QuestRewards =
     "RewardChoiceItemID3, RewardChoiceItemID4, RewardChoiceItemID5, RewardChoiceItemID6 FROM quest_template";
 }  // namespace SourceQueries
 
+// The same queries with the exact column types (see TableQuery). Read completely or not at all.
+inline constexpr SourceTableSet SourceTables{
+    {"creature_loot_template", SourceQueries::CreatureLoot, "uus"},
+    {"gameobject_loot_template", SourceQueries::GameobjectLoot, "uus"},
+    {"reference_loot_template", SourceQueries::ReferenceLoot, "uus"},
+    {"item_loot_template", SourceQueries::ItemLoot, "uus"},
+    {"creature_template", SourceQueries::Creatures, "uuuuu"},
+    {"creature", SourceQueries::CreatureSpawns, "uhb"},
+    {"gameobject_template", SourceQueries::Chests, "us"},
+    {"gameobject", SourceQueries::ChestSpawns, "uhb"},
+    {"npc_vendor", SourceQueries::VendorItems, "s"},
+    {"quest_template", SourceQueries::QuestRewards, "uuuuuuuuuu"},
+};
+
 // Built once on the world thread during startup, before map updates run, and immutable afterwards.
-// Get() returns nullptr when the index was not built (feature off or a load failure); callers then
-// get no tier lift, only the era floor.
+// Get() returns nullptr when the index was not built (feature off, or any table failed to load
+// completely); callers then get no tier lift, and IP-capped commands keep the bot's gear.
 class SourceIndexStore
 {
 public:

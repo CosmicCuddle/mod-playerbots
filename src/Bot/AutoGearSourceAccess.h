@@ -22,11 +22,14 @@
 // IP adds further per-player conditions for some raids (Drakefire Amulet, Naxxramas attunement);
 // those are not readable here, so the stage is a necessary condition, never a grant on its own.
 //
-// Only items the G7 source index proves come from exactly one raid are judged. Dungeon, world,
-// vendor, quest and ambiguous items are Unknown there and stay subject to the item-level cap only.
+// An item is refused when the world rows show raid loot for it and every source is a raid the
+// commander cannot enter yet: two locked raids, or a locked raid plus loot nobody can place (unspawned
+// or script-summoned templates, container contents). A source the commander can reach clears it: a
+// spawned dungeon or world drop, a raid they can enter, or a vendor or quest row. An item no row
+// names at all has no raid evidence and keeps the item-level cap only.
 namespace PlayerbotsAutoGearSourceAccess
 {
-using PlayerbotsAutoGearMasterSource::SourceEntry;
+using PlayerbotsAutoGearMasterSource::AccessEntry;
 using PlayerbotsAutoGearMasterSource::SourceIndex;
 using PlayerbotsAutoGearMasterSource::Verdict;
 
@@ -81,6 +84,8 @@ constexpr std::int32_t RequiredStage(std::uint32_t map, std::uint8_t difficulty,
             return 15;
         case 631:  // Icecrown Citadel
             return 16;
+        case 624:  // Vault of Archavon: a Northrend raid (instance parent check, PROGRESSION_TBC_TIER_5)
+            return 13;
         case 724:  // Ruby Sanctum
             return 17;
         default:
@@ -88,14 +93,22 @@ constexpr std::int32_t RequiredStage(std::uint32_t map, std::uint8_t difficulty,
     }
 }
 
-// True when the item may be offered. A raid-proven item from a map this table does not know is
-// refused: the index and this table must agree, and a gap must not hand out raid loot.
-constexpr bool Allows(SourceEntry const& entry, std::uint8_t effectiveStage, Gates gates)
+// True when the item may be offered.
+inline bool Allows(AccessEntry const& entry, std::uint8_t effectiveStage, Gates gates)
 {
-    if (entry.verdict == Verdict::Unknown)
+    bool lockedRaid = false;
+    for (auto const& [map, difficulty] : entry.spawned)
+    {
+        std::int32_t const required = RequiredStage(map, difficulty, gates);
+        if (required == NotGated)
+            return true;  // spawned outside any gated raid: a dungeon or world drop
+        if (static_cast<std::int32_t>(effectiveStage) >= required)
+            return true;  // a raid the commander can enter
+        lockedRaid = true;
+    }
+    if (entry.vendorOrQuest)
         return true;
-    std::int32_t const required = RequiredStage(entry.map, entry.difficulty, gates);
-    return required != NotGated && static_cast<std::int32_t>(effectiveStage) >= required;
+    return !lockedRaid;
 }
 
 // What the factory and the BiS overlay consult for one command. Built on the world thread from the
@@ -108,7 +121,7 @@ struct Filter
 
     bool Allows(std::uint32_t item) const
     {
-        return index && PlayerbotsAutoGearSourceAccess::Allows(index->Lookup(item), effectiveStage, gates);
+        return index && PlayerbotsAutoGearSourceAccess::Allows(index->Access(item), effectiveStage, gates);
     }
 };
 }  // namespace PlayerbotsAutoGearSourceAccess

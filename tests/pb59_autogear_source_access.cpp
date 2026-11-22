@@ -34,9 +34,14 @@ constexpr std::uint32_t Aq20Item = 21400;
 constexpr std::uint32_t Aq40Item = 21600;
 constexpr std::uint32_t Naxx40Item = 22800;
 constexpr std::uint32_t Onyxia40Item = 17060;
-constexpr std::uint32_t DungeonItem = 13340;    // Blackrock Depths: not a raid
-constexpr std::uint32_t VendorBwlItem = 16950;  // drops in BWL but is also sold: Unknown
-constexpr std::uint32_t TwoRaidItem = 17000;    // drops in MC and BWL: Unknown
+constexpr std::uint32_t DungeonItem = 13340;       // Blackrock Depths: not a raid
+constexpr std::uint32_t VendorBwlItem = 16950;     // drops in BWL but is also sold: Unknown
+constexpr std::uint32_t TwoRaidItem = 17000;       // drops in MC and BWL: one raid open at stage 0
+constexpr std::uint32_t LockedPairItem = 17100;    // drops in BWL and AQ20: both locked at stage 1
+constexpr std::uint32_t DungeonBwlItem = 17200;    // drops in Blackrock Depths and BWL
+constexpr std::uint32_t UnspawnedBwlItem = 17300;  // BWL drop whose loot also sits on an unspawned template
+constexpr std::uint32_t ContainerBwlItem = 17400;  // BWL drop also found inside a container item
+constexpr std::uint32_t ContainerOnlyItem = 17500;
 constexpr std::uint32_t KarazhanItem = 28500;
 constexpr std::uint32_t UlduarItem = 45000;
 constexpr std::uint32_t NotInIndex = 99999;
@@ -47,6 +52,7 @@ struct World
     std::vector<CreatureTemplateRow> creatures;
     std::vector<SpawnRow> creatureSpawns;
     std::vector<std::uint32_t> vendor;
+    std::vector<LootRow> itemLoot;
 
     // One boss per (map, spawn mask) dropping one item.
     void Boss(std::uint32_t entry, std::uint32_t map, std::uint8_t mask, std::uint32_t item)
@@ -63,6 +69,7 @@ struct World
         rows.creatures = creatures;
         rows.creatureSpawns = creatureSpawns;
         rows.vendorItems = vendor;
+        rows.itemLoot = itemLoot;
         return rows;
     }
 };
@@ -84,6 +91,16 @@ SourceIndex BuildFixture()
     world.Boss(11, 469, 1, TwoRaidItem);
     world.Boss(12, 532, 1, KarazhanItem);
     world.Boss(13, 603, 1, UlduarItem);
+    world.Boss(14, 469, 1, LockedPairItem);
+    world.Boss(15, 509, 1, LockedPairItem);
+    world.Boss(16, 230, 1, DungeonBwlItem);
+    world.Boss(17, 469, 1, DungeonBwlItem);
+    world.Boss(18, 469, 1, UnspawnedBwlItem);
+    world.creatures.push_back({19, {}, 19});  // never spawned: script-summoned use is unknown
+    world.creatureLoot.push_back({19, UnspawnedBwlItem, 0});
+    world.Boss(20, 469, 1, ContainerBwlItem);
+    world.itemLoot.push_back({9000, ContainerBwlItem, 0});
+    world.itemLoot.push_back({9001, ContainerOnlyItem, 0});
     return SourceIndex::Build(world.View());
 }
 
@@ -97,7 +114,13 @@ void TestIndexKeepsSourceMap(SourceIndex const& index)
     Check(index.Lookup(DungeonItem).verdict == Verdict::Unknown && index.Lookup(DungeonItem).map == 0,
           "dungeon item is Unknown with no map");
     Check(index.Lookup(VendorBwlItem).verdict == Verdict::Unknown, "a vendor source makes a BWL drop Unknown");
-    Check(index.Lookup(TwoRaidItem).verdict == Verdict::Unknown, "two raids make an item Unknown");
+    Check(index.Lookup(TwoRaidItem).verdict == Verdict::Unknown, "two raids make an item Unknown for the tier lift");
+    AccessEntry const pair = index.Access(LockedPairItem);
+    Check(pair.known && pair.spawned.size() == 2 && !pair.vendorOrQuest, "access keeps both raid sources");
+    Check(index.Access(VendorBwlItem).vendorOrQuest, "access records the vendor source");
+    Check(index.Access(UnspawnedBwlItem).unattributed, "access records loot on an unspawned template");
+    Check(index.Access(ContainerBwlItem).container, "access records the container source");
+    Check(!index.Access(NotInIndex).known, "an unnamed item has no access entry");
 }
 
 bool Offered(SourceIndex const& index, std::uint32_t item, std::uint8_t stage, Gates gates = {})
@@ -127,11 +150,27 @@ void TestVanillaStages(SourceIndex const& index)
     Check(Offered(index, Naxx40Item, 6), "stage 6 (PROGRESSION_AQ): Naxx 40 loot");
     Check(Offered(index, MoltenCoreItem, 18), "Vanilla raids never re-lock");
 
-    // Unknown sources are judged by the item-level cap only.
+    // Items with an ordinary source are judged by the item-level cap only.
     Check(Offered(index, DungeonItem, 0), "dungeon loot at stage 0");
-    Check(Offered(index, VendorBwlItem, 0), "an item also sold by a vendor at stage 0");
-    Check(Offered(index, TwoRaidItem, 0), "an item from two raids at stage 0");
-    Check(Offered(index, NotInIndex, 0), "an item the index never saw");
+    Check(Offered(index, DungeonBwlItem, 0), "BRD + BWL: the dungeon source is reachable at stage 0");
+
+    // CS01 7065120451 fixtures.
+    // (a) two raids, one unlocked: MC is open at stage 0.
+    Check(Offered(index, TwoRaidItem, 0), "(a) MC + BWL at stage 0: MC is open");
+    // Two raids, both locked: no reachable source.
+    Check(!Offered(index, LockedPairItem, 1), "BWL + AQ20 at stage 1: both locked");
+    Check(Offered(index, LockedPairItem, 2), "BWL + AQ20 at stage 2: BWL opens");
+    // (b) vendor plus a locked raid: the vendor row is a verified ordinary source (owner decision pending).
+    Check(Offered(index, VendorBwlItem, 0), "(b) BWL + vendor at stage 0: the vendor source counts");
+    // (c) an item no row names: no raid evidence.
+    Check(Offered(index, NotInIndex, 0), "(c) an item the index never saw");
+    // A locked raid plus loot nobody can place is not a verified alternative.
+    Check(!Offered(index, UnspawnedBwlItem, 1), "BWL + unspawned-template loot at stage 1: refused");
+    Check(!Offered(index, ContainerBwlItem, 1), "BWL + container contents at stage 1: refused");
+    Check(Offered(index, ContainerOnlyItem, 0), "container-only item: no raid evidence");
+    // (d) attunement and first-entry conditions are not readable here: the stage is necessary, never
+    // sufficient. At stage 6 Naxx 40 loot is offered whether or not the commander is attuned.
+    Check(Offered(index, Naxx40Item, 6), "(d) stage-only: Naxx 40 at stage 6 without an attunement input");
 }
 
 void TestLaterEras(SourceIndex const& index)
@@ -165,11 +204,18 @@ void TestTable()
           "level-80 Onyxia and WotLK Naxxramas use their WotLK gates");
     Check(RequiredStage(568, 0, Gates{}) == 12, "Zul'Aman uses IP's default 12");
 
-    // A raid-proven entry on a map the table does not know is refused, never waved through.
-    SourceEntry stray;
-    stray.verdict = Verdict::VanillaRaid;
-    stray.map = 1;
-    Check(!Allows(stray, 18, Gates{}), "raid proof on an ungated map is refused");
+    Check(RequiredStage(624, 0, Gates{}) == 13, "Vault of Archavon is gated like the other Northrend raids");
+    // Every 3.3.5a raid map is gated, so "not gated" really means a dungeon or the open world.
+    for (std::uint32_t map : {309u, 409u, 469u, 509u, 531u, 533u, 249u, 532u, 565u, 544u, 548u, 550u,
+                              534u, 564u, 568u, 580u, 615u, 616u, 603u, 649u, 631u, 724u, 624u})
+        Check(RequiredStage(map, 0, Gates{}) != NotGated, "raid map " + std::to_string(map) + " is gated");
+    AccessEntry world;
+    world.known = true;
+    world.spawned.push_back({1, 0});  // Kalimdor
+    world.spawned.push_back({469, 0});
+    Check(Allows(world, 0, Gates{}), "a world drop clears a locked raid source");
+    AccessEntry empty;
+    Check(Allows(empty, 0, Gates{}), "an entry without sources has no raid evidence");
 }
 
 void TestNoIndex()

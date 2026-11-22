@@ -6,9 +6,11 @@
 
 #include "AutoGearSourceIndexStore.h"
 
+#include <array>
 #include <atomic>
-#include <cstdlib>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "DatabaseEnv.h"
@@ -24,105 +26,103 @@ namespace
 std::unique_ptr<SourceIndex const> storedIndex;
 std::atomic<SourceIndex const*> publishedIndex{nullptr};
 
-void LoadLoot(char const* sql, std::vector<LootRow>& rows)
+char const* FailureName(LoadFailure failure)
 {
-    QueryResult result = WorldDatabase.Query(sql);
-    if (!result)
-        return;  // an empty table is valid
-    do
+    switch (failure)
     {
-        Field* fields = result->Fetch();
-        // Reference is a signed column; Core's LootMgr reads it as int32 and follows std::abs(reference).
-        rows.push_back(
-            {fields[0].Get<uint32>(), fields[1].Get<uint32>(), static_cast<uint32>(std::abs(fields[2].Get<int32>()))});
-    } while (result->NextRow());
+        case LoadFailure::None:
+            return "none";
+        case LoadFailure::CountFailed:
+            return "row count query failed";
+        case LoadFailure::QueryFailed:
+            return "query failed";
+        case LoadFailure::RowCountMismatch:
+            return "row count changed";
+        case LoadFailure::MalformedRow:
+            return "malformed row";
+        case LoadFailure::NoCreatureRows:
+            return "no creature rows";
+    }
+    return "unknown";
 }
 
-void LoadSpawns(char const* sql, std::vector<SpawnRow>& rows)
+// The world database as RowLoader sees it. Each column is read with its own type (TableQuery::kinds)
+// and widened to int64, so a signed value is never read as unsigned.
+class WorldDatabaseSource
 {
-    QueryResult result = WorldDatabase.Query(sql);
-    if (!result)
-        return;
-    do
+public:
+    std::optional<std::uint64_t> Count(char const* sql)
     {
-        Field* fields = result->Fetch();
-        rows.push_back({fields[0].Get<uint32>(), fields[1].Get<uint32>(), fields[2].Get<uint8>()});
-    } while (result->NextRow());
-}
+        QueryResult result = WorldDatabase.Query("SELECT COUNT(*) FROM ({}) AS g7_rows", sql);
+        if (!result)
+            return std::nullopt;
+        return result->Fetch()[0].Get<uint64>();
+    }
+
+    template <class Visit>
+    bool Rows(TableQuery const& query, Visit&& visit)
+    {
+        QueryResult result = WorldDatabase.Query(query.sql);
+        if (!result)
+            return false;
+        std::size_t const columns = query.Columns();
+        if (result->GetFieldCount() != columns)
+        {
+            visit(std::span<std::int64_t const>());  // a width mismatch is a malformed row
+            return true;
+        }
+        std::array<std::int64_t, 16> row{};
+        do
+        {
+            Field* fields = result->Fetch();
+            for (std::size_t i = 0; i < columns && i < row.size(); ++i)
+            {
+                switch (query.kinds[i])
+                {
+                    case 's':
+                        row[i] = fields[i].Get<int32>();
+                        break;
+                    case 'h':
+                        row[i] = fields[i].Get<uint16>();
+                        break;
+                    case 'b':
+                        row[i] = fields[i].Get<uint8>();
+                        break;
+                    default:
+                        row[i] = fields[i].Get<uint32>();
+                        break;
+                }
+            }
+            if (!visit(std::span<std::int64_t const>(row.data(), std::min(columns, row.size()))))
+                break;
+        } while (result->NextRow());
+        return true;
+    }
+};
 }  // namespace
 
 void SourceIndexStore::LoadFromWorldDatabase()
 {
     uint32 const started = getMSTime();
-    std::vector<LootRow> creatureLoot, gameobjectLoot, referenceLoot, itemLoot;
-    std::vector<CreatureTemplateRow> creatures;
-    std::vector<SpawnRow> creatureSpawns, chestSpawns;
-    std::vector<ChestTemplateRow> chests;
-    std::vector<std::uint32_t> vendorItems, questRewardItems;
-
-    LoadLoot(SourceQueries::CreatureLoot, creatureLoot);
-    LoadLoot(SourceQueries::GameobjectLoot, gameobjectLoot);
-    LoadLoot(SourceQueries::ReferenceLoot, referenceLoot);
-    LoadLoot(SourceQueries::ItemLoot, itemLoot);
-    LoadSpawns(SourceQueries::CreatureSpawns, creatureSpawns);
-    LoadSpawns(SourceQueries::ChestSpawns, chestSpawns);
-    if (QueryResult result = WorldDatabase.Query(SourceQueries::Creatures))
-        do
-        {
-            Field* fields = result->Fetch();
-            creatures.push_back({fields[0].Get<uint32>(),
-                                 {fields[1].Get<uint32>(), fields[2].Get<uint32>(), fields[3].Get<uint32>()},
-                                 fields[4].Get<uint32>()});
-        } while (result->NextRow());
-    if (QueryResult result = WorldDatabase.Query(SourceQueries::Chests))
-        do
-        {
-            Field* fields = result->Fetch();
-            if (int32 const lootId = fields[1].Get<int32>(); lootId > 0)  // Data1 is a signed column
-                chests.push_back({fields[0].Get<uint32>(), static_cast<uint32>(lootId)});
-        } while (result->NextRow());
-    if (QueryResult result = WorldDatabase.Query(SourceQueries::VendorItems))
-        do
-        {
-            // A negative item names another vendor list (Core's LoadReferenceVendor); that list's own
-            // rows are already in this result.
-            if (int32 const item = result->Fetch()[0].Get<int32>(); item > 0)
-                vendorItems.push_back(static_cast<uint32>(item));
-        } while (result->NextRow());
-    if (QueryResult result = WorldDatabase.Query(SourceQueries::QuestRewards))
-        do
-        {
-            Field* fields = result->Fetch();
-            for (uint32 i = 0; i < 10; ++i)
-                if (uint32 const item = fields[i].Get<uint32>())
-                    questRewardItems.push_back(item);
-        } while (result->NextRow());
-
-    if (creatures.empty() || creatureSpawns.empty() || creatureLoot.empty())
+    WorldDatabaseSource source;
+    LoadReport report;
+    std::optional<OwnedWorldRows> rows = LoadWorldRows(source, SourceTables, report);
+    if (!rows)
     {
         LOG_ERROR("server.loading",
-                  ">> AutoGear source index not built: creature rows missing. Raid tiers stay at the era floor.");
+                  ">> AutoGear source index not built: {} on {} ({} of {} rows). IP-capped autogear commands keep "
+                  "the bot's current gear until the next restart.",
+                  FailureName(report.failure), report.table ? report.table : "?", report.loaded, report.expected);
         return;
     }
 
-    WorldRows rows;
-    rows.creatureLoot = creatureLoot;
-    rows.gameobjectLoot = gameobjectLoot;
-    rows.referenceLoot = referenceLoot;
-    rows.itemLoot = itemLoot;
-    rows.creatures = creatures;
-    rows.creatureSpawns = creatureSpawns;
-    rows.chests = chests;
-    rows.chestSpawns = chestSpawns;
-    rows.vendorItems = vendorItems;
-    rows.questRewardItems = questRewardItems;
-    storedIndex = std::make_unique<SourceIndex const>(SourceIndex::Build(rows));
+    storedIndex = std::make_unique<SourceIndex const>(SourceIndex::Build(rows->View()));
     publishedIndex.store(storedIndex.get(), std::memory_order_release);
     LOG_INFO("server.loading",
              ">> AutoGear source index: {} raid-sourced items from {} creature, {} chest, {} reference loot rows "
              "in {} ms",
-             storedIndex->RaidEntries(), creatureLoot.size(), gameobjectLoot.size(), referenceLoot.size(),
-             GetMSTimeDiffToNow(started));
+             storedIndex->RaidEntries(), rows->creatureLoot.size(), rows->gameobjectLoot.size(),
+             rows->referenceLoot.size(), GetMSTimeDiffToNow(started));
 }
 
 SourceIndex const* SourceIndexStore::Get() { return publishedIndex.load(std::memory_order_acquire); }

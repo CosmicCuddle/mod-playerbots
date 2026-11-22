@@ -168,6 +168,19 @@ namespace PlayerbotsAutoGearMasterSource
         std::uint8_t difficulty = 0;
     };
 
+    // Every source the world rows show for one item, for gates that ask whether the item can be
+    // obtained anywhere the player may go (AutoGearSourceAccess.h), rather than "which one raid".
+    // Spawned loot is (map, difficulty). Loot reached only by unspawned or script-summoned templates,
+    // container contents, vendors and quest rewards are flags.
+    struct AccessEntry
+    {
+        bool known = false;  // any loot, vendor or quest row names the item
+        std::vector<std::pair<std::uint32_t, std::uint8_t>> spawned{};
+        bool unattributed = false;
+        bool container = false;
+        bool vendorOrQuest = false;
+    };
+
     class SourceIndex
     {
     public:
@@ -176,7 +189,7 @@ namespace PlayerbotsAutoGearMasterSource
         {
             SourceIndex index;
             Builder builder(rows);
-            builder.Run(index._entries);
+            builder.Run(index._entries, index._access);
             index._built = true;
             return index;
         }
@@ -189,6 +202,14 @@ namespace PlayerbotsAutoGearMasterSource
                 return {};
             auto const found = _entries.find(item);
             return found == _entries.end() ? SourceEntry{} : found->second;
+        }
+
+        AccessEntry Access(std::uint32_t item) const
+        {
+            if (!_built || item == 0)
+                return {};
+            auto const found = _access.find(item);
+            return found == _access.end() ? AccessEntry{} : found->second;
         }
 
         std::size_t RaidEntries() const
@@ -275,7 +296,7 @@ namespace PlayerbotsAutoGearMasterSource
                 return {base, 0};
             }
 
-            void Run(std::map<std::uint32_t, SourceEntry>& entries)
+            void Run(std::map<std::uint32_t, SourceEntry>& entries, std::map<std::uint32_t, AccessEntry>& access)
             {
                 for (SpawnRow const& spawn : rows.creatureSpawns)
                     for (std::uint8_t diff = 0; diff < DifficultyCount; ++diff)
@@ -330,11 +351,13 @@ namespace PlayerbotsAutoGearMasterSource
                 std::multimap<std::uint32_t, LootRow> itemLoot;
                 for (LootRow const& row : rows.itemLoot)
                     itemLoot.emplace(row.entry, row);
+                std::set<std::uint32_t> containerItems;
                 for (auto it = itemLoot.begin(); it != itemLoot.end(); it = itemLoot.upper_bound(it->first))
                 {
                     std::set<std::uint32_t> seen, items;
                     Expand(itemLoot, it->first, seen, items);
                     poisoned.insert(items.begin(), items.end());
+                    containerItems.insert(items.begin(), items.end());
                 }
                 poisoned.insert(rows.vendorItems.begin(), rows.vendorItems.end());
                 poisoned.insert(rows.questRewardItems.begin(), rows.questRewardItems.end());
@@ -352,10 +375,36 @@ namespace PlayerbotsAutoGearMasterSource
                     entries[item] =
                         SourceEntry{raid.verdict, raid.point, raid.size, raid.heroic, bucket.first, bucket.second};
                 }
+
+                for (auto const& [item, set] : buckets)
+                {
+                    AccessEntry& entry = access[item];
+                    entry.known = true;
+                    for (Bucket const& bucket : set)
+                    {
+                        if (bucket == Unattributed)
+                            entry.unattributed = true;
+                        else
+                            entry.spawned.push_back(bucket);
+                    }
+                }
+                for (std::uint32_t item : containerItems)
+                {
+                    access[item].known = true;
+                    access[item].container = true;
+                }
+                for (auto const* list : {&rows.vendorItems, &rows.questRewardItems})
+                    for (std::uint32_t item : *list)
+                        if (item)
+                        {
+                            access[item].known = true;
+                            access[item].vendorOrQuest = true;
+                        }
             }
         };
 
         std::map<std::uint32_t, SourceEntry> _entries;
+        std::map<std::uint32_t, AccessEntry> _access;
         bool _built = false;
     };
 
