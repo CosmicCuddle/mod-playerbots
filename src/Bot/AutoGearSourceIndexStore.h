@@ -14,7 +14,8 @@
 namespace PlayerbotsAutoGearMasterSource
 {
 // The world rows the G7 source index is built from. Kept here, exactly as sent to the world database,
-// so the offline coverage harness runs the same SQL.
+// so the offline coverage harness runs the same SQL. Spell data (what spells create and teach) comes
+// from the DBC stores Core loaded before the index (AutoGearSourceIndexStore.cpp).
 namespace SourceQueries
 {
 inline constexpr char const* CreatureLoot = "SELECT Entry, Item, Reference FROM creature_loot_template";
@@ -33,6 +34,13 @@ inline constexpr char const* QuestRewards =
     "RequiredItemId2, RequiredItemId3, RequiredItemId4, RequiredItemId5, RequiredItemId6, StartItem, "
     "RequiredNpcOrGo1, RequiredNpcOrGo2, RequiredNpcOrGo3, RequiredNpcOrGo4 FROM quest_template";
 inline constexpr char const* QuestChains = "SELECT ID, PrevQuestID FROM quest_template_addon";
+inline constexpr char const* TrainerSpells = "SELECT DISTINCT SpellId FROM trainer_spell";
+inline constexpr char const* ItemSpells =
+    "SELECT entry, spellid_1, spelltrigger_1, spellid_2, spelltrigger_2, spellid_3, spelltrigger_3, spellid_4, "
+    "spelltrigger_4, spellid_5, spelltrigger_5 FROM item_template WHERE spellid_1 > 0 OR spellid_2 > 0 OR "
+    "spellid_3 > 0 OR spellid_4 > 0 OR spellid_5 > 0";
+inline constexpr char const* QuestSpells =
+    "SELECT ID, RewardSpell, RewardDisplaySpell FROM quest_template WHERE RewardSpell <> 0 OR RewardDisplaySpell <> 0";
 }  // namespace SourceQueries
 
 // The same queries with the exact column types (see TableQuery). Read completely or not at all.
@@ -48,6 +56,9 @@ inline constexpr SourceTableSet SourceTables{
     {"npc_vendor", SourceQueries::VendorItems, "s"},
     {"quest_template", SourceQueries::QuestRewards, "uuuuuuuuuuuuuuuuuussss"},
     {"quest_template_addon", SourceQueries::QuestChains, "us"},
+    {"trainer_spell", SourceQueries::TrainerSpells, "u"},
+    {"item_template spells", SourceQueries::ItemSpells, "usbsbsbsbsb"},
+    {"quest_template reward spells", SourceQueries::QuestSpells, "usu"},
 };
 
 // Built once on the world thread during startup, before map updates run, and immutable afterwards.

@@ -159,6 +159,29 @@ namespace PlayerbotsAutoGearMasterSource
         std::int32_t prev = 0;
     };
 
+    // An item a spell creates (Spell.dbc SPELL_EFFECT_CREATE_ITEM or CREATE_ITEM_2): profession recipes,
+    // and items made by using another item (Sul'thraze, the Zul'Gurub charms).
+    struct CraftRow
+    {
+        std::uint32_t spell = 0;
+        std::uint32_t item = 0;
+    };
+
+    // How a player gets a spell.
+    enum class SpellSource : std::uint8_t
+    {
+        Taught,  // a trainer teaches it, or it comes with the profession skill (SkillLineAbility)
+        Item,    // id: a recipe item that teaches it, or an item whose use casts it
+        Quest    // id: a quest whose reward spell teaches or casts it
+    };
+
+    struct SpellSourceRow
+    {
+        std::uint32_t spell = 0;
+        SpellSource kind = SpellSource::Taught;
+        std::uint32_t id = 0;
+    };
+
     struct WorldRows
     {
         std::span<LootRow const> creatureLoot{};
@@ -173,6 +196,8 @@ namespace PlayerbotsAutoGearMasterSource
         std::span<std::uint32_t const> questRewardItems{};  // RewardItem*, RewardChoiceItemID*
         std::span<QuestRow const> quests{};                 // the same rewards with their requirements
         std::span<QuestChainRow const> questChains{};
+        std::span<CraftRow const> crafts{};
+        std::span<SpellSourceRow const> spellSources{};
     };
 
     struct SourceEntry
@@ -193,13 +218,15 @@ namespace PlayerbotsAutoGearMasterSource
     // ask what completing them needs.
     struct AccessEntry
     {
-        bool known = false;  // any loot, vendor or quest row names the item
+        bool known = false;  // any loot, vendor, quest or craft row names the item
         std::vector<std::pair<std::uint32_t, std::uint8_t>> spawned{};
         bool unattributed = false;
         bool container = false;
         bool vendor = false;
-        std::vector<std::uint32_t> quests{};  // quests that reward it
+        std::vector<std::uint32_t> quests{};  // quests that reward it, or teach the spell that makes it
         bool questUnstructured = false;       // a reward row without requirements (older callers)
+        bool taught = false;                  // made by a spell a trainer or the profession skill teaches
+        std::vector<std::uint32_t> fromItems{};  // recipe items teaching, or items whose use casts, its spell
     };
 
     // What completing one quest needs.
@@ -298,7 +325,7 @@ namespace PlayerbotsAutoGearMasterSource
             std::map<std::uint32_t, std::set<Bucket>> buckets;
             std::set<std::uint32_t> reachedCreatureLoot, reachedChestLoot;
             std::set<std::uint32_t> reachedCreatureTemplates; // selected exact template entries, not merely shared loot ids
-            std::set<std::uint32_t> poisoned;  // vendor, quest, container
+            std::set<std::uint32_t> poisoned;                 // vendor, quest, container, taught craft
 
             explicit Builder(WorldRows const& source) : rows(source)
             {
@@ -432,6 +459,23 @@ namespace PlayerbotsAutoGearMasterSource
                     for (std::uint32_t item : quest.rewards)
                         if (item)
                             poisoned.insert(item);
+                // A spell that makes items, and how players get it. A craft nobody can learn adds nothing.
+                std::multimap<std::uint32_t, SpellSourceRow> spellSources;
+                for (SpellSourceRow const& source : rows.spellSources)
+                    spellSources.emplace(source.spell, source);
+                std::map<std::uint32_t, std::vector<SpellSourceRow>> crafted;  // item -> sources of its spells
+                for (CraftRow const& craft : rows.crafts)
+                {
+                    if (!craft.item)
+                        continue;
+                    auto const [first, last] = spellSources.equal_range(craft.spell);
+                    for (auto it = first; it != last; ++it)
+                    {
+                        crafted[craft.item].push_back(it->second);
+                        if (it->second.kind == SpellSource::Taught)
+                            poisoned.insert(craft.item);
+                    }
+                }
 
                 for (auto const& [item, set] : buckets)
                 {
@@ -487,6 +531,20 @@ namespace PlayerbotsAutoGearMasterSource
                         access[item].known = true;
                         access[item].questUnstructured = true;
                     }
+                for (auto const& [item, sources] : crafted)
+                {
+                    AccessEntry& entry = access[item];
+                    entry.known = true;
+                    for (SpellSourceRow const& source : sources)
+                    {
+                        std::vector<std::uint32_t>& list =
+                            source.kind == SpellSource::Quest ? entry.quests : entry.fromItems;
+                        if (source.kind == SpellSource::Taught)
+                            entry.taught = true;
+                        else if (source.id && std::find(list.begin(), list.end(), source.id) == list.end())
+                            list.push_back(source.id);
+                    }
+                }
             }
         };
 

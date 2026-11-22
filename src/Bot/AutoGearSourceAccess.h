@@ -27,8 +27,14 @@
 // An item is refused when the world rows show raid loot for it and every source is a raid the
 // commander cannot enter yet: two locked raids, or a locked raid plus loot nobody can place (unspawned
 // or script-summoned templates, container contents). A source the commander can reach clears it: a
-// spawned dungeon or world drop, a raid they can enter, or a vendor or quest row. An item no row
-// names at all has no raid evidence and keeps the item-level cap only.
+// spawned dungeon or world drop, a raid they can enter, a vendor or quest row, or a recipe they can
+// learn.
+//
+// An item with no known source is refused as well (owner instruction of 22 Nov 2026, coordination #74
+// comments 7079237461 and 7079669889): placeholder, deprecated and test items, and crafts whose recipe
+// nobody can learn. Crafting counts as a source and follows how the recipe is obtained: taught by a
+// trainer or with the skill is reachable; a recipe item, the item used to create it, or a quest reward
+// spell is as reachable as that item or quest (Zul'Gurub recipes and charms wait for Zul'Gurub).
 namespace PlayerbotsAutoGearSourceAccess
 {
 using PlayerbotsAutoGearMasterSource::AccessEntry;
@@ -100,7 +106,8 @@ enum class Reach : std::uint8_t
 {
     Reachable,  // at least one source the commander can use now
     Locked,     // raid evidence, and every source is out of reach
-    Unknown     // no evidence either way (no rows, unplaceable loot, containers)
+    Unknown,    // a source exists but cannot be placed (script-summoned loot, containers, deep quest chains)
+    NoSource    // no row names the item, or its only sources are items nobody can obtain
 };
 
 inline Reach SpawnReach(std::uint32_t map, std::uint8_t difficulty, std::uint8_t effectiveStage, Gates gates)
@@ -121,7 +128,7 @@ inline bool Allows(AccessEntry const& entry, std::uint8_t effectiveStage, Gates 
             return true;
         locked = true;
     }
-    if (entry.vendor || entry.questUnstructured || !entry.quests.empty())
+    if (entry.vendor || entry.questUnstructured || entry.taught || !entry.quests.empty() || !entry.fromItems.empty())
         return true;
     return !locked;
 }
@@ -135,7 +142,9 @@ inline bool Allows(AccessEntry const& entry, std::uint8_t effectiveStage, Gates 
 // item is itself locked (for example Primal Hakkari items, which only drop in Zul'Gurub, for the
 // Zandalar "Paragons of Power" rewards), when a creature it requires is spawned only in locked
 // raids, or when the quest before it in the chain is locked (Head of Nefarian -> its follow-up).
-// Vendors stay reachable. Anything without evidence stays allowed and keeps the item-level cap.
+// Vendors stay reachable. A source that cannot be placed stays allowed and keeps the item-level cap.
+// A quest hand-in nobody can source does not lock the quest: quest items are usually given by the
+// quest itself or a script.
 struct Filter
 {
     SourceIndex const* index = nullptr;
@@ -147,39 +156,50 @@ struct Filter
 
     bool Allows(std::uint32_t item) const
     {
-        if (!index)
+        if (!index || !index->FindAccess(item))
             return false;
         if (blocked)
             return !blocked->count(item);
-        return ItemReach(item, 0) != Reach::Locked;
+        Reach const reach = ItemReach(item, 0);
+        return reach == Reach::Reachable || reach == Reach::Unknown;
     }
 
     Reach ItemReach(std::uint32_t item, int depth) const
     {
+        // Past MaxDepth (in practice only a creation loop: A made from B, B made from A) nothing leads in.
+        if (depth > MaxDepth)
+            return Reach::NoSource;
         AccessEntry const* entry = index->FindAccess(item);
         if (!entry)
-            return Reach::Unknown;
+            return Reach::NoSource;
         bool locked = false;
+        bool unknown = entry->unattributed || entry->container;
         for (auto const& [map, difficulty] : entry->spawned)
         {
             if (SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable)
                 return Reach::Reachable;
             locked = true;
         }
-        if (entry->vendor || entry->questUnstructured)
+        if (entry->vendor || entry->questUnstructured || entry->taught)
             return Reach::Reachable;
-        for (std::uint32_t quest : entry->quests)
+        auto const weigh = [&](Reach reach)
         {
-            Reach const reach = QuestReach(quest, depth + 1);
-            if (reach == Reach::Reachable)
-                return Reach::Reachable;
             locked = locked || reach == Reach::Locked;
-        }
-        // Quests without evidence either way leave the item Unknown, which is allowed.
-        return locked ? Reach::Locked : Reach::Unknown;
+            unknown = unknown || reach == Reach::Unknown;
+            return reach == Reach::Reachable;
+        };
+        for (std::uint32_t quest : entry->quests)
+            if (weigh(QuestReach(quest, depth + 1)))
+                return Reach::Reachable;
+        for (std::uint32_t from : entry->fromItems)
+            if (from != item && weigh(ItemReach(from, depth + 1)))
+                return Reach::Reachable;
+        // A locked raid outweighs loot nobody can place. Recipes nobody can obtain add nothing.
+        return locked ? Reach::Locked : unknown ? Reach::Unknown : Reach::NoSource;
     }
 
-    // Chains and hand-ins rarely go deeper than three steps; past this the answer is Unknown.
+    // Chains and hand-ins rarely go deeper than three steps. Past this a quest is Unknown (allowed) and an
+    // item has no source; neither locks a quest that needs it.
     static constexpr int MaxDepth = 8;
 
     Reach QuestReach(std::uint32_t quest, int depth) const
@@ -217,7 +237,8 @@ struct Filter
 
 inline constexpr std::uint8_t StageCount = 19;  // IP ProgressionState 0..18
 
-// Every item each stage refuses. Only items some row names can be refused, so only those are walked.
+// Every item each stage refuses among the items some row names. Items no row names are refused by
+// Filter::Allows before it reads these sets.
 inline std::array<std::unordered_set<std::uint32_t>, StageCount> BlockedSets(SourceIndex const& index, Gates gates)
 {
     std::array<std::unordered_set<std::uint32_t>, StageCount> blocked;

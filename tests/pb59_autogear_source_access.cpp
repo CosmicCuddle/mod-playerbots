@@ -165,8 +165,8 @@ void TestVanillaStages(SourceIndex const& index)
     Check(Offered(index, LockedPairItem, 2), "BWL + AQ20 at stage 2: BWL opens");
     // (b) vendor plus a locked raid: the vendor row is a verified ordinary source (owner decision pending).
     Check(Offered(index, VendorBwlItem, 0), "(b) BWL + vendor at stage 0: the vendor source counts");
-    // (c) an item no row names: no raid evidence.
-    Check(Offered(index, NotInIndex, 0), "(c) an item the index never saw");
+    // (c) an item no row names has no known source: refused at every stage (owner, #74 7079669889).
+    Check(!Offered(index, NotInIndex, 0) && !Offered(index, NotInIndex, 18), "(c) an item no row names is refused");
     // A locked raid plus loot nobody can place is not a verified alternative.
     Check(!Offered(index, UnspawnedBwlItem, 1), "BWL + unspawned-template loot at stage 1: refused");
     Check(!Offered(index, ContainerBwlItem, 1), "BWL + container contents at stage 1: refused");
@@ -324,6 +324,106 @@ void TestQuestRewards()
     Check(Offered(deepIndex, 7200, 2), "and opens with the raid");
 }
 
+// Crafting is a source that follows how the recipe is obtained; items without any source are refused
+// (owner instruction of 22 Nov 2026, coordination #74 comment 7079669889).
+void TestCraftsAndNoSource()
+{
+    World world;
+    constexpr std::uint32_t TrainerCraft = 14139;  // Mooncloth Shoulders style: trainer-taught recipe
+    constexpr std::uint32_t RecipeCraft = 15092;   // a world-drop recipe item teaches it
+    constexpr std::uint32_t WorldRecipe = 15700;
+    constexpr std::uint32_t ZgRecipeCraft = 19900;  // the recipe drops only in Zul'Gurub
+    constexpr std::uint32_t ZgRecipe = 19901;
+    constexpr std::uint32_t Charm = 19956;  // made by using a Zul'Gurub drop
+    constexpr std::uint32_t CharmSource = 19957;
+    constexpr std::uint32_t QuestCraft = 16000;            // the recipe is a quest reward spell
+    constexpr std::uint32_t RemovedRecipeCraft = 16100;    // nobody can learn the recipe
+    constexpr std::uint32_t UnsourcedRecipeCraft = 16200;  // the recipe item itself has no source
+    constexpr std::uint32_t UnsourcedRecipe = 16201;
+    constexpr std::uint32_t BwlAndTrainer = 16300;   // a BWL drop that is also trainer-crafted
+    constexpr std::uint32_t BwlAndZgRecipe = 16400;  // a BWL drop also crafted from a Zul'Gurub recipe
+    constexpr std::uint32_t ScriptLootAndUnsourcedRecipe = 16500;
+    constexpr std::uint32_t LoopA = 16600;  // A is made with B, B is made with A
+    constexpr std::uint32_t LoopB = 16601;
+    world.Boss(60, 0, 1, WorldRecipe);
+    world.Boss(61, 309, 1, ZgRecipe);
+    world.Boss(62, 309, 1, CharmSource);
+    world.Boss(63, 469, 1, BwlAndTrainer);
+    world.Boss(64, 469, 1, BwlAndZgRecipe);
+    world.creatureLoot.push_back({65, ScriptLootAndUnsourcedRecipe, 0});
+    world.creatures.push_back({65, {}, 65});  // a script-summoned boss: loot without a spawn
+    std::vector<CraftRow> crafts{{1, TrainerCraft},
+                                 {2, RecipeCraft},
+                                 {3, ZgRecipeCraft},
+                                 {4, Charm},
+                                 {5, QuestCraft},
+                                 {6, RemovedRecipeCraft},
+                                 {7, UnsourcedRecipeCraft},
+                                 {8, BwlAndTrainer},
+                                 {9, BwlAndZgRecipe},
+                                 {10, ScriptLootAndUnsourcedRecipe},
+                                 {11, LoopA},
+                                 {12, LoopB}};
+    std::vector<SpellSourceRow> sources{{1, SpellSource::Taught, 0},
+                                        {2, SpellSource::Item, WorldRecipe},
+                                        {3, SpellSource::Item, ZgRecipe},
+                                        {4, SpellSource::Item, CharmSource},
+                                        {5, SpellSource::Quest, 300},
+                                        {7, SpellSource::Item, UnsourcedRecipe},
+                                        {8, SpellSource::Taught, 0},
+                                        {9, SpellSource::Item, ZgRecipe},
+                                        {10, SpellSource::Item, UnsourcedRecipe},
+                                        {11, SpellSource::Item, LoopB},
+                                        {12, SpellSource::Item, LoopA},
+                                        {99, SpellSource::Taught, 0}};  // a taught spell that makes nothing
+    std::vector<QuestRow> quests;
+    QuestRow handIn;
+    handIn.id = 300;
+    handIn.items[0] = ZgRecipe;  // the quest teaching spell 5 needs a Zul'Gurub item
+    quests.push_back(handIn);
+    WorldRows rows = world.View();
+    rows.crafts = crafts;
+    rows.spellSources = sources;
+    rows.quests = quests;
+    SourceIndex const index = SourceIndex::Build(rows);
+
+    Check(index.Access(TrainerCraft).taught &&
+              index.Access(RecipeCraft).fromItems == std::vector<std::uint32_t>{WorldRecipe} &&
+              index.Access(QuestCraft).quests == std::vector<std::uint32_t>{300},
+          "the index keeps how each craft is learned");
+    Check(!index.FindAccess(RemovedRecipeCraft), "a craft nobody can learn adds no source");
+    Check(Offered(index, TrainerCraft, 0), "a trainer-taught craft is offered");
+    Check(Offered(index, RecipeCraft, 0), "a craft from a world-drop recipe is offered");
+    Check(!Offered(index, ZgRecipeCraft, 2) && Offered(index, ZgRecipeCraft, 3),
+          "a craft from a Zul'Gurub recipe waits for Zul'Gurub");
+    Check(!Offered(index, Charm, 2) && Offered(index, Charm, 3), "an item made by using a Zul'Gurub drop waits too");
+    Check(!Offered(index, QuestCraft, 2) && Offered(index, QuestCraft, 3), "a quest-taught craft follows its quest");
+    Check(!Offered(index, RemovedRecipeCraft, 18), "a craft nobody can learn is refused");
+    Check(!Offered(index, UnsourcedRecipeCraft, 18), "a craft whose recipe item has no source is refused");
+    Check(Offered(index, BwlAndTrainer, 0), "a trainer craft clears a BWL drop");
+    Gates earlyZg;
+    earlyZg.zulGurub = 1;
+    Check(!Offered(index, BwlAndZgRecipe, 1) && Offered(index, BwlAndZgRecipe, 2) &&
+              Offered(index, BwlAndZgRecipe, 1, earlyZg),
+          "a BWL drop also crafted from a Zul'Gurub recipe opens with whichever raid opens first");
+    Check(Offered(index, ScriptLootAndUnsourcedRecipe, 0), "script-summoned loot is still a source");
+    Check(!Offered(index, LoopA, 18) && !Offered(index, LoopB, 18), "a creation loop with no way in is refused");
+    Check(!Offered(index, 77777, 0), "an item no row names is refused");
+    Check(index.Lookup(BwlAndTrainer).verdict != Verdict::Raid, "a taught craft is not raid-only for the tier lift");
+
+    auto const blocked = BlockedSets(index, Gates{});
+    bool same = true;
+    for (std::uint8_t stage = 0; stage < StageCount; ++stage)
+    {
+        Filter const live{&index, stage, Gates{}, nullptr};
+        Filter const fast{&index, stage, Gates{}, &blocked[stage]};
+        for (std::uint32_t item : {TrainerCraft, RecipeCraft, ZgRecipeCraft, Charm, QuestCraft, RemovedRecipeCraft,
+                                   UnsourcedRecipeCraft, BwlAndZgRecipe, LoopA, 77777u})
+            same = same && live.Allows(item) == fast.Allows(item);
+    }
+    Check(same, "precomputed sets agree with the live rule for crafts and unsourced items");
+}
+
 // Random-bot gearing reads precomputed sets; they must say exactly what the live rule says.
 void TestBlockedSetsAndBotStage()
 {
@@ -343,7 +443,7 @@ void TestBlockedSetsAndBotStage()
                     ++compared;
                     same = same && live.Allows(item) == fast.Allows(item);
                 });
-            same = same && fast.Allows(NotInIndex) && live.Allows(NotInIndex);
+            same = same && !fast.Allows(NotInIndex) && !live.Allows(NotInIndex);
         }
         Check(same && compared > 0,
               "precomputed sets match the live rule (ZG gate " + std::to_string(gates.zulGurub) + ")");
@@ -388,6 +488,7 @@ int main()
     TestTable();
     TestNoIndex();
     TestQuestRewards();
+    TestCraftsAndNoSource();
     TestBlockedSetsAndBotStage();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;

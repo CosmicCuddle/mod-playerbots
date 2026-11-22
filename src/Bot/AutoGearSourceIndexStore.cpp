@@ -14,10 +14,14 @@
 #include <vector>
 
 #include "Config.h"
+#include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "Field.h"
 #include "Log.h"
 #include "QueryResult.h"
+#include "SharedDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "Timer.h"
 
 namespace PlayerbotsAutoGearMasterSource
@@ -103,6 +107,33 @@ public:
         return true;
     }
 };
+// What each spell creates and teaches, and which spells come with a profession skill, from the spell
+// data Core loaded before this hook (Spell.dbc with spell_dbc overrides, SkillLineAbility.dbc).
+void AddSpellData(OwnedWorldRows& rows)
+{
+    std::multimap<std::uint32_t, std::uint32_t> learns;
+    for (uint32 id = 0; id < sSpellMgr->GetSpellInfoStoreSize(); ++id)
+    {
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(id);
+        if (!spell)
+            continue;
+        for (SpellEffectInfo const& effect : spell->GetEffects())
+        {
+            if ((effect.Effect == SPELL_EFFECT_CREATE_ITEM || effect.Effect == SPELL_EFFECT_CREATE_ITEM_2) &&
+                effect.ItemType)
+                rows.crafts.push_back({id, effect.ItemType});
+            else if (effect.Effect == SPELL_EFFECT_LEARN_SPELL && effect.TriggerSpell)
+                learns.emplace(id, effect.TriggerSpell);
+        }
+    }
+    std::vector<std::uint32_t> skillSpells;
+    for (uint32 i = 0; i < sSkillLineAbilityStore.GetNumRows(); ++i)
+        if (SkillLineAbilityEntry const* ability = sSkillLineAbilityStore.LookupEntry(i))
+            if (ability->AcquireMethod == SKILL_LINE_ABILITY_LEARNED_ON_SKILL_VALUE ||
+                ability->AcquireMethod == SKILL_LINE_ABILITY_LEARNED_ON_SKILL_LEARN)
+                skillSpells.push_back(ability->Spell);
+    rows.spellSources = ResolveSpellSources(rows.trainerSpells, skillSpells, rows.itemSpells, rows.questSpells, learns);
+}
 }  // namespace
 
 void SourceIndexStore::LoadFromWorldDatabase()
@@ -120,6 +151,7 @@ void SourceIndexStore::LoadFromWorldDatabase()
         return;
     }
 
+    AddSpellData(*rows);
     storedIndex = std::make_unique<SourceIndex const>(SourceIndex::Build(rows->View()));
     loadGates.zulGurub = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulGurubProgression", 3, false);
     loadGates.zulAman = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulAmanProgression", 12, false);
@@ -131,9 +163,10 @@ void SourceIndexStore::LoadFromWorldDatabase()
              storedIndex->RaidEntries(), rows->creatureLoot.size(), rows->gameobjectLoot.size(),
              rows->referenceLoot.size(), GetMSTimeDiffToNow(started));
     LOG_INFO("server.loading",
-             ">> AutoGear raid source gate: {} items refused at stage 0, {} at stage 1. Snapshot of startup: "
-             "restart after reloading loot, vendor or quest tables",
-             blockedByStage[0].size(), blockedByStage[1].size());
+             ">> AutoGear raid source gate: {} sourced items refused at stage 0, {} at stage 1 ({} craft rows); "
+             "items without a known source are refused at every stage. Snapshot of startup: restart after "
+             "reloading loot, vendor, quest or trainer tables",
+             blockedByStage[0].size(), blockedByStage[1].size(), rows->crafts.size());
 }
 
 SourceIndex const* SourceIndexStore::Get() { return publishedIndex.load(std::memory_order_acquire); }

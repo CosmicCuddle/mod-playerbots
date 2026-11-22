@@ -44,6 +44,9 @@ constexpr SourceTableSet Tables{
     {"npc_vendor", "vendor", "s"},
     {"quest_template", "quests", "uuuuuuuuuuuuuuuuuussss"},
     {"quest_template_addon", "quest_chains", "us"},
+    {"trainer_spell", "trainer_spells", "u"},
+    {"item_template spells", "item_spells", "usbsbsbsbsb"},
+    {"quest_template reward spells", "quest_spells", "usu"},
 };
 
 // One quest_template row: ID, 10 rewards, 6 hand-ins, start item, 4 kill targets.
@@ -81,6 +84,9 @@ struct FakeDatabase
         tables["vendor"] = {{BwlVendorItem}, {-200001}};
         tables["quests"] = {QuestRow(500, BwlQuestItem)};
         tables["quest_chains"] = {};
+        tables["trainer_spells"] = {};
+        tables["item_spells"] = {};
+        tables["quest_spells"] = {{9001, 0, 0}};
     }
 
     std::optional<std::uint64_t> Count(char const* sql)
@@ -151,6 +157,9 @@ void TestFailuresPublishNothing()
         {"item_loot", true, false, LoadFailure::CountFailed, "item_loot_template"},
         {"chests", true, false, LoadFailure::CountFailed, "gameobject_template"},
         {"creature_loot", false, true, LoadFailure::QueryFailed, "creature_loot_template"},
+        {"trainer_spells", true, false, LoadFailure::CountFailed, "trainer_spell"},
+        {"item_spells", true, false, LoadFailure::CountFailed, "item_template spells"},
+        {"quest_spells", false, true, LoadFailure::QueryFailed, "quest_template reward spells"},
     };
     for (Case const& c : cases)
     {
@@ -288,6 +297,59 @@ void TestQuestRows()
     Check(!Load(badKill, report).has_value() && report.failure == LoadFailure::MalformedRow,
           "a kill target outside int32 is malformed");
 }
+// Trainer, item and quest spell rows load, and resolve into how players get each spell.
+void TestSpellRows()
+{
+    LoadReport report;
+    FakeDatabase db;
+    db.tables["trainer_spells"] = {{3914}};
+    // A recipe (Learning on use, the recipe spell on learn), and an item whose use creates another.
+    db.tables["item_spells"] = {{2408, 483, 0, 3915, 6, 0, 0, 0, 0, 0, 0}, {9372, 0, 0, 21160, 0, 0, 0, 0, 0, 0, 0}};
+    db.tables["quest_spells"] = {{8100, -1, 0}, {8101, 24250, 0}, {8102, 0, 7421}};
+    auto rows = Load(db, report);
+    Check(rows.has_value(), "spell rows load");
+    if (!rows)
+        return;
+    Check(rows->trainerSpells == std::vector<std::uint32_t>{3914}, "trainer spells land in place");
+    Check(rows->itemSpells.size() == 2 && rows->itemSpells[0].spells[1] == 3915 &&
+              rows->itemSpells[0].triggers[1] == ItemSpellTriggerLearnSpell,
+          "item spell slots keep their spell and trigger");
+    Check(rows->questSpells.size() == 3 && rows->questSpells[0].rewardSpell == -1 &&
+              rows->questSpells[2].displaySpell == 7421,
+          "quest reward spells keep a negative RewardSpell as read");
+
+    std::multimap<std::uint32_t, std::uint32_t> const learns{{483, 0}, {3914, 3916}};
+    std::vector<std::uint32_t> const skill{2018};
+    auto const sources = ResolveSpellSources(rows->trainerSpells, skill, rows->itemSpells, rows->questSpells, learns);
+    auto has = [&](std::uint32_t spell, SpellSource kind, std::uint32_t id)
+    {
+        for (SpellSourceRow const& s : sources)
+            if (s.spell == spell && s.kind == kind && s.id == id)
+                return true;
+        return false;
+    };
+    Check(has(3914, SpellSource::Taught, 0) && has(3916, SpellSource::Taught, 0),
+          "a trainer spell and the spell it teaches are taught");
+    Check(has(2018, SpellSource::Taught, 0), "a skill-learned spell is taught");
+    Check(has(3915, SpellSource::Item, 2408), "a recipe item teaches its spell");
+    Check(has(21160, SpellSource::Item, 9372), "an item's use spell follows that item");
+    Check(has(24250, SpellSource::Quest, 8101) && has(7421, SpellSource::Quest, 8102),
+          "quest reward and display spells follow the quest");
+    bool zeroOrNegative = false;
+    for (SpellSourceRow const& s : sources)
+        zeroOrNegative = zeroOrNegative || s.spell == 0;
+    Check(!zeroOrNegative, "zero, negative and empty learn targets add no source");
+
+    FakeDatabase badTrigger;
+    badTrigger.tables["item_spells"] = {{1, 2, 300, 0, 0, 0, 0, 0, 0, 0, 0}};
+    Check(!Load(badTrigger, report).has_value() && report.failure == LoadFailure::MalformedRow &&
+              std::string(report.table) == "item_template spells",
+          "a spell trigger above 255 is malformed");
+    FakeDatabase badQuestSpell;
+    badQuestSpell.tables["quest_spells"] = {{1, std::int64_t{1} << 31, 0}};
+    Check(!Load(badQuestSpell, report).has_value() && report.failure == LoadFailure::MalformedRow,
+          "a RewardSpell outside int32 is malformed");
+}
 }  // namespace
 
 int main()
@@ -297,6 +359,7 @@ int main()
     TestSignedReference();
     TestMalformedRows();
     TestQuestRows();
+    TestSpellRows();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

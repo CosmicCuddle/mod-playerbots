@@ -7,8 +7,10 @@
 #ifndef PLAYERBOTS_AUTOGEAR_SOURCE_ROW_LOAD_H
 #define PLAYERBOTS_AUTOGEAR_SOURCE_ROW_LOAD_H
 
+#include <array>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -56,6 +58,64 @@ struct LoadReport
     std::uint64_t loaded = 0;
 };
 
+// item_template spellid_N / spelltrigger_N, one row per item with its five spell slots.
+struct ItemSpellRow
+{
+    std::uint32_t item = 0;
+    std::array<std::int32_t, 5> spells{};
+    std::array<std::uint8_t, 5> triggers{};
+};
+
+// quest_template RewardSpell (cast on completion) and RewardDisplaySpell (learned on completion).
+struct QuestSpellRow
+{
+    std::uint32_t quest = 0;
+    std::int32_t rewardSpell = 0;
+    std::uint32_t displaySpell = 0;
+};
+
+inline constexpr std::uint8_t ItemSpellTriggerOnUse = 0;       // ITEM_SPELLTRIGGER_ON_USE
+inline constexpr std::uint8_t ItemSpellTriggerLearnSpell = 6;  // ITEM_SPELLTRIGGER_LEARN_SPELL_ID
+
+// How players get each spell, from the trainer lists, the skill-learned spells (SkillLineAbility
+// AcquireMethod 1 or 2), item spells and quest reward spells. A spell that teaches others
+// (SPELL_EFFECT_LEARN_SPELL, `learns`: teacher -> taught) passes its source on to them, one level, as a
+// trainer, recipe or quest cast does in Core. An item's use spell counts too: using it may create the
+// item (Sul'thraze) or teach a recipe.
+inline std::vector<SpellSourceRow> ResolveSpellSources(std::span<std::uint32_t const> trainerSpells,
+                                                       std::span<std::uint32_t const> skillSpells,
+                                                       std::span<ItemSpellRow const> itemSpells,
+                                                       std::span<QuestSpellRow const> questSpells,
+                                                       std::multimap<std::uint32_t, std::uint32_t> const& learns)
+{
+    std::vector<SpellSourceRow> out;
+    auto add = [&](std::int64_t spell, SpellSource kind, std::uint32_t id)
+    {
+        if (spell <= 0 || spell > std::numeric_limits<std::uint32_t>::max())
+            return;
+        std::uint32_t const id32 = static_cast<std::uint32_t>(spell);
+        out.push_back({id32, kind, id});
+        auto const [first, last] = learns.equal_range(id32);
+        for (auto it = first; it != last; ++it)
+            if (it->second)
+                out.push_back({it->second, kind, id});
+    };
+    for (std::uint32_t spell : trainerSpells)
+        add(spell, SpellSource::Taught, 0);
+    for (std::uint32_t spell : skillSpells)
+        add(spell, SpellSource::Taught, 0);
+    for (ItemSpellRow const& row : itemSpells)
+        for (std::size_t i = 0; i < row.spells.size(); ++i)
+            if (row.triggers[i] == ItemSpellTriggerOnUse || row.triggers[i] == ItemSpellTriggerLearnSpell)
+                add(row.spells[i], SpellSource::Item, row.item);
+    for (QuestSpellRow const& row : questSpells)
+    {
+        add(row.rewardSpell, SpellSource::Quest, row.quest);
+        add(row.displaySpell, SpellSource::Quest, row.quest);
+    }
+    return out;
+}
+
 // Owns what WorldRows points at.
 struct OwnedWorldRows
 {
@@ -66,6 +126,13 @@ struct OwnedWorldRows
     std::vector<std::uint32_t> vendorItems, questRewardItems;
     std::vector<QuestRow> quests;
     std::vector<QuestChainRow> questChains;
+    std::vector<std::uint32_t> trainerSpells;
+    std::vector<ItemSpellRow> itemSpells;
+    std::vector<QuestSpellRow> questSpells;
+    // Filled by the caller from the spell data (DBC), not the world database: what each spell creates,
+    // and how players get each spell (ResolveSpellSources).
+    std::vector<CraftRow> crafts;
+    std::vector<SpellSourceRow> spellSources;
 
     WorldRows View() const
     {
@@ -82,6 +149,8 @@ struct OwnedWorldRows
         rows.questRewardItems = questRewardItems;
         rows.quests = quests;
         rows.questChains = questChains;
+        rows.crafts = crafts;
+        rows.spellSources = spellSources;
         return rows;
     }
 };
@@ -159,11 +228,11 @@ private:
     LoadReport _report{};
 };
 
-// The ten G7 queries, in SourceQueries order (AutoGearSourceIndexStore.h).
+// The G7 queries, in SourceQueries order (AutoGearSourceIndexStore.h).
 struct SourceTableSet
 {
     TableQuery creatureLoot, gameobjectLoot, referenceLoot, itemLoot, creatures, creatureSpawns, chests, chestSpawns,
-        vendorItems, questRewards, questChains;
+        vendorItems, questRewards, questChains, trainerSpells, itemSpells, questSpells;
 };
 
 template <class Source>
@@ -271,6 +340,46 @@ std::optional<OwnedWorldRows> LoadWorldRows(Source& source, SourceTableSet const
                 rows.questChains.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1])});
             return true;
         });
+    loader.Table(tables.trainerSpells,
+                 [&](std::span<std::int64_t const> r)
+                 {
+                     if (!Unsigned32(r[0]))
+                         return false;
+                     rows.trainerSpells.push_back(static_cast<std::uint32_t>(r[0]));
+                     return true;
+                 });
+    // entry, then spellid_N (signed) and spelltrigger_N (TINYINT UNSIGNED) for N = 1..5.
+    loader.Table(tables.itemSpells,
+                 [&](std::span<std::int64_t const> r)
+                 {
+                     if (!Unsigned32(r[0]))
+                         return false;
+                     ItemSpellRow row;
+                     row.item = static_cast<std::uint32_t>(r[0]);
+                     for (std::size_t i = 0; i < 5; ++i)
+                     {
+                         std::int64_t const spell = r[1 + 2 * i];
+                         std::int64_t const trigger = r[2 + 2 * i];
+                         if (spell < std::numeric_limits<std::int32_t>::min() ||
+                             spell > std::numeric_limits<std::int32_t>::max() || trigger < 0 || trigger > 0xFF)
+                             return false;
+                         row.spells[i] = static_cast<std::int32_t>(spell);
+                         row.triggers[i] = static_cast<std::uint8_t>(trigger);
+                     }
+                     rows.itemSpells.push_back(row);
+                     return true;
+                 });
+    // ID, RewardSpell (signed), RewardDisplaySpell.
+    loader.Table(tables.questSpells,
+                 [&](std::span<std::int64_t const> r)
+                 {
+                     if (!Unsigned32(r[0]) || r[1] < std::numeric_limits<std::int32_t>::min() ||
+                         r[1] > std::numeric_limits<std::int32_t>::max() || !Unsigned32(r[2]))
+                         return false;
+                     rows.questSpells.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1]),
+                                                 static_cast<std::uint32_t>(r[2])});
+                     return true;
+                 });
 
     report = loader.Report();
     if (report.failure != LoadFailure::None)
