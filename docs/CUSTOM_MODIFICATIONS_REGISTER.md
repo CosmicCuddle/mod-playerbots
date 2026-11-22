@@ -1,5 +1,14 @@
 # Custom Modifications Register
 
+## PB75-TRAINER-LEARNONE-20261122 — teach exactly one trainer spell, or nothing
+
+- **Owner/component:** CosmicCuddle / `mod-playerbots`.
+- **Reason:** coordination [#75](https://github.com/CosmicCuddle/Naxxramas-Server-Coordination/issues/75#issuecomment-7079993298) and CS01 #52 comment 7079825445. The existing `trainer learn [link]` reaches `TrainerAction` as `learn |cff…|Hspell:…`; Core's `extractSpellIdFromLink` reads the first word when the text does not start with `|`, so the id is 0, which means "no filter", and the bot learns every spell the trainer can teach it. The same happens for a number or a non-spell link.
+- **Intended behavior:** `trainer learnone <spell link | spell id>` teaches exactly that one spell, or nothing. It refuses (and says so) unless exactly one spell/trade/enchant link or one positive number follows, with nothing else around it; then it requires `IsTrainerValidForPlayer`, a trainer spell with that id, `PlayerbotFactory::IsTrainerSpellAllowedForBot` and `CanTeachSpell`, and learns through the existing `Learn()` (cost, or "too expensive"). The existing `trainer`, `trainer learn` and listing forms are unchanged.
+- **Affected files:** `src/Bot/TrainerLearnOne.h` (pure parser), `src/Ai/Base/Actions/TrainerAction.h/.cpp`, `data/sql/playerbots/updates/2026_11_22_00_ai_playerbot_trainer_learnone_texts.sql` (four refusal texts, nine locales, ids 1946-1949), `tests/pb75_trainer_learnone.cpp`, `tests/pb75_test_trainer_learnone_contract.py`, this Register.
+- **Tests:** parser 31/31 (GCC with ASan/UBSan, Clang); source contract with 8/8 negative controls; `TrainerAction.cpp` compiles against Core53 `79b0b1fe` with the integrated build's flags; the SQL applies (and re-applies) on a scratch `ai_playerbot_texts` copy. No in-game test: no client or controlled Altbot in the test container.
+- **Live status:** not merged or deployed; no live use approved.
+
 ## PB-F14-SOCIAL-DISPATCH-20261114 — world-thread social dispatch and RandomBot adoption guard
 
 The existing queued `GroupInviteOperation` also receives the standard group-invite veto before its direct group creation/conversion/add. It captures both participant epochs to reject stale queued work. This preserves ordinary IP grouping enforcement for permitted personal/Altbots without classifying them as F14 social RandomBots. Same-session invite-policy changes after preflight and native/gameplay behavior remain unverified.

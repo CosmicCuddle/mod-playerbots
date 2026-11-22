@@ -9,9 +9,15 @@
 
 #include "Action.h"
 #include "ChatHelper.h"
+#include "TrainerLearnOne.h"
 
 class Creature;
 class PlayerbotAI;
+
+namespace Trainer
+{
+class Trainer;
+}
 
 struct TrainerSpell;
 
@@ -28,6 +34,7 @@ public:
 private:
     Creature* GetCreatureTarget();
     void Iterate(Creature* creature, bool learnSpells, uint32 spellId);
+    bool LearnOne(Creature* creature, Trainer::Trainer* trainer, PlayerbotsTrainerLearnOne::Result const& one);
     void Learn(SpellInfo const* spellInfo, uint32 cost, std::ostringstream& out);
     void TellHeader(Creature* creature);
     void TellFooter(uint32 totalCost);
