@@ -40,6 +40,11 @@
 #include "SessionScript.h"
 #include "WorldScript.h"
 #include "cmath"
+#include "ObjectAccessor.h"
+#include "PlayerbotOperation.h"
+#include "PlayerbotWorldThreadProcessor.h"
+#include <array>
+#include <mutex>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -76,7 +81,116 @@ namespace
         }
     }
 
-    bool CanBotEnterDungeon(Player* player, MapEntry const* entry)
+    // LFG entrance of each physical dungeon, from the same table Core's LFGMgr loads. A map with several
+    // wings uses the entrance the destination lands on to pick that wing's own bracket. Startup only.
+    std::vector<PlayerbotsDungeonBracket::Entrance> dungeonEntrances;
+
+    void LoadDungeonEntrances()
+    {
+        std::unordered_map<uint32, uint32> mapOfDungeon;
+        for (auto const& [key, rows] : dungeonBracketRows)
+            for (PlayerbotsDungeonBracket::Row const& row : rows)
+                mapOfDungeon[row.id] = row.mapId;
+
+        QueryResult result =
+            WorldDatabase.Query("SELECT dungeonId, position_x, position_y, position_z FROM lfg_dungeon_template");
+        if (!result)
+            return;  // no entrances: a wing is never identified, and the bot must fit any wing
+        do
+        {
+            Field* fields = result->Fetch();
+            auto const map = mapOfDungeon.find(fields[0].Get<uint32>());
+            if (map == mapOfDungeon.end())
+                continue;
+            dungeonEntrances.push_back(
+                {map->first, map->second, fields[1].Get<float>(), fields[2].Get<float>(), fields[3].Get<float>()});
+        } while (result->NextRow());
+    }
+
+    // Core's TeleportTo calls OnPlayerBeforeTeleport and then, for a cross-map teleport,
+    // MapMgr::PlayerCannotEnter -> OnPlayerCanEnterMap, synchronously on the same thread. The
+    // destination is kept here for that one call. It is bound to the bot, the map and one second, so a
+    // teleport another script aborted in between is never read later.
+    struct PendingTeleport
+    {
+        ObjectGuid bot;
+        uint32 mapId = 0;
+        uint32 atMs = 0;
+        PlayerbotsDungeonBracket::Destination destination;
+    };
+    thread_local PendingTeleport pendingTeleport;
+    constexpr uint32 PENDING_TELEPORT_MS = 1000;
+
+    PlayerbotsDungeonBracket::Destination TakePendingTeleport(Player* player, uint32 mapId)
+    {
+        PendingTeleport const pending = pendingTeleport;
+        pendingTeleport = PendingTeleport{};
+        if (pending.bot != player->GetGUID() || pending.mapId != mapId ||
+            GetMSTimeDiffToNow(pending.atMs) > PENDING_TELEPORT_MS)
+            return {};
+        return pending.destination;
+    }
+
+    // Sent on the world thread: the master may be on another map than the denied bot.
+    class DungeonBracketNoticeOperation final : public PlayerbotOperation
+    {
+    public:
+        DungeonBracketNoticeOperation(ObjectGuid bot, ObjectGuid master, std::string text)
+            : _bot(bot), _master(master), _text(std::move(text))
+        {
+        }
+
+        bool Execute() override
+        {
+            Player* master = ObjectAccessor::FindConnectedPlayer(_master);
+            if (!master || !master->GetSession() || master->GetSession()->IsHeadless())
+                return false;
+            ChatHandler(master->GetSession()).SendSysMessage(_text);
+            return true;
+        }
+
+        ObjectGuid GetBotGuid() const override { return _bot; }
+        std::string GetName() const override { return "Dungeon bracket notice"; }
+
+    private:
+        ObjectGuid _bot;
+        ObjectGuid _master;
+        std::string _text;
+    };
+
+    // Entry checks repeat while a bot keeps walking into a portal; tell the master once a minute.
+    constexpr time_t DUNGEON_BRACKET_NOTICE_SECONDS = 60;
+    std::mutex dungeonBracketNoticeLock;
+    std::unordered_map<uint64, time_t> dungeonBracketNoticeAt;
+
+    bool ShouldSendBracketNotice(ObjectGuid bot)
+    {
+        time_t const now = time(nullptr);
+        std::lock_guard<std::mutex> guard(dungeonBracketNoticeLock);
+        time_t& last = dungeonBracketNoticeAt[bot.GetRawValue()];
+        if (last && now - last < DUNGEON_BRACKET_NOTICE_SECONDS)
+            return false;
+        last = now;
+        return true;
+    }
+
+    std::string BracketDenialText(Player* bot, PlayerbotsDungeonBracket::Decision const& decision)
+    {
+        using PlayerbotsDungeonBracket::Result;
+        if (decision.result == Result::BelowMinimum || decision.result == Result::AboveMaximum)
+            return Acore::StringFormat("Bot {} cannot enter this dungeon at level {} (allowed levels {}-{}).",
+                                       bot->GetName(), bot->GetLevel(), decision.minLevel, decision.maxLevel);
+        if (decision.result == Result::SeasonalInactive)
+            return Acore::StringFormat("Bot {} cannot enter: this holiday dungeon is not active.", bot->GetName());
+        return Acore::StringFormat("Bot {} cannot enter: this dungeon has no single level bracket.", bot->GetName());
+    }
+
+    // lfgIdentity: only the CanEnterMap path reads the selected LFG dungeon. Core's own
+    // PlayerCannotEnter reads the same group key on the same thread right after this hook
+    // (inLfgDungeonMap), so this adds no new cross-thread access.
+    // destination: where the bot will appear, if known; it picks the wing on maps with several wings.
+    bool CanBotEnterDungeon(Player* player, MapEntry const* entry, bool lfgIdentity,
+                            PlayerbotsDungeonBracket::Destination destination)
     {
         if (!sPlayerbotAIConfig.EnforceDungeonLevelBracket || !player || !player->GetSession() ||
             !player->GetSession()->IsHeadless() ||
@@ -86,49 +200,49 @@ namespace
         Difficulty difficulty = player->GetDifficulty(false);
         GetDownscaledMapDifficultyData(entry->MapID, difficulty);
 
-        // A selected LFG dungeon needs a map-thread-safe Core snapshot. Until
-        // then, resolve only unambiguous physical map/difficulty rows; ordinary
-        // entrances still work, while seasonal bypasses remain unavailable.
-        uint32 const selectedDungeonId = 0;
+        uint32 selectedDungeonId = 0;
+        if (lfgIdentity)
+            if (Group* group = player->GetGroup(); group && group->isLFGGroup())
+                selectedDungeonId = sLFGMgr->GetDungeon(group->GetGUID());
+        bool const seasonActive = selectedDungeonId && sLFGMgr->IsSeasonActive(selectedDungeonId);
 
         DungeonBracketRows const& index = dungeonBracketRows;
         auto const rows = index.find(DungeonBracketKey(entry->MapID, difficulty));
-        std::span<PlayerbotsDungeonBracket::Row const> const bracketRows = rows == index.end()
+        std::span<PlayerbotsDungeonBracket::Row const> bracketRows = rows == index.end()
             ? std::span<PlayerbotsDungeonBracket::Row const>()
             : std::span<PlayerbotsDungeonBracket::Row const>(rows->second);
+        std::array<PlayerbotsDungeonBracket::Row, 16> scratch{};
+        bracketRows = PlayerbotsDungeonBracket::WithSeasonActivity(bracketRows, selectedDungeonId, seasonActive,
+                                                                   scratch);
 
         DungeonProgressionRequirements const* access = sObjectMgr->GetAccessRequirement(entry->MapID, difficulty);
         uint32 const overrideMin = access ? access->levelMin : 0;
         uint32 const overrideMax = access ? access->levelMax : 0;
-        auto const decision = PlayerbotsDungeonBracket::Resolve(
+        auto decision = PlayerbotsDungeonBracket::Resolve(
             bracketRows, entry->MapID, difficulty, selectedDungeonId,
             player->GetLevel(), overrideMin, overrideMax);
+        decision = PlayerbotsDungeonBracket::ApplyReviewedOverride(decision,
+            sPlayerbotAIConfig.DungeonLevelBracketOverrides, entry->MapID, difficulty, player->GetLevel());
+        decision =
+            PlayerbotsDungeonBracket::ResolveWing(decision, bracketRows, dungeonEntrances, entry->MapID, difficulty,
+                                                  destination, player->GetLevel(), overrideMin, overrideMax);
         if (decision.result == PlayerbotsDungeonBracket::Result::Allowed ||
             decision.result == PlayerbotsDungeonBracket::Result::SeasonalException)
             return true;
 
-        LOG_WARN("playerbots", "Dungeon bracket denied bot {}: map={} difficulty={} level={} result={} min={} max={}",
-            player->GetGUID().ToString(), entry->MapID, static_cast<uint32>(difficulty), player->GetLevel(),
-            static_cast<uint32>(decision.result), decision.minLevel, decision.maxLevel);
-
+        if (!ShouldSendBracketNotice(player->GetGUID()))
+            return false;
+        LOG_WARN("playerbots",
+                 "Dungeon bracket denied bot {}: map={} difficulty={} level={} selected={} destination={} result={} "
+                 "min={} max={}",
+                 player->GetGUID().ToString(), entry->MapID, static_cast<uint32>(difficulty), player->GetLevel(),
+                 selectedDungeonId, destination.known, static_cast<uint32>(decision.result), decision.minLevel,
+                 decision.maxLevel);
         if (PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player))
-        {
-            if (Player* master = botAI->GetMaster(); master && master->GetSession() &&
-                !master->GetSession()->IsHeadless())
-            {
-                if (decision.result == PlayerbotsDungeonBracket::Result::BelowMinimum ||
-                    decision.result == PlayerbotsDungeonBracket::Result::AboveMaximum)
-                    ChatHandler(master->GetSession()).PSendSysMessage(
-                        "Bot {} cannot enter this dungeon at level {} (allowed levels {}-{}).",
-                        player->GetName(), player->GetLevel(), decision.minLevel, decision.maxLevel);
-                else if (decision.result == PlayerbotsDungeonBracket::Result::SeasonalInactive)
-                    ChatHandler(master->GetSession()).PSendSysMessage(
-                        "Bot {} cannot enter: this holiday dungeon is not active.", player->GetName());
-                else
-                    ChatHandler(master->GetSession()).PSendSysMessage(
-                        "Bot {} cannot enter: this dungeon has no unambiguous level bracket.", player->GetName());
-            }
-        }
+            if (Player* master = botAI->GetMaster(); master && master != player)
+                PlayerbotWorldThreadProcessor::instance().QueueOperation(
+                    std::make_unique<DungeonBracketNoticeOperation>(player->GetGUID(), master->GetGUID(),
+                                                                    BracketDenialText(player, decision)));
         return false;
     }
 }
@@ -304,18 +418,30 @@ public:
     }
 
     bool OnPlayerCanEnterMap(Player* player, MapEntry const* entry, InstanceTemplate const* /*instance*/,
-        MapDifficulty const* /*mapDiff*/, bool /*loginCheck*/) override
+                             MapDifficulty const* /*mapDiff*/, bool loginCheck) override
     {
-        return CanBotEnterDungeon(player, entry);
+        if (!player || !entry)
+            return true;
+        // Login: the saved position on that map. Teleport: the destination stored just before. Core's
+        // areatrigger pre-check has none, so the bot must fit some wing; TeleportTo then checks the wing.
+        PlayerbotsDungeonBracket::Destination destination;
+        if (loginCheck && player->GetMapId() == entry->MapID)
+            destination = {true, player->GetPositionX(), player->GetPositionY(), player->GetPositionZ()};
+        else if (!loginCheck)
+            destination = TakePendingTeleport(player, entry->MapID);
+        return CanBotEnterDungeon(player, entry, true, destination);
     }
 
-    bool OnPlayerBeforeTeleport(Player* player, uint32 mapid, float /*x*/, float /*y*/, float /*z*/,
-                                float /*orientation*/, uint32 options, Unit* /*target*/) override
+    bool OnPlayerBeforeTeleport(Player* player, uint32 mapid, float x, float y, float z, float /*orientation*/,
+                                uint32 options, Unit* /*target*/) override
     {
-        // Cross-map normal teleports reach CanEnterMap through PlayerCannotEnter.
-        // Same-map and GM-mode teleports can skip that call.
-        if (player && (player->GetMapId() == mapid || (options & TELE_TO_GM_MODE) || player->IsGameMaster()) &&
-            !CanBotEnterDungeon(player, sMapStore.LookupEntry(mapid)))
+        if (sPlayerbotAIConfig.EnforceDungeonLevelBracket && player && player->GetMapId() != mapid &&
+            player->GetSession() && player->GetSession()->IsHeadless())
+            pendingTeleport = {player->GetGUID(), mapid, getMSTime(), {true, x, y, z}};
+        if (player &&
+            PlayerbotsDungeonBracket::TeleportNeedsBracketCheck(
+                player->GetMapId() == mapid, (options & TELE_TO_GM_MODE) || player->IsGameMaster()) &&
+            !CanBotEnterDungeon(player, sMapStore.LookupEntry(mapid), false, {true, x, y, z}))
             return false;
 
         /* for now commmented out until proven its actually required
@@ -637,6 +763,7 @@ public:
     void OnBeforeWorldInitialized() override
     {
         BuildDungeonBracketRows();
+        LoadDungeonEntrances();
         // Before modifying the following messages, please make sure it does not violate the GNU GPLv2
         // license especially if you are distributing a repack or hosting a public server
         // e.g. you can replace the URL with your own repository,
