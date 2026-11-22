@@ -22,6 +22,7 @@
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
 #include "SpellAuras.h"
+#include "TaxiWatchdog.h"
 #include "Util.h"
 #include "WorldPacket.h"
 #include <stack>
@@ -651,6 +652,8 @@ private:
     void UpdateAIGroupMaster();
     Item* FindItemInInventory(std::function<bool(ItemTemplate const*)> checkItem) const;
     void HandleCommands();
+    void UpdateTaxiWatchdog(uint32 elapsed);
+    bool RecoverStuckTaxi();
     void HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang = LANG_UNIVERSAL);
     inline bool IsValidUnit(Unit const* unit) const
     {
@@ -688,6 +691,9 @@ protected:
     Position jumpDestination = Position();
     uint32 nextTransportCheck = 0;
     bool spellInterruptRequested = false;
+    PlayerbotsTaxiWatchdog::Watchdog taxiWatchdog;
+    uint64 taxiWatchdogClockMs = 0;
+    uint32 taxiWatchdogCheckMs = 0;
 };
 
 #endif
