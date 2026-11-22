@@ -130,7 +130,9 @@ void SourceIndexStore::LoadFromWorldDatabase()
              "in {} ms",
              storedIndex->RaidEntries(), rows->creatureLoot.size(), rows->gameobjectLoot.size(),
              rows->referenceLoot.size(), GetMSTimeDiffToNow(started));
-    LOG_INFO("server.loading", ">> AutoGear raid source gate: {} items refused at stage 0, {} at stage 1",
+    LOG_INFO("server.loading",
+             ">> AutoGear raid source gate: {} items refused at stage 0, {} at stage 1. Snapshot of startup: "
+             "restart after reloading loot, vendor or quest tables",
              blockedByStage[0].size(), blockedByStage[1].size());
 }
 

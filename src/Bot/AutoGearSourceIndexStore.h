@@ -51,6 +51,15 @@ inline constexpr SourceTableSet SourceTables{
 };
 
 // Built once on the world thread during startup, before map updates run, and immutable afterwards.
+//
+// Freshness (CS01 #52 Part 28): the index is the world database as it was at startup. Core's runtime
+// ".reload" commands for these tables (loot templates, npc_vendor, quest_template, creature_template)
+// and GM-added spawns give modules no hook, so they reach AutoGear only after a restart. Staleness is
+// not one-sided: a vendor added later still looks raid-only (refused), but a vendor removed later still
+// counts as a source (offered). Restart after changing these tables. Each table is counted and read
+// with separate queries on the pool's connections, so there is no shared snapshot: a different row
+// count publishes nothing, but an edit that keeps the count during the few seconds of startup is not
+// detected. The world is not open yet then; only an external tool could write.
 // Get() returns nullptr when the index was not built (feature off, or any table failed to load
 // completely); callers then get no tier lift, and IP-capped commands keep the bot's gear.
 class SourceIndexStore

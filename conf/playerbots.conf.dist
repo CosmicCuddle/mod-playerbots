@@ -651,6 +651,8 @@ Playerbots.AutoGearScoreLimit = 0
 # before IndividualProgression.RequiredZulGurubProgression) are never offered.
 # Enabling this loads a raid source index from the world database at startup
 # (a few seconds); if it cannot load, capped commands keep the current gear.
+# The index is a snapshot of startup: after ".reload" of loot, npc_vendor or
+# quest tables, or GM-added spawns, restart the server for AutoGear to see them.
 # Missing/zero stage caps or era ceilings refuse the command before changing gear.
 # These tables can only lower the caps compiled into AutoGearSelectionCap.h; a
 # higher value here has no effect.
