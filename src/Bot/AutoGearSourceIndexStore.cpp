@@ -8,6 +8,7 @@
 
 #include <array>
 #include <atomic>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -93,6 +94,9 @@ public:
                     case 'h':
                         row[i] = fields[i].Get<uint16>();
                         break;
+                    case 'n':
+                        row[i] = fields[i].Get<int16>();
+                        break;
                     case 'b':
                         row[i] = fields[i].Get<uint8>();
                         break;
@@ -133,6 +137,15 @@ void AddSpellData(OwnedWorldRows& rows)
                 ability->AcquireMethod == SKILL_LINE_ABILITY_LEARNED_ON_SKILL_LEARN)
                 skillSpells.push_back(ability->Spell);
     rows.spellSources = ResolveSpellSources(rows.trainerSpells, skillSpells, rows.itemSpells, rows.questSpells, learns);
+
+    // ExtendedCost id -> the items it asks for (honor and arena points are not items).
+    std::map<std::uint32_t, std::array<std::uint32_t, 5>> costs;
+    for (uint32 i = 0; i < sItemExtendedCostStore.GetNumRows(); ++i)
+        if (ItemExtendedCostEntry const* cost = sItemExtendedCostStore.LookupEntry(i))
+            for (std::size_t k = 0; k < 5 && k < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++k)
+                costs[cost->ID][k] = cost->reqitem[k];
+    rows.vendorOffers = ResolveVendorOffers(rows.vendorRows, costs);
+    rows.reputationSources = ResolveReputationSources(rows.killReputations, rows.questReputations);
 }
 }  // namespace
 
@@ -163,10 +176,11 @@ void SourceIndexStore::LoadFromWorldDatabase()
              storedIndex->RaidEntries(), rows->creatureLoot.size(), rows->gameobjectLoot.size(),
              rows->referenceLoot.size(), GetMSTimeDiffToNow(started));
     LOG_INFO("server.loading",
-             ">> AutoGear raid source gate: {} sourced items refused at stage 0, {} at stage 1 ({} craft rows); "
-             "items without a known source are refused at every stage. Snapshot of startup: restart after "
-             "reloading loot, vendor, quest or trainer tables",
-             blockedByStage[0].size(), blockedByStage[1].size(), rows->crafts.size());
+             ">> AutoGear raid source gate: {} sourced items refused at stage 0, {} at stage 1 ({} craft, {} vendor, "
+             "{} reputation rows); items without a known source are refused at every stage. Snapshot of startup: "
+             "restart after reloading loot, vendor, quest, trainer or reputation tables",
+             blockedByStage[0].size(), blockedByStage[1].size(), rows->crafts.size(), rows->vendorOffers.size(),
+             rows->reputationSources.size());
 }
 
 SourceIndex const* SourceIndexStore::Get() { return publishedIndex.load(std::memory_order_acquire); }

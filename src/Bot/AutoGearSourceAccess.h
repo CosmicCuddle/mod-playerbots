@@ -35,11 +35,20 @@
 // nobody can learn. Crafting counts as a source and follows how the recipe is obtained: taught by a
 // trainer or with the skill is reachable; a recipe item, the item used to create it, or a quest reward
 // spell is as reachable as that item or quest (Zul'Gurub recipes and charms wait for Zul'Gurub).
+//
+// A vendor or reputation requirement counts only when it can be met at the stage (owner, #74 comments
+// 7079237461 and 7079669889: "yes if they fit the criteria"). A vendor row is out of reach when the
+// vendor is spawned only in raids that are still locked, or when an item its ExtendedCost asks for is
+// locked. An item that needs reputation (RequiredReputationFaction, whatever its source) is locked
+// while every known way to gain that reputation is locked: Zandalar reputation comes from Zul'Gurub
+// kills and quests that need Zul'Gurub items, so Rin'wosho's patterns wait for Zul'Gurub. The rank is
+// not compared: one reachable source of the reputation is enough.
 namespace PlayerbotsAutoGearSourceAccess
 {
 using PlayerbotsAutoGearMasterSource::AccessEntry;
 using PlayerbotsAutoGearMasterSource::QuestFacts;
 using PlayerbotsAutoGearMasterSource::SourceIndex;
+using PlayerbotsAutoGearMasterSource::VendorOffer;
 using PlayerbotsAutoGearMasterSource::Verdict;
 
 // IP config values that move a raid's gate (IndividualProgression.RequiredZulGurubProgression and
@@ -172,6 +181,8 @@ struct Filter
         AccessEntry const* entry = index->FindAccess(item);
         if (!entry)
             return Reach::NoSource;
+        if (entry->faction && FactionReach(entry->faction, depth + 1) == Reach::Locked)
+            return Reach::Locked;  // whatever the source, the item needs reputation nobody can earn yet
         bool locked = false;
         bool unknown = entry->unattributed || entry->container;
         for (auto const& [map, difficulty] : entry->spawned)
@@ -180,7 +191,7 @@ struct Filter
                 return Reach::Reachable;
             locked = true;
         }
-        if (entry->vendor || entry->questUnstructured || entry->taught)
+        if ((entry->vendor && entry->offers.empty()) || entry->questUnstructured || entry->taught)
             return Reach::Reachable;
         auto const weigh = [&](Reach reach)
         {
@@ -188,6 +199,9 @@ struct Filter
             unknown = unknown || reach == Reach::Unknown;
             return reach == Reach::Reachable;
         };
+        for (VendorOffer const& offer : entry->offers)
+            if (weigh(OfferReach(offer, item, depth + 1)))
+                return Reach::Reachable;
         for (std::uint32_t quest : entry->quests)
             if (weigh(QuestReach(quest, depth + 1)))
                 return Reach::Reachable;
@@ -196,6 +210,61 @@ struct Filter
                 return Reach::Reachable;
         // A locked raid outweighs loot nobody can place. Recipes nobody can obtain add nothing.
         return locked ? Reach::Locked : unknown ? Reach::Unknown : Reach::NoSource;
+    }
+
+    // One vendor row: the vendor must stand somewhere open and every cost item must be obtainable. An
+    // unspawned vendor (script-summoned) or a cost item without a known source is no evidence either way.
+    Reach OfferReach(VendorOffer const& offer, std::uint32_t item, int depth) const
+    {
+        Reach const where = CreatureReach(offer.vendor);
+        if (where == Reach::Locked)
+            return Reach::Locked;
+        bool unknown = where == Reach::Unknown;
+        for (std::uint32_t cost : offer.costItems)
+        {
+            if (!cost || cost == item)
+                continue;
+            Reach const paid = ItemReach(cost, depth);
+            if (paid == Reach::Locked)
+                return Reach::Locked;
+            unknown = unknown || paid != Reach::Reachable;
+        }
+        return unknown ? Reach::Unknown : Reach::Reachable;
+    }
+
+    // Unknown without a spawn; otherwise whether any spawn is open.
+    Reach CreatureReach(std::uint32_t entry) const
+    {
+        auto const* spawns = index->CreatureSpawns(entry);
+        if (!spawns || spawns->empty())
+            return Reach::Unknown;
+        for (auto const& [map, difficulty] : *spawns)
+            if (SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable)
+                return Reach::Reachable;
+        return Reach::Locked;
+    }
+
+    // Locked when the faction has known sources of reputation and none is reachable while at least one is
+    // locked (as for items, a locked raid outweighs creatures nobody can place).
+    Reach FactionReach(std::uint32_t faction, int depth) const
+    {
+        if (depth > MaxDepth)
+            return Reach::Unknown;
+        auto const* sources = index->ReputationSources(faction);
+        if (!sources)
+            return Reach::Unknown;
+        bool locked = false;
+        for (auto const& [quest, id] : *sources)
+        {
+            if (quest)
+                if (QuestFacts const* facts = index->Quest(id); facts && facts->requiredFaction == faction)
+                    continue;  // needs this reputation already: raises it, but is no way in
+            Reach const reach = quest ? QuestReach(id, depth + 1) : CreatureReach(id);
+            if (reach == Reach::Reachable)
+                return Reach::Reachable;
+            locked = locked || reach == Reach::Locked;
+        }
+        return locked ? Reach::Locked : Reach::Unknown;
     }
 
     // Chains and hand-ins rarely go deeper than three steps. Past this a quest is Unknown (allowed) and an
@@ -231,7 +300,10 @@ struct Filter
             if (prev != quest && QuestReach(static_cast<std::uint32_t>(prev), depth + 1) == Reach::Locked)
                 return Reach::Locked;
         }
-        return Reach::Reachable;
+        if (facts->requiredFaction && FactionReach(facts->requiredFaction, depth + 1) == Reach::Locked)
+            return Reach::Locked;
+        // An exploration or scripted-event quest cannot be placed: allowed, but it opens nothing.
+        return facts->eventOnly ? Reach::Unknown : Reach::Reachable;
     }
 };
 

@@ -148,15 +148,20 @@ namespace PlayerbotsAutoGearMasterSource
     {
         std::uint32_t id = 0;
         std::array<std::uint32_t, 10> rewards{};  // RewardItem1-4, RewardChoiceItemID1-6
-        std::array<std::uint32_t, 7> items{};     // RequiredItemId1-6, StartItem
+        std::array<std::uint32_t, 11> items{};    // RequiredItemId1-6, StartItem, ItemDrop1-4
         std::array<std::int32_t, 4> npcOrGo{};    // RequiredNpcOrGo1-4: > 0 creature, < 0 gameobject
     };
 
-    // quest_template_addon.PrevQuestID: the quest that must come first (negative: must be active).
+    // quest_template_addon: PrevQuestID, the quest that must come first (negative: must be active);
+    // RequiredMinRepFaction, reputation needed to take the quest; SpecialFlags 2
+    // (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT), completed by exploring or a scripted event the world
+    // rows cannot place (e.g. "A Bijou for Zanza": destroy a bijou at the altar inside Zul'Gurub).
     struct QuestChainRow
     {
         std::uint32_t id = 0;
         std::int32_t prev = 0;
+        std::uint32_t requiredFaction = 0;
+        bool eventOnly = false;
     };
 
     // An item a spell creates (Spell.dbc SPELL_EFFECT_CREATE_ITEM or CREATE_ITEM_2): profession recipes,
@@ -182,6 +187,32 @@ namespace PlayerbotsAutoGearMasterSource
         std::uint32_t id = 0;
     };
 
+    // One npc_vendor row with the items its ExtendedCost asks for (ItemExtendedCost.dbc reqitem; honor
+    // and arena points are not items). Rows of a referenced vendor list are repeated for the vendor that
+    // includes it.
+    struct VendorOfferRow
+    {
+        std::uint32_t vendor = 0;
+        std::uint32_t item = 0;
+        std::array<std::uint32_t, 5> costItems{};
+    };
+
+    // item_template.RequiredReputationFaction: the item needs a reputation rank with this faction.
+    struct ItemReputationRow
+    {
+        std::uint32_t item = 0;
+        std::uint32_t faction = 0;
+    };
+
+    // A way to gain reputation with a faction: killing a creature (creature_onkill_reputation) or
+    // completing a quest (quest_template RewardFactionID with a positive value).
+    struct ReputationSourceRow
+    {
+        std::uint32_t faction = 0;
+        bool quest = false;
+        std::uint32_t id = 0;  // creature entry or quest id
+    };
+
     struct WorldRows
     {
         std::span<LootRow const> creatureLoot{};
@@ -198,6 +229,15 @@ namespace PlayerbotsAutoGearMasterSource
         std::span<QuestChainRow const> questChains{};
         std::span<CraftRow const> crafts{};
         std::span<SpellSourceRow const> spellSources{};
+        std::span<VendorOfferRow const> vendorOffers{};
+        std::span<ItemReputationRow const> itemReputations{};
+        std::span<ReputationSourceRow const> reputationSources{};
+    };
+
+    struct VendorOffer
+    {
+        std::uint32_t vendor = 0;
+        std::array<std::uint32_t, 5> costItems{};
     };
 
     struct SourceEntry
@@ -227,14 +267,18 @@ namespace PlayerbotsAutoGearMasterSource
         bool questUnstructured = false;       // a reward row without requirements (older callers)
         bool taught = false;                  // made by a spell a trainer or the profession skill teaches
         std::vector<std::uint32_t> fromItems{};  // recipe items teaching, or items whose use casts, its spell
+        std::vector<VendorOffer> offers{};       // who sells it and for what; empty: vendor alone decides
+        std::uint32_t faction = 0;               // reputation the item needs (any source), 0 for none
     };
 
     // What completing one quest needs.
     struct QuestFacts
     {
-        std::array<std::uint32_t, 7> items{};   // hand-ins and the start item
+        std::array<std::uint32_t, 11> items{};  // hand-ins, the start item and the items they are made from
         std::array<std::int32_t, 4> npcOrGo{};  // kill or use targets
         std::int32_t prev = 0;                  // quest that must come first
+        std::uint32_t requiredFaction = 0;      // reputation needed to take it
+        bool eventOnly = false;                 // completed by exploring or an event: place unknown
     };
 
     class SourceIndex
@@ -250,7 +294,17 @@ namespace PlayerbotsAutoGearMasterSource
                 index._quests[quest.id] = QuestFacts{quest.items, quest.npcOrGo, 0};
             for (QuestChainRow const& chain : rows.questChains)
                 if (auto const found = index._quests.find(chain.id); found != index._quests.end())
+                {
                     found->second.prev = chain.prev;
+                    found->second.requiredFaction = chain.requiredFaction;
+                    found->second.eventOnly = chain.eventOnly;
+                }
+            for (ItemReputationRow const& required : rows.itemReputations)
+                if (auto const found = index._access.find(required.item); found != index._access.end())
+                    found->second.faction = required.faction;  // a requirement is not a source
+            for (ReputationSourceRow const& source : rows.reputationSources)
+                if (source.faction && source.id)
+                    index._reputationSources[source.faction].emplace_back(source.quest, source.id);
             for (SpawnRow const& spawn : rows.creatureSpawns)
                 for (std::uint8_t diff = 0; diff < DifficultyCount; ++diff)
                     if (spawn.spawnMask & (1u << diff))
@@ -282,6 +336,13 @@ namespace PlayerbotsAutoGearMasterSource
         {
             auto const found = _quests.find(quest);
             return found == _quests.end() ? nullptr : &found->second;
+        }
+
+        // Ways to gain reputation with a faction; nullptr when none is known.
+        std::vector<std::pair<bool, std::uint32_t>> const* ReputationSources(std::uint32_t faction) const
+        {
+            auto const found = _reputationSources.find(faction);
+            return found == _reputationSources.end() ? nullptr : &found->second;
         }
 
         // Every (map, difficulty) a creature template is spawned in; nullptr when it has no spawn.
@@ -531,6 +592,14 @@ namespace PlayerbotsAutoGearMasterSource
                         access[item].known = true;
                         access[item].questUnstructured = true;
                     }
+                for (VendorOfferRow const& offer : rows.vendorOffers)
+                    if (offer.item)
+                    {
+                        AccessEntry& entry = access[offer.item];
+                        entry.known = true;
+                        entry.vendor = true;
+                        entry.offers.push_back({offer.vendor, offer.costItems});
+                    }
                 for (auto const& [item, sources] : crafted)
                 {
                     AccessEntry& entry = access[item];
@@ -552,6 +621,7 @@ namespace PlayerbotsAutoGearMasterSource
         std::map<std::uint32_t, AccessEntry> _access;
         std::map<std::uint32_t, QuestFacts> _quests;
         std::map<std::uint32_t, std::vector<std::pair<std::uint32_t, std::uint8_t>>> _creatureSpawns;
+        std::map<std::uint32_t, std::vector<std::pair<bool, std::uint32_t>>> _reputationSources;
         bool _built = false;
     };
 

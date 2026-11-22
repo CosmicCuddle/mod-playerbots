@@ -424,6 +424,131 @@ void TestCraftsAndNoSource()
     Check(same, "precomputed sets agree with the live rule for crafts and unsourced items");
 }
 
+// Vendors, reputation and quest requirements count only when they fit the stage (owner, #74 7079237461
+// and 7079669889: "yes if they fit the criteria").
+void TestVendorsAndReputation()
+{
+    World world;
+    constexpr std::uint32_t Zandalar = 270;
+    constexpr std::uint32_t ArgentDawn = 529;
+    constexpr std::uint32_t Unsourced = 999;
+    constexpr std::uint32_t ZgTroll = 70;           // a Zul'Gurub kill that raises Zandalar
+    constexpr std::uint32_t Rinwosho = 71;          // the Zandalar vendor on Yojamba Isle (open world)
+    constexpr std::uint32_t Ghoul = 72;             // an open-world kill that raises the Argent Dawn
+    constexpr std::uint32_t BwlVendor = 73;         // a vendor that stands only in Blackwing Lair
+    constexpr std::uint32_t Summoned = 74;          // a vendor with no spawn
+    constexpr std::uint32_t Bloodvine = 19764;      // pattern: needs Zandalar reputation
+    constexpr std::uint32_t BloodvineVest = 19682;  // crafted from it
+    constexpr std::uint32_t DawnItem = 13209;       // needs Argent Dawn reputation
+    constexpr std::uint32_t NoRepSource = 18000;    // needs a reputation with no known source
+    constexpr std::uint32_t BwlSold = 18100;
+    constexpr std::uint32_t SummonedSold = 18200;
+    constexpr std::uint32_t Aq20Token = 20888;  // an ExtendedCost item that drops only in AQ20
+    constexpr std::uint32_t TokenGear = 18300;
+    constexpr std::uint32_t UnsourcedToken = 18401;
+    constexpr std::uint32_t UnsourcedTokenGear = 18400;
+    constexpr std::uint32_t RepQuestReward = 18500;  // a quest that needs Zandalar reputation to take
+    constexpr std::uint32_t EventReward = 18600;     // an event quest (destroy a bijou at the altar)
+    constexpr std::uint32_t HeadReward = 18700;      // a hand-in made from Zul'Gurub drops (ItemDrop)
+    constexpr std::uint32_t ChannelersHead = 19881;
+    constexpr std::uint32_t LegacyVendorItem = 18800;  // vendor row without offers (older callers)
+    world.creatures.push_back({ZgTroll, {}, 0});
+    world.creatureSpawns.push_back({ZgTroll, 309, 1});
+    world.creatures.push_back({Rinwosho, {}, 0});
+    world.creatureSpawns.push_back({Rinwosho, 0, 1});
+    world.creatures.push_back({Ghoul, {}, 0});
+    world.creatureSpawns.push_back({Ghoul, 0, 1});
+    world.creatures.push_back({BwlVendor, {}, 0});
+    world.creatureSpawns.push_back({BwlVendor, 469, 1});
+    world.Boss(75, 509, 1, Aq20Token);
+    world.Boss(76, 309, 1, ChannelersHead);
+    world.vendor.push_back(LegacyVendorItem);
+
+    std::vector<VendorOfferRow> offers{{Rinwosho, Bloodvine, {}},
+                                       {Rinwosho, DawnItem, {}},
+                                       {Rinwosho, NoRepSource, {}},
+                                       {BwlVendor, BwlSold, {}},
+                                       {Summoned, SummonedSold, {}},
+                                       {Rinwosho, TokenGear, {Aq20Token}},
+                                       {Rinwosho, UnsourcedTokenGear, {UnsourcedToken}}};
+    std::vector<ItemReputationRow> required{{Bloodvine, Zandalar}, {DawnItem, ArgentDawn}, {NoRepSource, Unsourced}};
+    std::vector<CraftRow> crafts{{24091, BloodvineVest}};
+    std::vector<SpellSourceRow> spells{{24091, SpellSource::Item, Bloodvine}};
+    std::vector<QuestRow> quests;
+    auto quest = [&](std::uint32_t id, std::uint32_t reward)
+    {
+        QuestRow row;
+        row.id = id;
+        row.rewards[0] = reward;
+        quests.push_back(row);
+        return &quests.back();
+    };
+    quest(800, RepQuestReward);                         // needs Zandalar to take; also raises Zandalar
+    quest(801, EventReward);                            // event-only; raises Zandalar
+    quest(802, HeadReward)->items[7] = ChannelersHead;  // ItemDrop1; raises Zandalar
+    std::vector<QuestChainRow> addon{{800, 0, Zandalar, false}, {801, 0, 0, true}};
+    std::vector<ReputationSourceRow> reputation{{Zandalar, false, ZgTroll},
+                                                {Zandalar, true, 800},
+                                                {Zandalar, true, 801},
+                                                {Zandalar, true, 802},
+                                                {ArgentDawn, false, Ghoul}};
+
+    WorldRows rows = world.View();
+    rows.vendorOffers = offers;
+    rows.itemReputations = required;
+    rows.crafts = crafts;
+    rows.spellSources = spells;
+    rows.quests = quests;
+    rows.questChains = addon;
+    rows.reputationSources = reputation;
+    SourceIndex const index = SourceIndex::Build(rows);
+
+    Check(index.Access(Bloodvine).faction == Zandalar && index.Access(Bloodvine).offers.size() == 1,
+          "the index keeps the required reputation and the vendor row");
+    Check(!Offered(index, Bloodvine, 2) && Offered(index, Bloodvine, 3),
+          "a Zandalar pattern waits for Zul'Gurub, although its vendor stands in the open world");
+    Gates early;
+    early.zulGurub = 1;
+    Check(Offered(index, Bloodvine, 1, early), "and follows RequiredZulGurubProgression");
+    Check(!Offered(index, BloodvineVest, 2) && Offered(index, BloodvineVest, 3), "so does the craft it teaches");
+    Check(Offered(index, DawnItem, 0), "a reputation with an open source does not gate");
+    Check(Offered(index, NoRepSource, 0), "a reputation with no known source is no evidence");
+    Check(!Offered(index, BwlSold, 1) && Offered(index, BwlSold, 2), "a vendor standing only in BWL waits for BWL");
+    Check(Offered(index, SummonedSold, 0), "an unspawned vendor is no evidence either way");
+    Check(!Offered(index, TokenGear, 3) && Offered(index, TokenGear, 4),
+          "an ExtendedCost item from AQ20 waits for AQ20");
+    Check(Offered(index, UnsourcedTokenGear, 0), "a cost item without a known source does not gate");
+    Check(!Offered(index, RepQuestReward, 2) && Offered(index, RepQuestReward, 3),
+          "a quest that needs locked reputation is locked, and cannot open that reputation itself");
+    Check(Offered(index, EventReward, 0), "an event quest's reward stays allowed");
+    Check(!Offered(index, HeadReward, 2) && Offered(index, HeadReward, 3),
+          "a hand-in made from Zul'Gurub drops (ItemDrop) locks its quest");
+    Check(Offered(index, LegacyVendorItem, 0), "a vendor row without offers still counts");
+
+    // The event quest alone would leave Zandalar unknown, not open.
+    World alone;
+    alone.creatures.push_back({Rinwosho, {}, 0});
+    alone.creatureSpawns.push_back({Rinwosho, 0, 1});
+    alone.Boss(77, 0, 1, 1);  // something to index
+    std::vector<QuestRow> eventOnly;
+    QuestRow bijou;
+    bijou.id = 801;
+    eventOnly.push_back(bijou);
+    std::vector<QuestChainRow> eventAddon{{801, 0, 0, true}};
+    std::vector<ReputationSourceRow> eventReputation{{Zandalar, true, 801}};
+    WorldRows aloneRows = alone.View();
+    std::vector<VendorOfferRow> aloneOffers{{Rinwosho, Bloodvine, {}}};
+    aloneRows.vendorOffers = aloneOffers;
+    aloneRows.itemReputations = required;
+    aloneRows.quests = eventOnly;
+    aloneRows.questChains = eventAddon;
+    aloneRows.reputationSources = eventReputation;
+    SourceIndex const aloneIndex = SourceIndex::Build(aloneRows);
+    Filter const stage0{&aloneIndex, 0, Gates{}, nullptr};
+    Check(stage0.FactionReach(Zandalar, 1) == Reach::Unknown && Offered(aloneIndex, Bloodvine, 0),
+          "an event quest neither opens nor locks a reputation");
+}
+
 // Random-bot gearing reads precomputed sets; they must say exactly what the live rule says.
 void TestBlockedSetsAndBotStage()
 {
@@ -489,6 +614,7 @@ int main()
     TestNoIndex();
     TestQuestRewards();
     TestCraftsAndNoSource();
+    TestVendorsAndReputation();
     TestBlockedSetsAndBotStage();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;

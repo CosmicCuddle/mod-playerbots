@@ -649,10 +649,19 @@ Playerbots.AutoGearScoreLimit = 0
 # Items whose only proven source is a raid the commanding player cannot enter
 # yet under Individual Progression (e.g. Blackwing Lair before Onyxia, Zul'Gurub
 # before IndividualProgression.RequiredZulGurubProgression) are never offered.
+# Neither are items with no known source (placeholder, deprecated and test
+# items, crafts whose recipe nobody can learn). Crafted gear counts as a source
+# and follows its recipe: a trainer recipe is always available, a recipe item
+# (e.g. a Zul'Gurub recipe) or a quest reward recipe only when that item or quest
+# is. Vendors and reputation count only when they fit the stage: an item that
+# needs a reputation earned only in a locked raid (e.g. Zandalar patterns before
+# Zul'Gurub), a vendor standing only in a locked raid, or a price paid in items
+# from a locked raid, is not offered.
 # Enabling this loads a raid source index from the world database at startup
 # (a few seconds); if it cannot load, capped commands keep the current gear.
-# The index is a snapshot of startup: after ".reload" of loot, npc_vendor or
-# quest tables, or GM-added spawns, restart the server for AutoGear to see them.
+# The index is a snapshot of startup: after ".reload" of loot, npc_vendor,
+# quest, trainer or reputation tables, or GM-added spawns, restart the server
+# for AutoGear to see them.
 # Missing/zero stage caps or era ceilings refuse the command before changing gear.
 # These tables can only lower the caps compiled into AutoGearSelectionCap.h; a
 # higher value here has no effect.
@@ -669,10 +678,13 @@ Playerbots.AutoGearIPCap.EraCeilings = 92,164,284
 # Random bots get gear when they are created, re-randomized and when they level up. When enabled, that
 # gear follows the same raid source rule as the IP-capped autogear above, at the bot's own Individual
 # Progression stage: no item whose every source is a raid the bot cannot enter yet (for example no
-# Zul'Gurub, Blackwing Lair or AQ loot at stage 0), and no quest reward whose quest needs such loot.
-# Vendor items, dungeon and world drops are unaffected. Only random bots; alt bots and players are not
-# changed, and gear a bot already wears is not removed. Requires Individual Progression; loads the raid
-# source index at startup (a few seconds). If that index cannot load, random-bot gear is unchanged.
+# Zul'Gurub, Blackwing Lair or AQ loot at stage 0), no quest reward whose quest needs such loot, no
+# craft whose recipe comes only from such a raid, no item that needs reputation only such a raid gives,
+# and no item without any known source. Ordinary vendor items, dungeon and world drops and trainer
+# crafts are unaffected. Only random bots; alt bots and players are
+# not changed, and gear a bot already wears is not removed. Requires Individual Progression; loads the
+# raid source index at startup (a few seconds). If Individual Progression is disabled or the index
+# cannot load, random-bot gear is unchanged and the server logs an error at startup.
 # Default: 0 (disabled)
 Playerbots.RandomBotGear.RaidSourceGate = 0
 

@@ -1,6 +1,7 @@
 // G7 world rows load completely or not at all (CS01 #59 7069065777, 7070450862). A fake database
 // injects failures per table: a failed count, a failed query after a count, a short result, a
 // malformed row, and legitimately empty tables. Nothing partial may be published.
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -42,17 +43,21 @@ constexpr SourceTableSet Tables{
     {"gameobject_template", "chests", "us"},
     {"gameobject", "chest_spawns", "uhb"},
     {"npc_vendor", "vendor", "s"},
-    {"quest_template", "quests", "uuuuuuuuuuuuuuuuuussss"},
-    {"quest_template_addon", "quest_chains", "us"},
+    {"quest_template", "quests", "uuuuuuuuuuuuuuuuuussssuuuu"},
+    {"quest_template_addon", "quest_chains", "ushu"},
     {"trainer_spell", "trainer_spells", "u"},
     {"item_template spells", "item_spells", "usbsbsbsbsb"},
     {"quest_template reward spells", "quest_spells", "usu"},
+    {"npc_vendor rows", "vendor_rows", "usu"},
+    {"item_template reputation", "item_reputations", "uh"},
+    {"creature_onkill_reputation", "kill_reputations", "un"},
+    {"quest_template reputation", "quest_reputations", "uhsshsshsshsshss"},
 };
 
-// One quest_template row: ID, 10 rewards, 6 hand-ins, start item, 4 kill targets.
+// One quest_template row: ID, 10 rewards, 6 hand-ins, start item, 4 kill targets, 4 hand-in sources.
 Row QuestRow(std::int64_t id, std::int64_t reward, std::int64_t handIn = 0, std::int64_t kill = 0)
 {
-    Row row(22, 0);
+    Row row(26, 0);
     row[0] = id;
     row[1] = reward;
     row[11] = handIn;
@@ -87,6 +92,10 @@ struct FakeDatabase
         tables["trainer_spells"] = {};
         tables["item_spells"] = {};
         tables["quest_spells"] = {{9001, 0, 0}};
+        tables["vendor_rows"] = {{2, BwlVendorItem, 0}};
+        tables["item_reputations"] = {};
+        tables["kill_reputations"] = {};
+        tables["quest_reputations"] = {};
     }
 
     std::optional<std::uint64_t> Count(char const* sql)
@@ -274,7 +283,7 @@ void TestQuestRows()
     LoadReport report;
     FakeDatabase chain;
     chain.tables["quests"] = {QuestRow(600, 0, 19003), QuestRow(601, 19383, 0, 11583)};
-    chain.tables["quest_chains"] = {{601, 600}, {602, 0}, {603, -600}};
+    chain.tables["quest_chains"] = {{601, 600, 0, 0}, {602, 0, 0, 0}, {603, -600, 0, 0}};
     auto const rows = Load(chain, report);
     Check(rows.has_value(), "quest rows with hand-ins, kill targets and chains load");
     if (rows)
@@ -285,7 +294,7 @@ void TestQuestRows()
               "chain rows without a previous quest are skipped; negative PrevQuestID is kept");
     }
     FakeDatabase badChain;
-    badChain.tables["quest_chains"] = {{601, std::numeric_limits<std::int32_t>::min()}};
+    badChain.tables["quest_chains"] = {{601, std::numeric_limits<std::int32_t>::min(), 0, 0}};
     Check(!Load(badChain, report).has_value() && report.failure == LoadFailure::MalformedRow,
           "an INT32_MIN PrevQuestID is malformed");
     FakeDatabase chainFails;
@@ -350,6 +359,95 @@ void TestSpellRows()
     Check(!Load(badQuestSpell, report).has_value() && report.failure == LoadFailure::MalformedRow,
           "a RewardSpell outside int32 is malformed");
 }
+// Vendor rows, reputation rows and the quest addon columns load, and resolve.
+void TestVendorAndReputationRows()
+{
+    LoadReport report;
+    FakeDatabase db;
+    // Vendor 10 sells 500 for ExtendedCost 7 and includes list 20; list 20 includes 30, which includes 20.
+    db.tables["vendor_rows"] = {{10, 500, 7}, {10, -20, 0}, {20, 600, 99}, {20, -30, 0}, {30, 700, 0}, {30, -20, 0}};
+    db.tables["item_reputations"] = {{19764, 270}};
+    db.tables["kill_reputations"] = {{11380, 270}, {11381, -5}};
+    // Quest 8041: +Zandalar by value index 5; quest 8042: an override of -1000 is a loss despite value 5.
+    Row gain(16, 0), loss(16, 0);
+    gain[0] = 8041;
+    gain[1] = 270;
+    gain[2] = 5;
+    loss[0] = 8042;
+    loss[1] = 270;
+    loss[2] = 5;
+    loss[3] = -1000;
+    loss[4] = 529;
+    loss[5] = 0;
+    loss[6] = 250;  // a positive override with value 0 is a gain
+    db.tables["quest_reputations"] = {gain, loss};
+    db.tables["quest_chains"] = {{8041, 0, 270, 0}, {8240, 0, 0, 2}, {8241, 0, 0, 1}, {8242, 0, 0, 0}};
+    auto rows = Load(db, report);
+    Check(rows.has_value(), "vendor, reputation and quest addon rows load");
+    if (!rows)
+        return;
+    Check(rows->vendorRows.size() == 6 && rows->vendorRows[1].item == -20, "vendor rows keep negative references");
+    Check(rows->itemReputations.size() == 1 && rows->itemReputations[0].faction == 270, "item reputation lands");
+    Check(rows->questChains.size() == 2 && rows->questChains[0].requiredFaction == 270 &&
+              !rows->questChains[0].eventOnly && rows->questChains[1].id == 8240 && rows->questChains[1].eventOnly,
+          "addon rows keep the required reputation and the event flag; other flags and empty rows are skipped");
+
+    std::map<std::uint32_t, std::array<std::uint32_t, 5>> const costs{{7, {20888, 0, 0, 0, 0}}};
+    auto const offers = ResolveVendorOffers(rows->vendorRows, costs);
+    auto sells = [&](std::uint32_t vendor, std::uint32_t item, std::uint32_t cost)
+    {
+        for (VendorOfferRow const& o : offers)
+            if (o.vendor == vendor && o.item == item && o.costItems[0] == cost)
+                return true;
+        return false;
+    };
+    Check(sells(10, 500, 20888), "an ExtendedCost lists the items it asks for");
+    Check(sells(10, 600, 0) && sells(10, 700, 0), "a referenced list is sold by the including vendor, nested too");
+    Check(sells(20, 600, 0) && sells(20, 700, 0) && sells(30, 700, 0) && sells(30, 600, 0),
+          "a reference loop terminates and keeps every list");
+    Check(offers.size() == 7, "no duplicates from the loop, no rows for references themselves");
+
+    auto const sources = ResolveReputationSources(rows->killReputations, rows->questReputations);
+    auto has = [&](std::uint32_t faction, bool quest, std::uint32_t id)
+    {
+        for (ReputationSourceRow const& r : sources)
+            if (r.faction == faction && r.quest == quest && r.id == id)
+                return true;
+        return false;
+    };
+    Check(has(270, false, 11380) && !has(0, false, 11381) && sources.size() == 3,
+          "kills raise their faction; a negative faction id adds nothing");
+    Check(has(270, true, 8041) && !has(270, true, 8042), "a value index gains, a negative override loses");
+    Check(has(529, true, 8042), "a positive override gains");
+
+    FakeDatabase badReference;
+    badReference.tables["vendor_rows"] = {{10, std::numeric_limits<std::int32_t>::min(), 0}};
+    Check(!Load(badReference, report).has_value() && report.failure == LoadFailure::MalformedRow &&
+              std::string(report.table) == "npc_vendor rows",
+          "an INT32_MIN vendor reference is malformed");
+    FakeDatabase badFaction;
+    badFaction.tables["kill_reputations"] = {{1, 40000}};
+    Check(!Load(badFaction, report).has_value() && report.failure == LoadFailure::MalformedRow,
+          "a kill faction outside SMALLINT is malformed");
+    FakeDatabase repFails;
+    repFails.tables["quest_reputations"] = {gain};
+    repFails.queryFails.insert("quest_reputations");
+    Check(!Load(repFails, report).has_value() && report.failure == LoadFailure::QueryFailed &&
+              std::string(report.table) == "quest_template reputation",
+          "a failed reputation query publishes nothing");
+    FakeDatabase dropBad;
+    Row drop = QuestRow(900, 1);
+    drop[22] = -1;
+    dropBad.tables["quests"] = {drop};
+    Check(!Load(dropBad, report).has_value() && report.failure == LoadFailure::MalformedRow,
+          "a negative ItemDrop is malformed");
+    FakeDatabase dropOk;
+    Row drop2 = QuestRow(901, 1);
+    drop2[22] = 19881;
+    dropOk.tables["quests"] = {drop2};
+    auto const dropRows = Load(dropOk, report);
+    Check(dropRows.has_value() && dropRows->quests[0].items[7] == 19881, "ItemDrop1 lands after the start item");
+}
 }  // namespace
 
 int main()
@@ -360,6 +458,7 @@ int main()
     TestMalformedRows();
     TestQuestRows();
     TestSpellRows();
+    TestVendorAndReputationRows();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

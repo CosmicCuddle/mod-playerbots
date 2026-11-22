@@ -32,8 +32,10 @@ inline constexpr char const* QuestRewards =
     "SELECT ID, RewardItem1, RewardItem2, RewardItem3, RewardItem4, RewardChoiceItemID1, RewardChoiceItemID2, "
     "RewardChoiceItemID3, RewardChoiceItemID4, RewardChoiceItemID5, RewardChoiceItemID6, RequiredItemId1, "
     "RequiredItemId2, RequiredItemId3, RequiredItemId4, RequiredItemId5, RequiredItemId6, StartItem, "
-    "RequiredNpcOrGo1, RequiredNpcOrGo2, RequiredNpcOrGo3, RequiredNpcOrGo4 FROM quest_template";
-inline constexpr char const* QuestChains = "SELECT ID, PrevQuestID FROM quest_template_addon";
+    "RequiredNpcOrGo1, RequiredNpcOrGo2, RequiredNpcOrGo3, RequiredNpcOrGo4, ItemDrop1, ItemDrop2, ItemDrop3, "
+    "ItemDrop4 FROM quest_template";
+inline constexpr char const* QuestChains =
+    "SELECT ID, PrevQuestID, RequiredMinRepFaction, SpecialFlags FROM quest_template_addon";
 inline constexpr char const* TrainerSpells = "SELECT DISTINCT SpellId FROM trainer_spell";
 inline constexpr char const* ItemSpells =
     "SELECT entry, spellid_1, spelltrigger_1, spellid_2, spelltrigger_2, spellid_3, spelltrigger_3, spellid_4, "
@@ -41,6 +43,19 @@ inline constexpr char const* ItemSpells =
     "spellid_3 > 0 OR spellid_4 > 0 OR spellid_5 > 0";
 inline constexpr char const* QuestSpells =
     "SELECT ID, RewardSpell, RewardDisplaySpell FROM quest_template WHERE RewardSpell <> 0 OR RewardDisplaySpell <> 0";
+inline constexpr char const* VendorRows = "SELECT entry, item, ExtendedCost FROM npc_vendor";
+inline constexpr char const* ItemReputations =
+    "SELECT entry, RequiredReputationFaction FROM item_template WHERE RequiredReputationFaction > 0";
+inline constexpr char const* KillReputations =
+    "SELECT creature_id, RewOnKillRepFaction1 FROM creature_onkill_reputation WHERE RewOnKillRepFaction1 > 0 AND "
+    "RewOnKillRepValue1 > 0 UNION ALL SELECT creature_id, RewOnKillRepFaction2 FROM creature_onkill_reputation WHERE "
+    "RewOnKillRepFaction2 > 0 AND RewOnKillRepValue2 > 0";
+inline constexpr char const* QuestReputations =
+    "SELECT ID, RewardFactionID1, RewardFactionValue1, RewardFactionOverride1, RewardFactionID2, RewardFactionValue2, "
+    "RewardFactionOverride2, RewardFactionID3, RewardFactionValue3, RewardFactionOverride3, RewardFactionID4, "
+    "RewardFactionValue4, RewardFactionOverride4, RewardFactionID5, RewardFactionValue5, RewardFactionOverride5 FROM "
+    "quest_template WHERE RewardFactionID1 > 0 OR RewardFactionID2 > 0 OR RewardFactionID3 > 0 OR RewardFactionID4 > 0 "
+    "OR RewardFactionID5 > 0";
 }  // namespace SourceQueries
 
 // The same queries with the exact column types (see TableQuery). Read completely or not at all.
@@ -54,11 +69,15 @@ inline constexpr SourceTableSet SourceTables{
     {"gameobject_template", SourceQueries::Chests, "us"},
     {"gameobject", SourceQueries::ChestSpawns, "uhb"},
     {"npc_vendor", SourceQueries::VendorItems, "s"},
-    {"quest_template", SourceQueries::QuestRewards, "uuuuuuuuuuuuuuuuuussss"},
-    {"quest_template_addon", SourceQueries::QuestChains, "us"},
+    {"quest_template", SourceQueries::QuestRewards, "uuuuuuuuuuuuuuuuuussssuuuu"},
+    {"quest_template_addon", SourceQueries::QuestChains, "ushu"},
     {"trainer_spell", SourceQueries::TrainerSpells, "u"},
     {"item_template spells", SourceQueries::ItemSpells, "usbsbsbsbsb"},
     {"quest_template reward spells", SourceQueries::QuestSpells, "usu"},
+    {"npc_vendor rows", SourceQueries::VendorRows, "usu"},
+    {"item_template reputation", SourceQueries::ItemReputations, "uh"},
+    {"creature_onkill_reputation", SourceQueries::KillReputations, "un"},
+    {"quest_template reputation", SourceQueries::QuestReputations, "uhsshsshsshsshss"},
 };
 
 // Built once on the world thread during startup, before map updates run, and immutable afterwards.

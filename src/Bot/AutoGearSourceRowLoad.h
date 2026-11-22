@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_AUTOGEAR_SOURCE_ROW_LOAD_H
 #define PLAYERBOTS_AUTOGEAR_SOURCE_ROW_LOAD_H
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -40,7 +41,8 @@ enum class LoadFailure : std::uint8_t
 };
 
 // kinds: one letter per column, the exact column type the database adapter reads it as:
-// 'u' uint32 (INT UNSIGNED), 's' int32 (INT), 'h' uint16 (SMALLINT UNSIGNED), 'b' uint8 (TINYINT UNSIGNED).
+// 'u' uint32 (INT UNSIGNED), 's' int32 (INT), 'h' uint16 (SMALLINT UNSIGNED), 'n' int16 (SMALLINT),
+// 'b' uint8 (TINYINT UNSIGNED).
 struct TableQuery
 {
     char const* name;
@@ -74,8 +76,9 @@ struct QuestSpellRow
     std::uint32_t displaySpell = 0;
 };
 
-inline constexpr std::uint8_t ItemSpellTriggerOnUse = 0;       // ITEM_SPELLTRIGGER_ON_USE
-inline constexpr std::uint8_t ItemSpellTriggerLearnSpell = 6;  // ITEM_SPELLTRIGGER_LEARN_SPELL_ID
+inline constexpr std::int64_t QuestSpecialFlagExplorationOrEvent = 0x2;  // QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT
+inline constexpr std::uint8_t ItemSpellTriggerOnUse = 0;                 // ITEM_SPELLTRIGGER_ON_USE
+inline constexpr std::uint8_t ItemSpellTriggerLearnSpell = 6;            // ITEM_SPELLTRIGGER_LEARN_SPELL_ID
 
 // How players get each spell, from the trainer lists, the skill-learned spells (SkillLineAbility
 // AcquireMethod 1 or 2), item spells and quest reward spells. A spell that teaches others
@@ -116,6 +119,94 @@ inline std::vector<SpellSourceRow> ResolveSpellSources(std::span<std::uint32_t c
     return out;
 }
 
+// npc_vendor as stored: a negative item includes another vendor's list (Core's LoadReferenceVendor).
+struct VendorRow
+{
+    std::uint32_t vendor = 0;
+    std::int32_t item = 0;
+    std::uint32_t extendedCost = 0;
+};
+
+// Every item each vendor sells, with the items its ExtendedCost asks for (`costs`: ItemExtendedCost id ->
+// reqitem, from the DBC). Referenced lists are expanded for the including vendor, nested ones too.
+template <class Costs>
+std::vector<VendorOfferRow> ResolveVendorOffers(std::span<VendorRow const> rows, Costs const& costs)
+{
+    std::multimap<std::uint32_t, VendorRow> byVendor;
+    for (VendorRow const& row : rows)
+        byVendor.emplace(row.vendor, row);
+    std::vector<VendorOfferRow> out;
+    for (auto it = byVendor.begin(); it != byVendor.end(); it = byVendor.upper_bound(it->first))
+    {
+        std::uint32_t const seller = it->first;
+        std::vector<std::uint32_t> lists{seller};
+        std::vector<std::uint32_t> seen{seller};
+        while (!lists.empty())
+        {
+            std::uint32_t const list = lists.back();
+            lists.pop_back();
+            auto const [first, last] = byVendor.equal_range(list);
+            for (auto row = first; row != last; ++row)
+            {
+                VendorRow const& r = row->second;
+                if (r.item < 0)
+                {
+                    std::uint32_t const ref = static_cast<std::uint32_t>(-static_cast<std::int64_t>(r.item));
+                    if (std::find(seen.begin(), seen.end(), ref) == seen.end())
+                    {
+                        seen.push_back(ref);
+                        lists.push_back(ref);
+                    }
+                    continue;
+                }
+                if (r.item == 0)
+                    continue;
+                VendorOfferRow offer{seller, static_cast<std::uint32_t>(r.item), {}};
+                if (r.extendedCost)
+                    if (auto const cost = costs.find(r.extendedCost); cost != costs.end())
+                        offer.costItems = cost->second;
+                out.push_back(offer);
+            }
+        }
+    }
+    return out;
+}
+
+// creature_onkill_reputation, one row per (creature, faction) with a positive value.
+struct KillReputationRow
+{
+    std::uint32_t creature = 0;
+    std::int32_t faction = 0;
+};
+
+// quest_template RewardFactionID1-5 with RewardFactionValue1-5 and RewardFactionOverride1-5.
+struct QuestReputationRow
+{
+    std::uint32_t quest = 0;
+    std::array<std::uint32_t, 5> factions{};
+    std::array<std::int32_t, 5> values{};
+    std::array<std::int32_t, 5> overrides{};
+};
+
+// Ways to gain reputation. A quest grants reputation when its override is positive, or without an
+// override when its value (an index into QuestFactionReward.dbc, negative for losses) is positive.
+inline std::vector<ReputationSourceRow> ResolveReputationSources(std::span<KillReputationRow const> kills,
+                                                                 std::span<QuestReputationRow const> quests)
+{
+    std::vector<ReputationSourceRow> out;
+    for (KillReputationRow const& kill : kills)
+        if (kill.faction > 0 && kill.creature)
+            out.push_back({static_cast<std::uint32_t>(kill.faction), false, kill.creature});
+    for (QuestReputationRow const& quest : quests)
+        for (std::size_t i = 0; i < quest.factions.size(); ++i)
+        {
+            bool const gains = quest.overrides[i] != 0 ? quest.overrides[i] > 0 : quest.values[i] > 0;
+            if (quest.factions[i] && gains)
+                out.push_back({quest.factions[i], true, quest.quest});
+        }
+    return out;
+}
+
 // Owns what WorldRows points at.
 struct OwnedWorldRows
 {
@@ -133,6 +224,13 @@ struct OwnedWorldRows
     // and how players get each spell (ResolveSpellSources).
     std::vector<CraftRow> crafts;
     std::vector<SpellSourceRow> spellSources;
+    std::vector<VendorRow> vendorRows;
+    std::vector<ItemReputationRow> itemReputations;
+    std::vector<KillReputationRow> killReputations;
+    std::vector<QuestReputationRow> questReputations;
+    // Filled by the caller: vendorRows resolved with the ExtendedCost data (DBC), and reputation sources.
+    std::vector<VendorOfferRow> vendorOffers;
+    std::vector<ReputationSourceRow> reputationSources;
 
     WorldRows View() const
     {
@@ -151,6 +249,9 @@ struct OwnedWorldRows
         rows.questChains = questChains;
         rows.crafts = crafts;
         rows.spellSources = spellSources;
+        rows.vendorOffers = vendorOffers;
+        rows.itemReputations = itemReputations;
+        rows.reputationSources = reputationSources;
         return rows;
     }
 };
@@ -232,7 +333,8 @@ private:
 struct SourceTableSet
 {
     TableQuery creatureLoot, gameobjectLoot, referenceLoot, itemLoot, creatures, creatureSpawns, chests, chestSpawns,
-        vendorItems, questRewards, questChains, trainerSpells, itemSpells, questSpells;
+        vendorItems, questRewards, questChains, trainerSpells, itemSpells, questSpells, vendorRows, itemReputations,
+        killReputations, questReputations;
 };
 
 template <class Source>
@@ -303,12 +405,16 @@ std::optional<OwnedWorldRows> LoadWorldRows(Source& source, SourceTableSet const
                          rows.vendorItems.push_back(static_cast<std::uint32_t>(r[0]));
                      return true;
                  });
-    // ID, RewardItem1-4, RewardChoiceItemID1-6, RequiredItemId1-6, StartItem, RequiredNpcOrGo1-4.
+    // ID, RewardItem1-4, RewardChoiceItemID1-6, RequiredItemId1-6, StartItem, RequiredNpcOrGo1-4, ItemDrop1-4
+    // (the items a hand-in is made from, e.g. Channeler's Heads for the Gurubashi Head Collection).
     loader.Table(
         tables.questRewards,
         [&](std::span<std::int64_t const> r)
         {
             for (std::size_t i = 0; i < 18; ++i)
+                if (!Unsigned32(r[i]))
+                    return false;
+            for (std::size_t i = 22; i < 26; ++i)
                 if (!Unsigned32(r[i]))
                     return false;
             for (std::size_t i = 18; i < 22; ++i)
@@ -325,21 +431,26 @@ std::optional<OwnedWorldRows> LoadWorldRows(Source& source, SourceTableSet const
             for (std::size_t i = 0; i < 7; ++i)
                 quest.items[i] = static_cast<std::uint32_t>(r[11 + i]);
             for (std::size_t i = 0; i < 4; ++i)
+                quest.items[7 + i] = static_cast<std::uint32_t>(r[22 + i]);
+            for (std::size_t i = 0; i < 4; ++i)
                 quest.npcOrGo[i] = static_cast<std::int32_t>(r[18 + i]);
             rows.quests.push_back(quest);
             return true;
         });
-    loader.Table(
-        tables.questChains,
-        [&](std::span<std::int64_t const> r)
-        {
-            if (!Unsigned32(r[0]) || r[1] <= std::numeric_limits<std::int32_t>::min() ||
-                r[1] > std::numeric_limits<std::int32_t>::max())
-                return false;
-            if (r[1] != 0)
-                rows.questChains.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1])});
-            return true;
-        });
+    loader.Table(tables.questChains,
+                 [&](std::span<std::int64_t const> r)
+                 {
+                     // ID, PrevQuestID, RequiredMinRepFaction, SpecialFlags.
+                     if (!Unsigned32(r[0]) || r[1] <= std::numeric_limits<std::int32_t>::min() ||
+                         r[1] > std::numeric_limits<std::int32_t>::max() || r[2] < 0 || r[2] > 0xFFFF ||
+                         !Unsigned32(r[3]))
+                         return false;
+                     bool const eventOnly = (r[3] & QuestSpecialFlagExplorationOrEvent) != 0;
+                     if (r[1] != 0 || r[2] != 0 || eventOnly)
+                         rows.questChains.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1]),
+                                                     static_cast<std::uint32_t>(r[2]), eventOnly});
+                     return true;
+                 });
     loader.Table(tables.trainerSpells,
                  [&](std::span<std::int64_t const> r)
                  {
@@ -378,6 +489,58 @@ std::optional<OwnedWorldRows> LoadWorldRows(Source& source, SourceTableSet const
                          return false;
                      rows.questSpells.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1]),
                                                  static_cast<std::uint32_t>(r[2])});
+                     return true;
+                 });
+    auto int32 = [](std::int64_t v)
+    { return v >= std::numeric_limits<std::int32_t>::min() && v <= std::numeric_limits<std::int32_t>::max(); };
+    // entry, item (signed: a negative item references another list), ExtendedCost.
+    loader.Table(tables.vendorRows,
+                 [&](std::span<std::int64_t const> r)
+                 {
+                     if (!Unsigned32(r[0]) || !int32(r[1]) || r[1] == std::numeric_limits<std::int32_t>::min() ||
+                         !Unsigned32(r[2]))
+                         return false;
+                     rows.vendorRows.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1]),
+                                                static_cast<std::uint32_t>(r[2])});
+                     return true;
+                 });
+    loader.Table(
+        tables.itemReputations,
+        [&](std::span<std::int64_t const> r)
+        {
+            if (!Unsigned32(r[0]) || r[1] < 0 || r[1] > 0xFFFF)
+                return false;
+            rows.itemReputations.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::uint32_t>(r[1])});
+            return true;
+        });
+    loader.Table(
+        tables.killReputations,
+        [&](std::span<std::int64_t const> r)
+        {
+            if (!Unsigned32(r[0]) || r[1] < std::numeric_limits<std::int16_t>::min() ||
+                r[1] > std::numeric_limits<std::int16_t>::max())
+                return false;
+            rows.killReputations.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1])});
+            return true;
+        });
+    // ID, then RewardFactionID, RewardFactionValue, RewardFactionOverride for 1..5.
+    loader.Table(tables.questReputations,
+                 [&](std::span<std::int64_t const> r)
+                 {
+                     if (!Unsigned32(r[0]))
+                         return false;
+                     QuestReputationRow row;
+                     row.quest = static_cast<std::uint32_t>(r[0]);
+                     for (std::size_t i = 0; i < 5; ++i)
+                     {
+                         std::int64_t const faction = r[1 + 3 * i];
+                         if (faction < 0 || faction > 0xFFFF || !int32(r[2 + 3 * i]) || !int32(r[3 + 3 * i]))
+                             return false;
+                         row.factions[i] = static_cast<std::uint32_t>(faction);
+                         row.values[i] = static_cast<std::int32_t>(r[2 + 3 * i]);
+                         row.overrides[i] = static_cast<std::int32_t>(r[3 + 3 * i]);
+                     }
+                     rows.questReputations.push_back(row);
                      return true;
                  });
 
