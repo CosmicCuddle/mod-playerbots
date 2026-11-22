@@ -10,6 +10,8 @@
 
 using namespace PlayerbotsAutoGearMasterSource;
 using namespace PlayerbotsAutoGearSourceAccess;
+using PlayerbotsAutoGearMasterSource::QuestChainRow;
+using PlayerbotsAutoGearMasterSource::QuestRow;
 
 namespace
 {
@@ -116,8 +118,8 @@ void TestIndexKeepsSourceMap(SourceIndex const& index)
     Check(index.Lookup(VendorBwlItem).verdict == Verdict::Unknown, "a vendor source makes a BWL drop Unknown");
     Check(index.Lookup(TwoRaidItem).verdict == Verdict::Unknown, "two raids make an item Unknown for the tier lift");
     AccessEntry const pair = index.Access(LockedPairItem);
-    Check(pair.known && pair.spawned.size() == 2 && !pair.vendorOrQuest, "access keeps both raid sources");
-    Check(index.Access(VendorBwlItem).vendorOrQuest, "access records the vendor source");
+    Check(pair.known && pair.spawned.size() == 2 && !pair.vendor, "access keeps both raid sources");
+    Check(index.Access(VendorBwlItem).vendor, "access records the vendor source");
     Check(index.Access(UnspawnedBwlItem).unattributed, "access records loot on an unspawned template");
     Check(index.Access(ContainerBwlItem).container, "access records the container source");
     Check(!index.Access(NotInIndex).known, "an unnamed item has no access entry");
@@ -218,6 +220,108 @@ void TestTable()
     Check(Allows(empty, 0, Gates{}), "an entry without sources has no raid evidence");
 }
 
+// Owner decision 22 Nov 2026: a quest reward is locked while completing its quest is locked.
+void TestQuestRewards()
+{
+    World world;
+    std::vector<QuestRow> quests;
+    std::vector<QuestChainRow> chains;
+    auto quest = [&](std::uint32_t id, std::uint32_t reward, std::uint32_t handIn = 0, std::int32_t kill = 0,
+                     std::uint32_t startItem = 0)
+    {
+        QuestRow row;
+        row.id = id;
+        row.rewards[0] = reward;
+        row.items[0] = handIn;
+        row.items[6] = startItem;
+        row.npcOrGo[0] = kill;
+        quests.push_back(row);
+    };
+    constexpr std::uint32_t Armsplint = 19717;       // Primal Hakkari Armsplint: Zul'Gurub only
+    constexpr std::uint32_t AugurBracers = 19830;    // Paragons of Power reward
+    constexpr std::uint32_t HeadOfNefarian = 19003;  // Blackwing Lair only
+    constexpr std::uint32_t DragonslayerMedal = 19383;
+    world.Boss(40, 309, 1, Armsplint);
+    world.Boss(41, 469, 1, HeadOfNefarian);
+    world.Boss(42, 230, 1, 6000);  // a dungeon hand-in
+    quest(8056, AugurBracers, Armsplint);
+    quest(7781, 0, HeadOfNefarian, 0, HeadOfNefarian);
+    quest(7782, DragonslayerMedal);
+    chains.push_back({7782, 7781});
+    quest(7790, 5100);
+    chains.push_back({7790, -7781});  // must be active: still needs the head
+    quest(100, 5000, 6000);           // ordinary quest with a dungeon hand-in
+    world.creatures.push_back({30, {}, 0});
+    world.creatureSpawns.push_back({30, 469, 1});  // kill target only in BWL
+    quest(101, 5001, 0, 30);
+    world.creatures.push_back({31, {}, 0});
+    world.creatureSpawns.push_back({31, 469, 1});
+    world.creatureSpawns.push_back({31, 0, 1});  // also in the open world
+    quest(102, 5002, 0, 31);
+    quest(103, 5003, 0, 32);  // kill target with no spawn: unknown
+    quest(104, 5004);         // no requirements
+    quest(105, 5005, Armsplint);
+    world.vendor.push_back(5005);  // locked quest, but also sold
+    quest(106, 5006, Armsplint);
+    world.Boss(43, 230, 1, 5006);  // locked quest, but also a dungeon drop
+    quest(107, 5007, Armsplint);
+    world.Boss(44, 469, 1, 5007);  // locked quest and a locked raid drop
+    quest(900, 9000, 9000);        // a quest that needs its own reward: must terminate
+    quest(901, 9001, 0, -500);     // game object target: not placed by the index
+    std::vector<std::uint32_t> legacy{5009};
+
+    WorldRows rows = world.View();
+    rows.quests = quests;
+    rows.questChains = chains;
+    rows.questRewardItems = legacy;
+    SourceIndex const index = SourceIndex::Build(rows);
+
+    Check(index.Access(AugurBracers).quests.size() == 1 && index.Quest(7782) && index.Quest(7782)->prev == 7781,
+          "index keeps rewarding quests and the chain");
+    Check(!Offered(index, AugurBracers, 0), "Zandalar reward at stage 0: its hand-in only drops in Zul'Gurub");
+    Check(!Offered(index, AugurBracers, 2), "Zandalar reward at stage 2: Zul'Gurub still locked");
+    Check(Offered(index, AugurBracers, 3), "Zandalar reward at stage 3: Zul'Gurub open");
+    Gates early;
+    early.zulGurub = 1;
+    Check(Offered(index, AugurBracers, 1, early), "Zandalar reward follows RequiredZulGurubProgression");
+
+    Check(!Offered(index, DragonslayerMedal, 1), "Head of Nefarian follow-up at stage 1: the first quest is locked");
+    Check(Offered(index, DragonslayerMedal, 2), "Head of Nefarian follow-up at stage 2: BWL open");
+    Check(!Offered(index, 5100, 1), "a negative PrevQuestID is followed too");
+
+    Check(Offered(index, 5000, 0), "ordinary quest with a dungeon hand-in");
+    Check(!Offered(index, 5001, 1), "kill target spawned only in a locked raid");
+    Check(Offered(index, 5001, 2), "kill target's raid open");
+    Check(Offered(index, 5002, 0), "kill target also spawned in the open world");
+    Check(Offered(index, 5003, 0), "kill target without a spawn: no evidence");
+    Check(Offered(index, 5004, 0), "quest without requirements");
+    Check(Offered(index, 5005, 0), "locked quest, but a vendor sells the reward");
+    Check(Offered(index, 5006, 0), "locked quest, but the reward also drops in a dungeon");
+    Check(!Offered(index, 5007, 1), "locked quest and a locked raid drop");
+    Check(Offered(index, 9000, 0), "a self-referencing quest terminates and stays allowed");
+    Check(Offered(index, 9001, 0), "game object targets are not judged");
+    Check(Offered(index, 5009, 0), "a reward row without requirements (older callers) stays allowed");
+
+    // Hand-ins that are themselves quest rewards are followed one more step.
+    World deep;
+    deep.Boss(50, 469, 1, 7000);
+    std::vector<QuestRow> deepQuests;
+    QuestRow first;
+    first.id = 200;
+    first.rewards[0] = 7100;
+    first.items[0] = 7000;  // BWL hand-in
+    QuestRow second;
+    second.id = 201;
+    second.rewards[0] = 7200;
+    second.items[0] = 7100;  // needs the first reward
+    deepQuests = {first, second};
+    WorldRows deepRows = deep.View();
+    deepRows.quests = deepQuests;
+    SourceIndex const deepIndex = SourceIndex::Build(deepRows);
+    Check(!Offered(deepIndex, 7200, 1), "a reward whose hand-in is a locked quest reward is locked");
+    Check(Offered(deepIndex, 7200, 2), "and opens with the raid");
+}
+
 void TestNoIndex()
 {
     Filter const filter{nullptr, 18, Gates{}};
@@ -235,6 +339,7 @@ int main()
     TestConfiguredGates(index);
     TestTable();
     TestNoIndex();
+    TestQuestRewards();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

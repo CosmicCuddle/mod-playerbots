@@ -30,6 +30,7 @@
 namespace PlayerbotsAutoGearSourceAccess
 {
 using PlayerbotsAutoGearMasterSource::AccessEntry;
+using PlayerbotsAutoGearMasterSource::QuestFacts;
 using PlayerbotsAutoGearMasterSource::SourceIndex;
 using PlayerbotsAutoGearMasterSource::Verdict;
 
@@ -93,35 +94,111 @@ constexpr std::int32_t RequiredStage(std::uint32_t map, std::uint8_t difficulty,
     }
 }
 
-// True when the item may be offered.
+enum class Reach : std::uint8_t
+{
+    Reachable,  // at least one source the commander can use now
+    Locked,     // raid evidence, and every source is out of reach
+    Unknown     // no evidence either way (no rows, unplaceable loot, containers)
+};
+
+inline Reach SpawnReach(std::uint32_t map, std::uint8_t difficulty, std::uint8_t effectiveStage, Gates gates)
+{
+    std::int32_t const required = RequiredStage(map, difficulty, gates);
+    if (required == NotGated)
+        return Reach::Reachable;  // spawned outside any gated raid: a dungeon or the open world
+    return static_cast<std::int32_t>(effectiveStage) >= required ? Reach::Reachable : Reach::Locked;
+}
+
+// One item's own sources, without following quests (tests and simple callers).
 inline bool Allows(AccessEntry const& entry, std::uint8_t effectiveStage, Gates gates)
 {
-    bool lockedRaid = false;
+    bool locked = false;
     for (auto const& [map, difficulty] : entry.spawned)
     {
-        std::int32_t const required = RequiredStage(map, difficulty, gates);
-        if (required == NotGated)
-            return true;  // spawned outside any gated raid: a dungeon or world drop
-        if (static_cast<std::int32_t>(effectiveStage) >= required)
-            return true;  // a raid the commander can enter
-        lockedRaid = true;
+        if (SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable)
+            return true;
+        locked = true;
     }
-    if (entry.vendorOrQuest)
+    if (entry.vendor || entry.questUnstructured || !entry.quests.empty())
         return true;
-    return !lockedRaid;
+    return !locked;
 }
 
 // What the factory and the BiS overlay consult for one command. Built on the world thread from the
 // published (immutable) index; it lives for that one command only.
+//
+// A quest reward is only as reachable as the quest: the owner's decision of 22 Nov 2026 is that a
+// reward is locked while completing its quest is locked. A quest is locked when a hand-in or start
+// item is itself locked (for example Primal Hakkari items, which only drop in Zul'Gurub, for the
+// Zandalar "Paragons of Power" rewards), when a creature it requires is spawned only in locked
+// raids, or when the quest before it in the chain is locked (Head of Nefarian -> its follow-up).
+// Vendors stay reachable. Anything without evidence stays allowed and keeps the item-level cap.
 struct Filter
 {
     SourceIndex const* index = nullptr;
     std::uint8_t effectiveStage = 0;
     Gates gates{};
 
-    bool Allows(std::uint32_t item) const
+    bool Allows(std::uint32_t item) const { return index && ItemReach(item, 0) != Reach::Locked; }
+
+    Reach ItemReach(std::uint32_t item, int depth) const
     {
-        return index && PlayerbotsAutoGearSourceAccess::Allows(index->Access(item), effectiveStage, gates);
+        AccessEntry const* entry = index->FindAccess(item);
+        if (!entry)
+            return Reach::Unknown;
+        bool locked = false;
+        for (auto const& [map, difficulty] : entry->spawned)
+        {
+            if (SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable)
+                return Reach::Reachable;
+            locked = true;
+        }
+        if (entry->vendor || entry->questUnstructured)
+            return Reach::Reachable;
+        for (std::uint32_t quest : entry->quests)
+        {
+            Reach const reach = QuestReach(quest, depth + 1);
+            if (reach == Reach::Reachable)
+                return Reach::Reachable;
+            locked = locked || reach == Reach::Locked;
+        }
+        // Quests without evidence either way leave the item Unknown, which is allowed.
+        return locked ? Reach::Locked : Reach::Unknown;
+    }
+
+    // Chains and hand-ins rarely go deeper than three steps; past this the answer is Unknown.
+    static constexpr int MaxDepth = 8;
+
+    Reach QuestReach(std::uint32_t quest, int depth) const
+    {
+        if (depth > MaxDepth)
+            return Reach::Unknown;
+        QuestFacts const* facts = index->Quest(quest);
+        if (!facts)
+            return Reach::Unknown;
+        for (std::uint32_t item : facts->items)
+            if (item && ItemReach(item, depth) == Reach::Locked)
+                return Reach::Locked;
+        for (std::int32_t target : facts->npcOrGo)
+        {
+            if (target <= 0)
+                continue;  // game objects are not placed by this index
+            auto const* spawns = index->CreatureSpawns(static_cast<std::uint32_t>(target));
+            if (!spawns || spawns->empty())
+                continue;
+            bool reachable = false;
+            for (auto const& [map, difficulty] : *spawns)
+                reachable = reachable || SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable;
+            if (!reachable)
+                return Reach::Locked;
+        }
+        if (facts->prev != 0)
+        {
+            std::int64_t const prev = facts->prev < 0 ? -static_cast<std::int64_t>(facts->prev) : facts->prev;
+            if (prev != quest && QuestReach(static_cast<std::uint32_t>(prev), depth + 1) == Reach::Locked)
+                return Reach::Locked;
+        }
+        return Reach::Reachable;
     }
 };
 }  // namespace PlayerbotsAutoGearSourceAccess

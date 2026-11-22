@@ -71,7 +71,7 @@ public:
             visit(std::span<std::int64_t const>());  // a width mismatch is a malformed row
             return true;
         }
-        std::array<std::int64_t, 16> row{};
+        std::array<std::int64_t, 32> row{};
         do
         {
             Field* fields = result->Fetch();

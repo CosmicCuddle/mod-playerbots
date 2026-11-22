@@ -42,8 +42,20 @@ constexpr SourceTableSet Tables{
     {"gameobject_template", "chests", "us"},
     {"gameobject", "chest_spawns", "uhb"},
     {"npc_vendor", "vendor", "s"},
-    {"quest_template", "quests", "uuuuuuuuuu"},
+    {"quest_template", "quests", "uuuuuuuuuuuuuuuuuussss"},
+    {"quest_template_addon", "quest_chains", "us"},
 };
+
+// One quest_template row: ID, 10 rewards, 6 hand-ins, start item, 4 kill targets.
+Row QuestRow(std::int64_t id, std::int64_t reward, std::int64_t handIn = 0, std::int64_t kill = 0)
+{
+    Row row(22, 0);
+    row[0] = id;
+    row[1] = reward;
+    row[11] = handIn;
+    row[18] = kill;
+    return row;
+}
 
 constexpr std::uint32_t BwlItem = 16900;
 constexpr std::uint32_t BwlVendorItem = 16950;
@@ -67,7 +79,8 @@ struct FakeDatabase
         tables["chests"] = {};
         tables["chest_spawns"] = {};
         tables["vendor"] = {{BwlVendorItem}, {-200001}};
-        tables["quests"] = {{BwlQuestItem, 0, 0, 0, 0, 0, 0, 0, 0, 0}};
+        tables["quests"] = {QuestRow(500, BwlQuestItem)};
+        tables["quest_chains"] = {};
     }
 
     std::optional<std::uint64_t> Count(char const* sql)
@@ -111,6 +124,8 @@ void TestCompleteLoad()
     Check(rows->vendorItems.size() == 1 && rows->vendorItems[0] == BwlVendorItem,
           "a negative vendor item (vendor-list reference) is skipped");
     Check(rows->questRewardItems.size() == 1, "quest reward zeros are skipped");
+    Check(rows->quests.size() == 1 && rows->quests[0].id == 500 && rows->quests[0].rewards[0] == BwlQuestItem,
+          "quest rows keep their id and rewards");
     Check(!Offered(*rows, BwlItem, 1), "BWL-only item is refused at stage 1");
     Check(Offered(*rows, BwlVendorItem, 1), "BWL item also sold is offered");
     Check(Offered(*rows, BwlQuestItem, 1), "BWL item also a quest reward is offered");
@@ -231,7 +246,7 @@ void TestMalformedRows()
     Check(!Load(negativeEntry, report).has_value() && report.failure == LoadFailure::MalformedRow,
           "a negative loot entry");
     FakeDatabase hugeItem;
-    hugeItem.tables["quests"] = {{std::int64_t{1} << 33, 0, 0, 0, 0, 0, 0, 0, 0, 0}};
+    hugeItem.tables["quests"] = {QuestRow(501, std::int64_t{1} << 33)};
     Check(!Load(hugeItem, report).has_value() && report.failure == LoadFailure::MalformedRow,
           "a quest item above uint32");
     FakeDatabase badMask;
@@ -245,6 +260,34 @@ void TestMalformedRows()
     Check(rows.has_value() && rows->chests.size() == 1 && rows->chests[0].lootId == 77,
           "chests without a positive loot id are skipped");
 }
+void TestQuestRows()
+{
+    LoadReport report;
+    FakeDatabase chain;
+    chain.tables["quests"] = {QuestRow(600, 0, 19003), QuestRow(601, 19383, 0, 11583)};
+    chain.tables["quest_chains"] = {{601, 600}, {602, 0}, {603, -600}};
+    auto const rows = Load(chain, report);
+    Check(rows.has_value(), "quest rows with hand-ins, kill targets and chains load");
+    if (rows)
+    {
+        Check(rows->quests[0].items[0] == 19003 && rows->quests[1].npcOrGo[0] == 11583,
+              "hand-in and kill target columns land in place");
+        Check(rows->questChains.size() == 2 && rows->questChains[0].prev == 600 && rows->questChains[1].prev == -600,
+              "chain rows without a previous quest are skipped; negative PrevQuestID is kept");
+    }
+    FakeDatabase badChain;
+    badChain.tables["quest_chains"] = {{601, std::numeric_limits<std::int32_t>::min()}};
+    Check(!Load(badChain, report).has_value() && report.failure == LoadFailure::MalformedRow,
+          "an INT32_MIN PrevQuestID is malformed");
+    FakeDatabase chainFails;
+    chainFails.countFails.insert("quest_chains");
+    Check(!Load(chainFails, report).has_value() && std::string(report.table) == "quest_template_addon",
+          "a failed quest chain table publishes nothing");
+    FakeDatabase badKill;
+    badKill.tables["quests"] = {QuestRow(700, 1, 0, std::int64_t{1} << 31)};
+    Check(!Load(badKill, report).has_value() && report.failure == LoadFailure::MalformedRow,
+          "a kill target outside int32 is malformed");
+}
 }  // namespace
 
 int main()
@@ -253,6 +296,7 @@ int main()
     TestFailuresPublishNothing();
     TestSignedReference();
     TestMalformedRows();
+    TestQuestRows();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

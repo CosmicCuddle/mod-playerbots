@@ -64,6 +64,8 @@ struct OwnedWorldRows
     std::vector<SpawnRow> creatureSpawns, chestSpawns;
     std::vector<ChestTemplateRow> chests;
     std::vector<std::uint32_t> vendorItems, questRewardItems;
+    std::vector<QuestRow> quests;
+    std::vector<QuestChainRow> questChains;
 
     WorldRows View() const
     {
@@ -78,6 +80,8 @@ struct OwnedWorldRows
         rows.chestSpawns = chestSpawns;
         rows.vendorItems = vendorItems;
         rows.questRewardItems = questRewardItems;
+        rows.quests = quests;
+        rows.questChains = questChains;
         return rows;
     }
 };
@@ -159,7 +163,7 @@ private:
 struct SourceTableSet
 {
     TableQuery creatureLoot, gameobjectLoot, referenceLoot, itemLoot, creatures, creatureSpawns, chests, chestSpawns,
-        vendorItems, questRewards;
+        vendorItems, questRewards, questChains;
 };
 
 template <class Source>
@@ -230,17 +234,43 @@ std::optional<OwnedWorldRows> LoadWorldRows(Source& source, SourceTableSet const
                          rows.vendorItems.push_back(static_cast<std::uint32_t>(r[0]));
                      return true;
                  });
-    loader.Table(tables.questRewards,
-                 [&](std::span<std::int64_t const> r)
-                 {
-                     for (std::int64_t value : r)
-                         if (!Unsigned32(value))
-                             return false;
-                     for (std::int64_t value : r)
-                         if (value)
-                             rows.questRewardItems.push_back(static_cast<std::uint32_t>(value));
-                     return true;
-                 });
+    // ID, RewardItem1-4, RewardChoiceItemID1-6, RequiredItemId1-6, StartItem, RequiredNpcOrGo1-4.
+    loader.Table(
+        tables.questRewards,
+        [&](std::span<std::int64_t const> r)
+        {
+            for (std::size_t i = 0; i < 18; ++i)
+                if (!Unsigned32(r[i]))
+                    return false;
+            for (std::size_t i = 18; i < 22; ++i)
+                if (r[i] < std::numeric_limits<std::int32_t>::min() || r[i] > std::numeric_limits<std::int32_t>::max())
+                    return false;
+            QuestRow quest;
+            quest.id = static_cast<std::uint32_t>(r[0]);
+            for (std::size_t i = 0; i < 10; ++i)
+            {
+                quest.rewards[i] = static_cast<std::uint32_t>(r[1 + i]);
+                if (quest.rewards[i])
+                    rows.questRewardItems.push_back(quest.rewards[i]);
+            }
+            for (std::size_t i = 0; i < 7; ++i)
+                quest.items[i] = static_cast<std::uint32_t>(r[11 + i]);
+            for (std::size_t i = 0; i < 4; ++i)
+                quest.npcOrGo[i] = static_cast<std::int32_t>(r[18 + i]);
+            rows.quests.push_back(quest);
+            return true;
+        });
+    loader.Table(
+        tables.questChains,
+        [&](std::span<std::int64_t const> r)
+        {
+            if (!Unsigned32(r[0]) || r[1] <= std::numeric_limits<std::int32_t>::min() ||
+                r[1] > std::numeric_limits<std::int32_t>::max())
+                return false;
+            if (r[1] != 0)
+                rows.questChains.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1])});
+            return true;
+        });
 
     report = loader.Report();
     if (report.failure != LoadFailure::None)

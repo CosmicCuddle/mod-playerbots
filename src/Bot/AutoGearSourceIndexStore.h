@@ -27,8 +27,11 @@ inline constexpr char const* Chests = "SELECT entry, Data1 FROM gameobject_templ
 inline constexpr char const* ChestSpawns = "SELECT id, map, spawnMask FROM gameobject";
 inline constexpr char const* VendorItems = "SELECT DISTINCT item FROM npc_vendor";
 inline constexpr char const* QuestRewards =
-    "SELECT RewardItem1, RewardItem2, RewardItem3, RewardItem4, RewardChoiceItemID1, RewardChoiceItemID2, "
-    "RewardChoiceItemID3, RewardChoiceItemID4, RewardChoiceItemID5, RewardChoiceItemID6 FROM quest_template";
+    "SELECT ID, RewardItem1, RewardItem2, RewardItem3, RewardItem4, RewardChoiceItemID1, RewardChoiceItemID2, "
+    "RewardChoiceItemID3, RewardChoiceItemID4, RewardChoiceItemID5, RewardChoiceItemID6, RequiredItemId1, "
+    "RequiredItemId2, RequiredItemId3, RequiredItemId4, RequiredItemId5, RequiredItemId6, StartItem, "
+    "RequiredNpcOrGo1, RequiredNpcOrGo2, RequiredNpcOrGo3, RequiredNpcOrGo4 FROM quest_template";
+inline constexpr char const* QuestChains = "SELECT ID, PrevQuestID FROM quest_template_addon";
 }  // namespace SourceQueries
 
 // The same queries with the exact column types (see TableQuery). Read completely or not at all.
@@ -42,7 +45,8 @@ inline constexpr SourceTableSet SourceTables{
     {"gameobject_template", SourceQueries::Chests, "us"},
     {"gameobject", SourceQueries::ChestSpawns, "uhb"},
     {"npc_vendor", SourceQueries::VendorItems, "s"},
-    {"quest_template", SourceQueries::QuestRewards, "uuuuuuuuuu"},
+    {"quest_template", SourceQueries::QuestRewards, "uuuuuuuuuuuuuuuuuussss"},
+    {"quest_template_addon", SourceQueries::QuestChains, "us"},
 };
 
 // Built once on the world thread during startup, before map updates run, and immutable afterwards.
