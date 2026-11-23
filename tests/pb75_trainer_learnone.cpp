@@ -1,7 +1,10 @@
 // "trainer learnone": exactly one spell or nothing (coordination #75, comment 7079993298).
+#include <array>
 #include <cstdint>
 #include <iostream>
+#include <set>
 #include <string>
+#include <vector>
 
 #include "TrainerLearnOne.h"
 
@@ -73,6 +76,23 @@ int main()
     Expect("learnone 2575 all", Parse::Ambiguous, 0, "a number and a word");
 
     static_assert(ParseLearnOne("learnone 2575").spellId == 2575, "usable at compile time");
+
+    // What must be known afterwards (#68 comment 7083535451): the taught spell, not the trainer spell.
+    using Effects = std::array<LearnEffect, 3>;
+    Check(SpellsTaught(3273, Effects{}) == std::vector<std::uint32_t>{3273},
+          "a direct trainer spell must itself be known");
+    Check(SpellsTaught(2580, Effects{{{true, 2575}, {}, {}}}) == std::vector<std::uint32_t>{2575},
+          "a learn-spell trainer spell must make its taught spell known, not itself");
+    Check(SpellsTaught(1, Effects{{{true, 10}, {false, 99}, {true, 11}}}) == std::vector<std::uint32_t>{10, 11},
+          "every learn effect counts; other effects do not");
+    Check(SpellsTaught(1, Effects{{{true, 10}, {true, 0}, {}}}).empty(),
+          "a learn effect without a spell makes the result unverifiable");
+
+    std::set<std::uint32_t> known{10, 2575};
+    auto knows = [&](std::uint32_t spell) { return known.count(spell) != 0; };
+    Check(AllKnown({2575}, knows), "learned when the taught spell is known");
+    Check(!AllKnown({10, 11}, knows), "not learned while any taught spell is missing");
+    Check(!AllKnown({}, knows), "nothing to check is never success");
 
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;

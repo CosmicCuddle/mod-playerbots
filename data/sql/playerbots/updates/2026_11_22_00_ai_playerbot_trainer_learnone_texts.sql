@@ -6,11 +6,11 @@
 
 DELETE FROM ai_playerbot_texts
 WHERE name IN ('trainer_learnone_usage', 'trainer_learnone_not_my_trainer', 'trainer_learnone_not_taught',
-               'trainer_learnone_cannot_learn');
+               'trainer_learnone_cannot_learn', 'trainer_learnone_too_expensive', 'trainer_learnone_not_confirmed');
 
 DELETE FROM ai_playerbot_texts_chance
 WHERE name IN ('trainer_learnone_usage', 'trainer_learnone_not_my_trainer', 'trainer_learnone_not_taught',
-               'trainer_learnone_cannot_learn');
+               'trainer_learnone_cannot_learn', 'trainer_learnone_too_expensive', 'trainer_learnone_not_confirmed');
 
 INSERT INTO `ai_playerbot_texts`
 (`id`, `name`, `text`, `say_type`, `reply_type`,
@@ -56,8 +56,29 @@ VALUES
  '我現在無法學習法術 %spell：已經學會，或等級、技能或前一級不足。沒有學習任何技能。',
  'No puedo aprender el hechizo %spell ahora: ya lo conozco, o mi nivel, habilidad o rango anterior es demasiado bajo. No he aprendido nada.',
  'No puedo aprender el hechizo %spell ahora: ya lo conozco, o mi nivel, habilidad o rango anterior es muy bajo. No aprendí nada.',
- 'Я не могу сейчас изучить заклинание %spell: оно уже известно, или мой уровень, навык или предыдущий ранг слишком низки. Ничего не изучено.');
+ 'Я не могу сейчас изучить заклинание %spell: оно уже известно, или мой уровень, навык или предыдущий ранг слишком низки. Ничего не изучено.'),
+(1950, 'trainer_learnone_too_expensive',
+ 'I cannot spare the money for spell %spell. Nothing learned.', 0, 0,
+ '주문 %spell에 쓸 돈이 부족합니다. 아무것도 배우지 않았습니다.',
+ 'Je ne peux pas dépenser l''argent pour le sort %spell. Rien appris.',
+ 'Ich kann das Geld für den Zauber %spell nicht entbehren. Nichts gelernt.',
+ '我没有多余的钱学习法术 %spell。没有学习任何技能。',
+ '我沒有多餘的錢學習法術 %spell。沒有學習任何技能。',
+ 'No me sobra el dinero para el hechizo %spell. No he aprendido nada.',
+ 'No me alcanza el dinero para el hechizo %spell. No aprendí nada.',
+ 'Мне не хватает денег на заклинание %spell. Ничего не изучено.'),
+(1951, 'trainer_learnone_not_confirmed',
+ 'Learning spell %spell could not be confirmed. Nothing was charged; check my spell book.', 0, 0,
+ '주문 %spell 습득을 확인할 수 없습니다. 비용은 청구되지 않았습니다. 제 주문책을 확인해 주세요.',
+ 'L''apprentissage du sort %spell n''a pas pu être confirmé. Rien n''a été payé ; vérifiez mon grimoire.',
+ 'Das Erlernen des Zaubers %spell konnte nicht bestätigt werden. Nichts wurde berechnet; prüfe mein Zauberbuch.',
+ '无法确认已学会法术 %spell。没有收取费用，请检查我的法术书。',
+ '無法確認已學會法術 %spell。沒有收取費用，請檢查我的法術書。',
+ 'No se pudo confirmar que aprendí el hechizo %spell. No se cobró nada; revisa mi libro de hechizos.',
+ 'No se pudo confirmar que aprendí el hechizo %spell. No se cobró nada; revisa mi libro de hechizos.',
+ 'Не удалось подтвердить изучение заклинания %spell. Деньги не списаны; проверьте мою книгу заклинаний.');
 
 INSERT INTO ai_playerbot_texts_chance (name, probability)
 VALUES ('trainer_learnone_usage', 100), ('trainer_learnone_not_my_trainer', 100), ('trainer_learnone_not_taught', 100),
-       ('trainer_learnone_cannot_learn', 100);
+       ('trainer_learnone_cannot_learn', 100), ('trainer_learnone_too_expensive', 100),
+       ('trainer_learnone_not_confirmed', 100);

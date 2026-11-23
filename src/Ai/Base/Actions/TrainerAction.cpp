@@ -194,10 +194,46 @@ bool TrainerAction::LearnOne(Creature* creature, Trainer::Trainer* trainer,
         return false;
     }
 
+    // Unlike Learn(), charge only after the taught spells are confirmed known (#68 comment 7083535451):
+    // a refusal or a failed learn reports failure and costs nothing.
+    std::vector<PlayerbotsTrainerLearnOne::LearnEffect> effects;
+    for (SpellEffectInfo const& effect : spellInfo->GetEffects())
+        effects.push_back({effect.Effect == SPELL_EFFECT_LEARN_SPELL, effect.TriggerSpell});
+    std::vector<uint32> const taught = PlayerbotsTrainerLearnOne::SpellsTaught(spellInfo->Id, effects);
+    if (taught.empty())
+    {
+        botAI->TellError(texts.GetBotTextOrDefault(
+            "trainer_learnone_not_confirmed",
+            "Learning spell %spell could not be confirmed. Nothing was charged; check my spell book.", names));
+        return false;
+    }
+
     uint32 const cost = static_cast<uint32>(floor(trainerSpell->MoneyCost * bot->GetReputationPriceDiscount(creature)));
+    bool const freeTraining = botAI->HasCheat(BotCheatMask::gold);
+    if (!freeTraining && AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::spells) < cost)
+    {
+        botAI->TellError(texts.GetBotTextOrDefault(
+            "trainer_learnone_too_expensive", "I cannot spare the money for spell %spell. Nothing learned.", names));
+        return false;
+    }
+
+    if (spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+        bot->CastSpell(bot, spellInfo->Id, true);
+    else
+        bot->learnSpell(spellInfo->Id, false);
+
+    if (!PlayerbotsTrainerLearnOne::AllKnown(taught, [&](uint32 spell) { return bot->HasSpell(spell); }))
+    {
+        botAI->TellError(texts.GetBotTextOrDefault(
+            "trainer_learnone_not_confirmed",
+            "Learning spell %spell could not be confirmed. Nothing was charged; check my spell book.", names));
+        return false;
+    }
+
+    if (!freeTraining)
+        bot->ModifyMoney(-static_cast<int32>(cost));
     std::ostringstream out;
-    out << chat->FormatSpell(spellInfo) << chat->formatMoney(cost);
-    Learn(spellInfo, cost, out);
+    out << chat->FormatSpell(spellInfo) << chat->formatMoney(cost) << " - learned";
     botAI->TellMaster(out);
     return true;
 }

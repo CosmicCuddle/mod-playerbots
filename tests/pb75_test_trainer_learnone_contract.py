@@ -54,10 +54,19 @@ def check(source):
                  "IsTrainerValidForPlayer(bot)", "return false;",
                  "GetSpell(one.spellId)", "if (!spellInfo)", "return false;",
                  "IsTrainerSpellAllowedForBot(", "CanTeachSpell(bot, trainerSpell)", "return false;",
-                 "Learn(spellInfo, cost, out);"),
-         "learnone refuses a bad argument, another class's trainer, an untaught or ineligible spell, then learns")
-    rule(one.count("Learn(spellInfo") == 1, "learnone learns once")
-    for banned in ("Iterate(", "learnSpell(", "CastSpell(", "GetSpells()", "parseSpell("):
+                 "SpellsTaught(spellInfo->Id, effects)", "if (taught.empty())", "return false;",
+                 "< cost)", "return false;",
+                 "bot->CastSpell(bot, spellInfo->Id, true);", "bot->learnSpell(spellInfo->Id, false);",
+                 "AllKnown(taught,", "return false;",
+                 "bot->ModifyMoney(-static_cast<int32>(cost));", "\" - learned\"", "return true;"),
+         "learnone refuses bad input, trainer, spell, eligibility, an unverifiable result and the price; "
+         "then learns, confirms the taught spells, and only then charges and reports success")
+    rule("effect.Effect == SPELL_EFFECT_LEARN_SPELL, effect.TriggerSpell" in one,
+         "the taught spells come from the spell's learn effects")
+    rule(one.count("ModifyMoney(") == 1 and one.count("CastSpell(") == 1 and one.count("learnSpell(") == 1,
+         "learnone charges once and learns once")
+    rule(one.count("return true;") == 1, "learnone reports success in one place")
+    for banned in ("Iterate(", "Learn(spellInfo", "GetSpells()", "parseSpell("):
         rule(banned not in one, f"learnone never calls {banned}")
     rule("if (spellId && trainerSpell->SpellId != spellId)" in iterate, "the existing loop is unchanged")
     rule(execute.count("return LearnOne(") == 1, "one learnone entry")
@@ -69,15 +78,26 @@ def mutants(source):
     yield "no early return", source.replace("return LearnOne(target, trainer, one);", "LearnOne(target, trainer, one);", 1)
     yield "no trainer check", source.replace(one, one.replace("!trainer->IsTrainerValidForPlayer(bot)", "false", 1), 1)
     yield "no teach check", source.replace(one, one.replace("!trainer->CanTeachSpell(bot, trainerSpell)", "false", 1), 1)
-    yield "teach all", source.replace(one, one.replace("Learn(spellInfo, cost, out);",
+    yield "teach all", source.replace(one, one.replace("bot->learnSpell(spellInfo->Id, false);",
                                                        "Iterate(creature, true, 0);", 1), 1)
     yield "bad argument learns", source.replace(one, one.replace(
         "if (one.status != PlayerbotsTrainerLearnOne::Parse::Spell)", "if (false)", 1), 1)
     yield "parse after old path", source.replace(
         "PlayerbotsTrainerLearnOne::Result const one = PlayerbotsTrainerLearnOne::ParseLearnOne(param);",
         "PlayerbotsTrainerLearnOne::Result const one{};", 1)
-    yield "direct learn", source.replace(one, one.replace("Learn(spellInfo, cost, out);",
-                                                          "bot->learnSpell(spellInfo->Id, false);", 1), 1)
+    yield "old Learn path", source.replace(one, one.replace("bot->learnSpell(spellInfo->Id, false);",
+                                                            "Learn(spellInfo, cost, out);", 1), 1)
+    yield "charge before learning", source.replace(one, one.replace(
+        "    if (spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))\n",
+        "    bot->ModifyMoney(-static_cast<int32>(cost));\n    if (spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))\n", 1), 1)
+    yield "no confirmation", source.replace(one, one.replace(
+        "if (!PlayerbotsTrainerLearnOne::AllKnown(taught, [&](uint32 spell) { return bot->HasSpell(spell); }))",
+        "if (false)", 1), 1)
+    yield "trainer spell checked instead of taught", source.replace(one, one.replace(
+        "effect.Effect == SPELL_EFFECT_LEARN_SPELL, effect.TriggerSpell", "false, 0", 1), 1)
+    yield "too expensive succeeds", source.replace(one, one.replace(
+        "\"I cannot spare the money for spell %spell. Nothing learned.\", names));\n        return false;",
+        "\"I cannot spare the money for spell %spell. Nothing learned.\", names));\n        return true;", 1), 1)
     yield "loop filter removed", source.replace("if (spellId && trainerSpell->SpellId != spellId)",
                                                 "if (false && trainerSpell->SpellId != spellId)", 1)
 

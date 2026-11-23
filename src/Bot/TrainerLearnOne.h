@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <string_view>
+#include <vector>
 
 // "trainer learnone <spell>": teach exactly one trainer spell, or nothing.
 //
@@ -125,6 +126,47 @@ constexpr Result ParseLearnOne(std::string_view param)
     if (!id)
         return {Parse::Malformed, 0};
     return {Parse::Spell, id};
+}
+// One effect of the trainer spell: does it teach another spell (SPELL_EFFECT_LEARN_SPELL), and which.
+struct LearnEffect
+{
+    bool learnsSpell = false;
+    std::uint32_t taughtSpell = 0;
+};
+
+// The spells the bot must know once the trainer spell is learned, so success is checked rather than
+// assumed: the spells its learn effects teach (a profession rank, for example, teaches a different id),
+// or the trainer spell itself when it has none. Empty when a learn effect names no spell: the result
+// could not be verified, so the caller learns nothing.
+template <class Effects>
+std::vector<std::uint32_t> SpellsTaught(std::uint32_t trainerSpell, Effects const& effects)
+{
+    std::vector<std::uint32_t> taught;
+    bool learnEffect = false;
+    for (LearnEffect const& effect : effects)
+    {
+        if (!effect.learnsSpell)
+            continue;
+        learnEffect = true;
+        if (!effect.taughtSpell)
+            return {};
+        taught.push_back(effect.taughtSpell);
+    }
+    if (!learnEffect)
+        taught.push_back(trainerSpell);
+    return taught;
+}
+
+// True when every taught spell is known; Known(spellId) asks the bot.
+template <class Known>
+bool AllKnown(std::vector<std::uint32_t> const& taught, Known&& known)
+{
+    if (taught.empty())
+        return false;
+    for (std::uint32_t spell : taught)
+        if (!known(spell))
+            return false;
+    return true;
 }
 }  // namespace PlayerbotsTrainerLearnOne
 
