@@ -34,6 +34,8 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "AutoGearSourceIndexStore.h"
+#include "Config.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotRepository.h"
 #include "PlayerbotSpellRepository.h"
@@ -600,6 +602,7 @@ PlayerbotFactory::PlayerbotFactory(Player* bot, uint32 level, uint32 itemQuality
     : level(level), itemQuality(itemQuality), gearScoreLimit(gearScoreLimit), maxRawItemLevel(maxRawItemLevel), bot(bot)
 {
     botAI = GET_PLAYERBOT_AI(bot);
+    InitRandomBotSourceFilter();
     if (!this->itemQuality)
     {
         uint32 gs = sPlayerbotAIConfig.RandomGearScoreLimit == 0
@@ -2375,7 +2378,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                 ItemTemplate const* iProto = sObjectMgr->GetItemTemplate(itemId);
                 if (!iProto)
                     continue;
-                if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(iProto->ItemLevel, maxRawItemLevel))
+                if (!AllowsCappedItem(iProto))
                     continue;
 
                 // BuyCount by default
@@ -2422,7 +2425,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         {
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
             if (!proto) continue;
-            if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, maxRawItemLevel)) continue;
+            if (!AllowsCappedItem(proto)) continue;
             // Respect gear quality limit: trinket must not exceed itemQuality setting
             if (static_cast<int32>(proto->Quality) > static_cast<int32>(itemQuality)) continue;
             if (proto->RequiredLevel > level) continue;
@@ -2550,7 +2553,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                         if (!proto)
                             continue;
 
-                        if (!PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, maxRawItemLevel))
+                        if (!AllowsCappedItem(proto))
                             continue;
 
                         if (shouldCheckGS && gearScoreLimit != 0 &&
@@ -4030,7 +4033,7 @@ void PlayerbotFactory::InitAmmo()
         return;
 
     ItemTemplate const* ammoProto = sObjectMgr->GetItemTemplate(entry);
-    if (!ammoProto || !PlayerbotsAutoGearCap::AllowsRawItemLevel(ammoProto->ItemLevel, maxRawItemLevel))
+    if (!ammoProto || !AllowsCappedItem(ammoProto))
         return;
 
     DestroyObsoleteAmmo(bot, ammoProto);
@@ -4354,11 +4357,37 @@ InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
 #endif
 }
 
+// Owner instruction of 22 Nov 2026 (coordination #74, comment 7079237461); activation not approved.
+// Random bots get gear from this factory when they are created, re-randomized or level up. With
+// Playerbots.RandomBotGear.RaidSourceGate on (default off), those items follow the same raid source gate
+// as commanded autogear, at the bot's own Individual Progression stage: a tier 0 bot gets no Zul'Gurub,
+// Blackwing Lair or AQ loot, and no quest reward that needs it. Alt bots and humans are untouched. The
+// stage is read from the bot's own quest status, in the context that is already changing its gear.
+// Without IP, or without a loaded index (logged at startup), random-bot gear is unchanged: bots keep
+// getting gear rather than none. Whether that fallback should refuse instead is open (#74, Q-B).
+void PlayerbotFactory::InitRandomBotSourceFilter()
+{
+    if (!sPlayerbotAIConfig.RandomBotGearRaidSourceGate || !bot ||
+        !sConfigMgr->GetOption<bool>("IndividualProgression.Enable", false, false) ||
+        !sRandomPlayerbotMgr.IsRandomBot(bot))
+        return;
+    PlayerbotsAutoGearMasterSource::SourceIndex const* index = PlayerbotsAutoGearMasterSource::SourceIndexStore::Get();
+    if (!index)
+        return;
+    std::uint8_t const stage = PlayerbotsAutoGearSourceAccess::StageFromMarkerQuests(
+        [this](std::uint32_t quest) { return bot->GetQuestStatus(quest) == QUEST_STATUS_REWARDED; });
+    randomBotFilter = PlayerbotsAutoGearSourceAccess::Filter{
+        index, stage, PlayerbotsAutoGearMasterSource::SourceIndexStore::LoadGates(),
+        PlayerbotsAutoGearMasterSource::SourceIndexStore::BlockedAtStage(stage)};
+}
+
 void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance,
-                                bool applyFinishers, uint32 maxRawItemLevel)
+                                bool applyFinishers, uint32 maxRawItemLevel,
+                                PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter)
 {
     uint32 gs = ilvl == 0 ? 0 : CalcMixedGearScore(ilvl, itemQuality);
     PlayerbotFactory factory(bot, bot->GetLevel(), itemQuality, gs, maxRawItemLevel);
+    factory.SetSourceFilter(sourceFilter);
     factory.InitEquipment(incremental, secondChance);
 
     if (!applyFinishers)
@@ -5546,7 +5575,7 @@ void PlayerbotFactory::ApplyEnchantAndGemsNew(bool /*destroyOld*/)
     for (uint32 const& enchantGem : enchantGemIdCache)
     {
         ItemTemplate const* gemTemplate = sObjectMgr->GetItemTemplate(enchantGem);
-        if (!gemTemplate || !PlayerbotsAutoGearCap::AllowsRawItemLevel(gemTemplate->ItemLevel, maxRawItemLevel))
+        if (!gemTemplate || !AllowsCappedItem(gemTemplate))
             continue;
 
         GemPropertiesEntry const* gemProperties = sGemPropertiesStore.LookupEntry(gemTemplate->GemProperties);

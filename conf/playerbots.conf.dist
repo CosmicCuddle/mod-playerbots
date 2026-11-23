@@ -639,9 +639,34 @@ Playerbots.AutoGearQualityLimit = 3
 Playerbots.AutoGearScoreLimit = 0
 
 # Optional Individual Progression cap for human-commanded autogear and BiS.
-# Disabled by default. The current source candidate refuses commands when enabled
-# until IP supplies a safe cache-only sender snapshot and values are reviewed.
+# Disabled by default. When enabled, every autogear form (plain, reset, match,
+# quality, item level, bis, bis item level) gears the bot no higher than the
+# commanding player's IP stage cap and the stricter AutoGearScoreLimit.
+# Unknown progression, an unknown bot population or a missing cap keeps the
+# current gear. Random bots move items above the cap into empty bag slots first
+# (reset moves everything); alt bots are never stripped and cannot reset.
+# Nothing the bot owned is destroyed; full bags refuse the command.
+# Items whose only proven source is a raid the commanding player cannot enter
+# yet under Individual Progression (e.g. Blackwing Lair before Onyxia, Zul'Gurub
+# before IndividualProgression.RequiredZulGurubProgression) are never offered.
+# Neither are items with no known source (placeholder, deprecated and test
+# items, crafts whose recipe nobody can learn). Crafted gear counts as a source
+# and follows its recipe: a trainer recipe is always available, a recipe item
+# (e.g. a Zul'Gurub recipe) or a quest reward recipe only when that item or quest
+# is. Vendors and reputation count only when they fit the stage: an item that
+# needs a reputation earned only in a locked raid (e.g. Zandalar patterns before
+# Zul'Gurub), a vendor standing only in a locked raid, or a price paid in items
+# from a locked raid, is not offered.
+# Enabling this loads a raid source index from the world database at startup
+# (a few seconds); if it cannot load, capped commands keep the current gear.
+# Raid bosses a script summons (e.g. Nefarian) count as part of the raid their
+# encounter belongs to.
+# The index is a snapshot of startup: after ".reload" of loot, npc_vendor,
+# quest, trainer, reputation or encounter tables, or GM-added spawns, restart
+# the server for AutoGear to see them.
 # Missing/zero stage caps or era ceilings refuse the command before changing gear.
+# These tables can only lower the caps compiled into AutoGearSelectionCap.h; a
+# higher value here has no effect.
 # CompletionCaps has 19 entries for raw stages 0..18. Owner-approved values
 # (16 and 18 Nov 2026) match AutoGearSelectionCap.h. Stage 11 is disabled in
 # Individual Progression and stays 0, so it refuses.
@@ -651,6 +676,19 @@ Playerbots.AutoGearIPCap.Enable = 0
 Playerbots.AutoGearIPCap.CompletionCaps = 66,78,78,83,83,83,88,92,125,125,141,0,156,226,226,245,258,284,284
 Playerbots.AutoGearIPCap.EraEntryFloors = 0,0,0
 Playerbots.AutoGearIPCap.EraCeilings = 92,164,284
+
+# Random bots get gear when they are created, re-randomized and when they level up. When enabled, that
+# gear follows the same raid source rule as the IP-capped autogear above, at the bot's own Individual
+# Progression stage: no item whose every source is a raid the bot cannot enter yet (for example no
+# Zul'Gurub, Blackwing Lair or AQ loot at stage 0), no quest reward whose quest needs such loot, no
+# craft whose recipe comes only from such a raid, no item that needs reputation only such a raid gives,
+# and no item without any known source. Ordinary vendor items, dungeon and world drops and trainer
+# crafts are unaffected. Only random bots; alt bots and players are
+# not changed, and gear a bot already wears is not removed. Requires Individual Progression; loads the
+# raid source index at startup (a few seconds). If Individual Progression is disabled or the index
+# cannot load, random-bot gear is unchanged and the server logs an error at startup.
+# Default: 0 (disabled)
+Playerbots.RandomBotGear.RaidSourceGate = 0
 
 # Enable/Disable cheats for bots
 # "food" (bots eat or drink without using food or drinks from their inventory)

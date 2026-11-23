@@ -746,6 +746,7 @@ bool PlayerbotAIConfig::Initialize()
     AutoGearCommandAltBots = sConfigMgr->GetOption<int32>("Playerbots.AutoGearCommandAltBots", 1);
     AutoGearBisCommand = sConfigMgr->GetOption<int32>("Playerbots.AutoGearBisCommand", 0);
     AutoGearIPCapEnable = sConfigMgr->GetOption<bool>("Playerbots.AutoGearIPCap.Enable", false);
+    RandomBotGearRaidSourceGate = sConfigMgr->GetOption<bool>("Playerbots.RandomBotGear.RaidSourceGate", false);
     AutoGearIPCompletionCaps = ParseAutoGearCapTable<19>("Playerbots.AutoGearIPCap.CompletionCaps",
         sConfigMgr->GetOption<std::string>("Playerbots.AutoGearIPCap.CompletionCaps",
             "66,78,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"));

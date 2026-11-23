@@ -143,6 +143,76 @@ namespace PlayerbotsAutoGearMasterSource
         std::uint32_t lootId = 0;
     };
 
+    // quest_template: what a quest rewards and what completing it needs.
+    struct QuestRow
+    {
+        std::uint32_t id = 0;
+        std::array<std::uint32_t, 10> rewards{};  // RewardItem1-4, RewardChoiceItemID1-6
+        std::array<std::uint32_t, 11> items{};    // RequiredItemId1-6, StartItem, ItemDrop1-4
+        std::array<std::int32_t, 4> npcOrGo{};    // RequiredNpcOrGo1-4: > 0 creature, < 0 gameobject
+    };
+
+    // quest_template_addon: PrevQuestID, the quest that must come first (negative: must be active);
+    // RequiredMinRepFaction, reputation needed to take the quest; SpecialFlags 2
+    // (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT), completed by exploring or a scripted event the world
+    // rows cannot place (e.g. "A Bijou for Zanza": destroy a bijou at the altar inside Zul'Gurub).
+    struct QuestChainRow
+    {
+        std::uint32_t id = 0;
+        std::int32_t prev = 0;
+        std::uint32_t requiredFaction = 0;
+        bool eventOnly = false;
+    };
+
+    // An item a spell creates (Spell.dbc SPELL_EFFECT_CREATE_ITEM or CREATE_ITEM_2): profession recipes,
+    // and items made by using another item (Sul'thraze, the Zul'Gurub charms).
+    struct CraftRow
+    {
+        std::uint32_t spell = 0;
+        std::uint32_t item = 0;
+    };
+
+    // How a player gets a spell.
+    enum class SpellSource : std::uint8_t
+    {
+        Taught,  // a trainer teaches it, or it comes with the profession skill (SkillLineAbility)
+        Item,    // id: a recipe item that teaches it, or an item whose use casts it
+        Quest    // id: a quest whose reward spell teaches or casts it
+    };
+
+    struct SpellSourceRow
+    {
+        std::uint32_t spell = 0;
+        SpellSource kind = SpellSource::Taught;
+        std::uint32_t id = 0;
+    };
+
+    // One npc_vendor row with the items its ExtendedCost asks for (ItemExtendedCost.dbc reqitem; honor
+    // and arena points are not items). Rows of a referenced vendor list are repeated for the vendor that
+    // includes it.
+    struct VendorOfferRow
+    {
+        std::uint32_t vendor = 0;
+        std::uint32_t item = 0;
+        std::array<std::uint32_t, 5> costItems{};
+    };
+
+    // item_template.RequiredReputationFaction: the item needs a reputation rank with this faction.
+    struct ItemReputationRow
+    {
+        std::uint32_t item = 0;
+        std::uint32_t faction = 0;
+    };
+
+    // A way to gain reputation with a faction: killing a creature (creature_onkill_reputation) or
+    // completing a quest (quest_template RewardFactionID with a positive value).
+    struct ReputationSourceRow
+    {
+        std::uint32_t faction = 0;
+        bool quest = false;
+        std::uint32_t id = 0;  // creature entry or quest id
+    };
+
     struct WorldRows
     {
         std::span<LootRow const> creatureLoot{};
@@ -155,6 +225,19 @@ namespace PlayerbotsAutoGearMasterSource
         std::span<SpawnRow const> chestSpawns{};
         std::span<std::uint32_t const> vendorItems{};  // npc_vendor.item (any ExtendedCost)
         std::span<std::uint32_t const> questRewardItems{};  // RewardItem*, RewardChoiceItemID*
+        std::span<QuestRow const> quests{};                 // the same rewards with their requirements
+        std::span<QuestChainRow const> questChains{};
+        std::span<CraftRow const> crafts{};
+        std::span<SpellSourceRow const> spellSources{};
+        std::span<VendorOfferRow const> vendorOffers{};
+        std::span<ItemReputationRow const> itemReputations{};
+        std::span<ReputationSourceRow const> reputationSources{};
+    };
+
+    struct VendorOffer
+    {
+        std::uint32_t vendor = 0;
+        std::array<std::uint32_t, 5> costItems{};
     };
 
     struct SourceEntry
@@ -163,6 +246,39 @@ namespace PlayerbotsAutoGearMasterSource
         RaidPoint point = RaidPoint::None;
         RaidSize size = RaidSize::Unknown;
         bool heroic = false;
+        // The one (map, difficulty) bucket that proved the verdict. Zero when Unknown.
+        std::uint32_t map = 0;
+        std::uint8_t difficulty = 0;
+    };
+
+    // Every source the world rows show for one item, for gates that ask whether the item can be
+    // obtained anywhere the player may go (AutoGearSourceAccess.h), rather than "which one raid".
+    // Spawned loot is (map, difficulty). Loot reached only by unspawned or script-summoned templates,
+    // container contents and vendors are flags. Quest rewards keep the rewarding quests, so a gate can
+    // ask what completing them needs.
+    struct AccessEntry
+    {
+        bool known = false;  // any loot, vendor, quest or craft row names the item
+        std::vector<std::pair<std::uint32_t, std::uint8_t>> spawned{};
+        bool unattributed = false;
+        bool container = false;
+        bool vendor = false;
+        std::vector<std::uint32_t> quests{};  // quests that reward it, or teach the spell that makes it
+        bool questUnstructured = false;       // a reward row without requirements (older callers)
+        bool taught = false;                  // made by a spell a trainer or the profession skill teaches
+        std::vector<std::uint32_t> fromItems{};  // recipe items teaching, or items whose use casts, its spell
+        std::vector<VendorOffer> offers{};       // who sells it and for what; empty: vendor alone decides
+        std::uint32_t faction = 0;               // reputation the item needs (any source), 0 for none
+    };
+
+    // What completing one quest needs.
+    struct QuestFacts
+    {
+        std::array<std::uint32_t, 11> items{};  // hand-ins, the start item and the items they are made from
+        std::array<std::int32_t, 4> npcOrGo{};  // kill or use targets
+        std::int32_t prev = 0;                  // quest that must come first
+        std::uint32_t requiredFaction = 0;      // reputation needed to take it
+        bool eventOnly = false;                 // completed by exploring or an event: place unknown
     };
 
     class SourceIndex
@@ -173,7 +289,26 @@ namespace PlayerbotsAutoGearMasterSource
         {
             SourceIndex index;
             Builder builder(rows);
-            builder.Run(index._entries);
+            builder.Run(index._entries, index._access);
+            for (QuestRow const& quest : rows.quests)
+                index._quests[quest.id] = QuestFacts{quest.items, quest.npcOrGo, 0};
+            for (QuestChainRow const& chain : rows.questChains)
+                if (auto const found = index._quests.find(chain.id); found != index._quests.end())
+                {
+                    found->second.prev = chain.prev;
+                    found->second.requiredFaction = chain.requiredFaction;
+                    found->second.eventOnly = chain.eventOnly;
+                }
+            for (ItemReputationRow const& required : rows.itemReputations)
+                if (auto const found = index._access.find(required.item); found != index._access.end())
+                    found->second.faction = required.faction;  // a requirement is not a source
+            for (ReputationSourceRow const& source : rows.reputationSources)
+                if (source.faction && source.id)
+                    index._reputationSources[source.faction].emplace_back(source.quest, source.id);
+            for (SpawnRow const& spawn : rows.creatureSpawns)
+                for (std::uint8_t diff = 0; diff < DifficultyCount; ++diff)
+                    if (spawn.spawnMask & (1u << diff))
+                        index._creatureSpawns[spawn.id].emplace_back(spawn.map, diff);
             index._built = true;
             return index;
         }
@@ -186,6 +321,50 @@ namespace PlayerbotsAutoGearMasterSource
                 return {};
             auto const found = _entries.find(item);
             return found == _entries.end() ? SourceEntry{} : found->second;
+        }
+
+        // The same without a copy, for per-candidate checks; nullptr when no row names the item.
+        AccessEntry const* FindAccess(std::uint32_t item) const
+        {
+            if (!_built || item == 0)
+                return nullptr;
+            auto const found = _access.find(item);
+            return found == _access.end() ? nullptr : &found->second;
+        }
+
+        QuestFacts const* Quest(std::uint32_t quest) const
+        {
+            auto const found = _quests.find(quest);
+            return found == _quests.end() ? nullptr : &found->second;
+        }
+
+        // Ways to gain reputation with a faction; nullptr when none is known.
+        std::vector<std::pair<bool, std::uint32_t>> const* ReputationSources(std::uint32_t faction) const
+        {
+            auto const found = _reputationSources.find(faction);
+            return found == _reputationSources.end() ? nullptr : &found->second;
+        }
+
+        // Every (map, difficulty) a creature template is spawned in; nullptr when it has no spawn.
+        std::vector<std::pair<std::uint32_t, std::uint8_t>> const* CreatureSpawns(std::uint32_t entry) const
+        {
+            auto const found = _creatureSpawns.find(entry);
+            return found == _creatureSpawns.end() ? nullptr : &found->second;
+        }
+
+        template <class Visit>
+        void ForEachAccessItem(Visit&& visit) const
+        {
+            for (auto const& [item, entry] : _access)
+                visit(item);
+        }
+
+        AccessEntry Access(std::uint32_t item) const
+        {
+            if (!_built || item == 0)
+                return {};
+            auto const found = _access.find(item);
+            return found == _access.end() ? AccessEntry{} : found->second;
         }
 
         std::size_t RaidEntries() const
@@ -207,7 +386,7 @@ namespace PlayerbotsAutoGearMasterSource
             std::map<std::uint32_t, std::set<Bucket>> buckets;
             std::set<std::uint32_t> reachedCreatureLoot, reachedChestLoot;
             std::set<std::uint32_t> reachedCreatureTemplates; // selected exact template entries, not merely shared loot ids
-            std::set<std::uint32_t> poisoned;  // vendor, quest, container
+            std::set<std::uint32_t> poisoned;                 // vendor, quest, container, taught craft
 
             explicit Builder(WorldRows const& source) : rows(source)
             {
@@ -272,7 +451,7 @@ namespace PlayerbotsAutoGearMasterSource
                 return {base, 0};
             }
 
-            void Run(std::map<std::uint32_t, SourceEntry>& entries)
+            void Run(std::map<std::uint32_t, SourceEntry>& entries, std::map<std::uint32_t, AccessEntry>& access)
             {
                 for (SpawnRow const& spawn : rows.creatureSpawns)
                     for (std::uint8_t diff = 0; diff < DifficultyCount; ++diff)
@@ -327,14 +506,37 @@ namespace PlayerbotsAutoGearMasterSource
                 std::multimap<std::uint32_t, LootRow> itemLoot;
                 for (LootRow const& row : rows.itemLoot)
                     itemLoot.emplace(row.entry, row);
+                std::set<std::uint32_t> containerItems;
                 for (auto it = itemLoot.begin(); it != itemLoot.end(); it = itemLoot.upper_bound(it->first))
                 {
                     std::set<std::uint32_t> seen, items;
                     Expand(itemLoot, it->first, seen, items);
                     poisoned.insert(items.begin(), items.end());
+                    containerItems.insert(items.begin(), items.end());
                 }
                 poisoned.insert(rows.vendorItems.begin(), rows.vendorItems.end());
                 poisoned.insert(rows.questRewardItems.begin(), rows.questRewardItems.end());
+                for (QuestRow const& quest : rows.quests)
+                    for (std::uint32_t item : quest.rewards)
+                        if (item)
+                            poisoned.insert(item);
+                // A spell that makes items, and how players get it. A craft nobody can learn adds nothing.
+                std::multimap<std::uint32_t, SpellSourceRow> spellSources;
+                for (SpellSourceRow const& source : rows.spellSources)
+                    spellSources.emplace(source.spell, source);
+                std::map<std::uint32_t, std::vector<SpellSourceRow>> crafted;  // item -> sources of its spells
+                for (CraftRow const& craft : rows.crafts)
+                {
+                    if (!craft.item)
+                        continue;
+                    auto const [first, last] = spellSources.equal_range(craft.spell);
+                    for (auto it = first; it != last; ++it)
+                    {
+                        crafted[craft.item].push_back(it->second);
+                        if (it->second.kind == SpellSource::Taught)
+                            poisoned.insert(craft.item);
+                    }
+                }
 
                 for (auto const& [item, set] : buckets)
                 {
@@ -346,12 +548,80 @@ namespace PlayerbotsAutoGearMasterSource
                     RaidBucket const raid = ClassifyBucket(bucket.first, bucket.second);
                     if (raid.verdict == Verdict::Unknown)
                         continue;
-                    entries[item] = SourceEntry{raid.verdict, raid.point, raid.size, raid.heroic};
+                    entries[item] =
+                        SourceEntry{raid.verdict, raid.point, raid.size, raid.heroic, bucket.first, bucket.second};
+                }
+
+                for (auto const& [item, set] : buckets)
+                {
+                    AccessEntry& entry = access[item];
+                    entry.known = true;
+                    for (Bucket const& bucket : set)
+                    {
+                        if (bucket == Unattributed)
+                            entry.unattributed = true;
+                        else
+                            entry.spawned.push_back(bucket);
+                    }
+                }
+                for (std::uint32_t item : containerItems)
+                {
+                    access[item].known = true;
+                    access[item].container = true;
+                }
+                for (std::uint32_t item : rows.vendorItems)
+                    if (item)
+                    {
+                        access[item].known = true;
+                        access[item].vendor = true;
+                    }
+                std::set<std::uint32_t> structured;
+                for (QuestRow const& quest : rows.quests)
+                    for (std::uint32_t item : quest.rewards)
+                        if (item)
+                        {
+                            AccessEntry& entry = access[item];
+                            entry.known = true;
+                            if (entry.quests.empty() || entry.quests.back() != quest.id)
+                                entry.quests.push_back(quest.id);
+                            structured.insert(item);
+                        }
+                for (std::uint32_t item : rows.questRewardItems)
+                    if (item && !structured.count(item))
+                    {
+                        access[item].known = true;
+                        access[item].questUnstructured = true;
+                    }
+                for (VendorOfferRow const& offer : rows.vendorOffers)
+                    if (offer.item)
+                    {
+                        AccessEntry& entry = access[offer.item];
+                        entry.known = true;
+                        entry.vendor = true;
+                        entry.offers.push_back({offer.vendor, offer.costItems});
+                    }
+                for (auto const& [item, sources] : crafted)
+                {
+                    AccessEntry& entry = access[item];
+                    entry.known = true;
+                    for (SpellSourceRow const& source : sources)
+                    {
+                        std::vector<std::uint32_t>& list =
+                            source.kind == SpellSource::Quest ? entry.quests : entry.fromItems;
+                        if (source.kind == SpellSource::Taught)
+                            entry.taught = true;
+                        else if (source.id && std::find(list.begin(), list.end(), source.id) == list.end())
+                            list.push_back(source.id);
+                    }
                 }
             }
         };
 
         std::map<std::uint32_t, SourceEntry> _entries;
+        std::map<std::uint32_t, AccessEntry> _access;
+        std::map<std::uint32_t, QuestFacts> _quests;
+        std::map<std::uint32_t, std::vector<std::pair<std::uint32_t, std::uint8_t>>> _creatureSpawns;
+        std::map<std::uint32_t, std::vector<std::pair<bool, std::uint32_t>>> _reputationSources;
         bool _built = false;
     };
 

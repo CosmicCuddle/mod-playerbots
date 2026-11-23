@@ -1,0 +1,349 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef PLAYERBOTS_AUTOGEAR_SOURCE_ACCESS_H
+#define PLAYERBOTS_AUTOGEAR_SOURCE_ACCESS_H
+
+#include <array>
+#include <cstdint>
+#include <unordered_set>
+
+#include "AutoGearMasterSourceIndex.h"
+
+// C1-B source selection: an IP-capped autogear command never gives a bot an item whose only proven
+// source is a raid the commanding human cannot enter yet. The item-level cap alone allows that: a
+// stage 1 commander (cap 78) could otherwise receive Blackwing Lair loot, and a stage 0 commander
+// (cap 66) Zul'Gurub or AQ20 loot.
+//
+// The stage each raid needs is not a new rule: it is Individual Progression's own entry gate
+// (IndividualProgressionPlayer.cpp, OnPlayerBeforeTeleport and the instance parent checks) and its
+// ProgressionState comments, compared like hasPassedProgression (effective stage >= required).
+// IP adds further per-player conditions for some raids (Drakefire Amulet, Naxxramas attunement);
+// those are not readable here, so the stage is a necessary condition, never a grant on its own.
+//
+// An item is refused when the world rows show raid loot for it and every source is a raid the
+// commander cannot enter yet: two locked raids, or a locked raid plus loot nobody can place (unspawned
+// templates, container contents). Script-summoned raid bosses (Nefarian, Ragnaros, Ouro) are placed where
+// their encounter is fought (instance_encounters + DungeonEncounter.dbc, AutoGearSourceRowLoad.h
+// EncounterSpawns), so their loot is raid evidence like any other boss. A source the commander can reach
+// clears it: a
+// spawned dungeon or world drop, a raid they can enter, a vendor or quest row, or a recipe they can
+// learn.
+//
+// An item with no known source is refused as well (owner instruction of 22 Nov 2026, coordination #74
+// comments 7079237461 and 7079669889): placeholder, deprecated and test items, and crafts whose recipe
+// nobody can learn. Crafting counts as a source and follows how the recipe is obtained: taught by a
+// trainer or with the skill is reachable; a recipe item, the item used to create it, or a quest reward
+// spell is as reachable as that item or quest (Zul'Gurub recipes and charms wait for Zul'Gurub).
+//
+// A vendor or reputation requirement counts only when it can be met at the stage (owner, #74 comments
+// 7079237461 and 7079669889: "yes if they fit the criteria"). A vendor row is out of reach when the
+// vendor is spawned only in raids that are still locked, or when an item its ExtendedCost asks for is
+// locked. An item that needs reputation (RequiredReputationFaction, whatever its source) is locked
+// while every known way to gain that reputation is locked: Zandalar reputation comes from Zul'Gurub
+// kills and quests that need Zul'Gurub items, so Rin'wosho's patterns wait for Zul'Gurub. The rank is
+// not compared: one reachable source of the reputation is enough.
+namespace PlayerbotsAutoGearSourceAccess
+{
+using PlayerbotsAutoGearMasterSource::AccessEntry;
+using PlayerbotsAutoGearMasterSource::QuestFacts;
+using PlayerbotsAutoGearMasterSource::SourceIndex;
+using PlayerbotsAutoGearMasterSource::VendorOffer;
+using PlayerbotsAutoGearMasterSource::Verdict;
+
+// IP config values that move a raid's gate (IndividualProgression.RequiredZulGurubProgression and
+// IndividualProgression.RequiredZulAmanProgression; IP's own defaults).
+struct Gates
+{
+    std::uint8_t zulGurub = 3;
+    std::uint8_t zulAman = 12;
+};
+
+inline constexpr std::int32_t NotGated = -1;  // a raid map this table does not know
+
+// Stage the commander must have reached before IP lets them into the raid that drops the item.
+constexpr std::int32_t RequiredStage(std::uint32_t map, std::uint8_t difficulty, Gates gates)
+{
+    switch (map)
+    {
+        case 409:  // Molten Core
+            return 0;
+        case 249:  // Onyxia: the 40-man Vanilla version is 10H on this map; the level-80 one needs WotLK tier 5
+            return difficulty == 2 ? 0 : 18;
+        case 469:  // Blackwing Lair: PROGRESSION_ONYXIA "BWL available"
+            return 2;
+        case 309:  // Zul'Gurub
+            return gates.zulGurub;
+        case 509:  // Ruins of Ahn'Qiraj
+        case 531:  // Temple of Ahn'Qiraj: PROGRESSION_PRE_AQ
+            return 4;
+        case 533:  // Naxxramas: 10H is the IP 40-man version (PROGRESSION_AQ); otherwise WotLK Naxx (TBC_TIER_5)
+            return difficulty == 2 ? 6 : 13;
+        case 532:  // Karazhan
+        case 565:  // Gruul's Lair
+        case 544:  // Magtheridon's Lair: PROGRESSION_PRE_TBC
+            return 8;
+        case 548:  // Serpentshrine Cavern
+        case 550:  // Tempest Keep: PROGRESSION_TBC_TIER_1
+            return 9;
+        case 534:  // Hyjal Summit
+        case 564:  // Black Temple: PROGRESSION_TBC_TIER_2
+            return 10;
+        case 568:  // Zul'Aman
+            return gates.zulAman;
+        case 580:  // Sunwell Plateau: PROGRESSION_TBC_TIER_4
+            return 12;
+        case 615:  // Obsidian Sanctum
+        case 616:  // Eye of Eternity: PROGRESSION_TBC_TIER_5
+            return 13;
+        case 603:  // Ulduar
+            return 14;
+        case 649:  // Trial of the Crusader
+            return 15;
+        case 631:  // Icecrown Citadel
+            return 16;
+        case 624:  // Vault of Archavon: a Northrend raid (instance parent check, PROGRESSION_TBC_TIER_5)
+            return 13;
+        case 724:  // Ruby Sanctum
+            return 17;
+        default:
+            return NotGated;
+    }
+}
+
+enum class Reach : std::uint8_t
+{
+    Reachable,  // at least one source the commander can use now
+    Locked,     // raid evidence, and every source is out of reach
+    Unknown,    // a source exists but cannot be placed (unplaced templates, containers, deep quest chains)
+    NoSource    // no row names the item, or its only sources are items nobody can obtain
+};
+
+inline Reach SpawnReach(std::uint32_t map, std::uint8_t difficulty, std::uint8_t effectiveStage, Gates gates)
+{
+    std::int32_t const required = RequiredStage(map, difficulty, gates);
+    if (required == NotGated)
+        return Reach::Reachable;  // spawned outside any gated raid: a dungeon or the open world
+    return static_cast<std::int32_t>(effectiveStage) >= required ? Reach::Reachable : Reach::Locked;
+}
+
+// One item's own sources, without following quests (tests and simple callers).
+inline bool Allows(AccessEntry const& entry, std::uint8_t effectiveStage, Gates gates)
+{
+    bool locked = false;
+    for (auto const& [map, difficulty] : entry.spawned)
+    {
+        if (SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable)
+            return true;
+        locked = true;
+    }
+    if (entry.vendor || entry.questUnstructured || entry.taught || !entry.quests.empty() || !entry.fromItems.empty())
+        return true;
+    return !locked;
+}
+
+// What the factory and the BiS overlay consult for one command. Built on the world thread from the
+// published (immutable) index; it lives for that one command only.
+//
+// A quest reward is only as reachable as the quest. Owner instruction of 22 Nov 2026 (quoted in
+// coordination #74, comment 7079237461): a
+// reward is locked while completing its quest is locked. A quest is locked when a hand-in or start
+// item is itself locked (for example Primal Hakkari items, which only drop in Zul'Gurub, for the
+// Zandalar "Paragons of Power" rewards), when a creature it requires is spawned only in locked
+// raids, or when the quest before it in the chain is locked (Head of Nefarian -> its follow-up).
+// Vendors stay reachable. A source that cannot be placed stays allowed and keeps the item-level cap.
+// A quest hand-in nobody can source does not lock the quest: quest items are usually given by the
+// quest itself or a script.
+struct Filter
+{
+    SourceIndex const* index = nullptr;
+    std::uint8_t effectiveStage = 0;
+    Gates gates{};
+    // Optional: the items this stage refuses, precomputed from the same rules (BlockedSets). Random-bot
+    // gearing checks thousands of candidates, so it reads this instead of walking quests each time.
+    std::unordered_set<std::uint32_t> const* blocked = nullptr;
+
+    bool Allows(std::uint32_t item) const
+    {
+        if (!index || !index->FindAccess(item))
+            return false;
+        if (blocked)
+            return !blocked->count(item);
+        Reach const reach = ItemReach(item, 0);
+        return reach == Reach::Reachable || reach == Reach::Unknown;
+    }
+
+    Reach ItemReach(std::uint32_t item, int depth) const
+    {
+        // Past MaxDepth (in practice only a creation loop: A made from B, B made from A) nothing leads in.
+        if (depth > MaxDepth)
+            return Reach::NoSource;
+        AccessEntry const* entry = index->FindAccess(item);
+        if (!entry)
+            return Reach::NoSource;
+        if (entry->faction && FactionReach(entry->faction, depth + 1) == Reach::Locked)
+            return Reach::Locked;  // whatever the source, the item needs reputation nobody can earn yet
+        bool locked = false;
+        bool unknown = entry->unattributed || entry->container;
+        for (auto const& [map, difficulty] : entry->spawned)
+        {
+            if (SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable)
+                return Reach::Reachable;
+            locked = true;
+        }
+        if ((entry->vendor && entry->offers.empty()) || entry->questUnstructured || entry->taught)
+            return Reach::Reachable;
+        auto const weigh = [&](Reach reach)
+        {
+            locked = locked || reach == Reach::Locked;
+            unknown = unknown || reach == Reach::Unknown;
+            return reach == Reach::Reachable;
+        };
+        for (VendorOffer const& offer : entry->offers)
+            if (weigh(OfferReach(offer, item, depth + 1)))
+                return Reach::Reachable;
+        for (std::uint32_t quest : entry->quests)
+            if (weigh(QuestReach(quest, depth + 1)))
+                return Reach::Reachable;
+        for (std::uint32_t from : entry->fromItems)
+            if (from != item && weigh(ItemReach(from, depth + 1)))
+                return Reach::Reachable;
+        // A locked raid outweighs loot nobody can place. Recipes nobody can obtain add nothing.
+        return locked ? Reach::Locked : unknown ? Reach::Unknown : Reach::NoSource;
+    }
+
+    // One vendor row: the vendor must stand somewhere open and every cost item must be obtainable. An
+    // unspawned vendor (script-summoned) or a cost item without a known source is no evidence either way.
+    Reach OfferReach(VendorOffer const& offer, std::uint32_t item, int depth) const
+    {
+        Reach const where = CreatureReach(offer.vendor);
+        if (where == Reach::Locked)
+            return Reach::Locked;
+        bool unknown = where == Reach::Unknown;
+        for (std::uint32_t cost : offer.costItems)
+        {
+            if (!cost || cost == item)
+                continue;
+            Reach const paid = ItemReach(cost, depth);
+            if (paid == Reach::Locked)
+                return Reach::Locked;
+            unknown = unknown || paid != Reach::Reachable;
+        }
+        return unknown ? Reach::Unknown : Reach::Reachable;
+    }
+
+    // Unknown without a spawn; otherwise whether any spawn is open.
+    Reach CreatureReach(std::uint32_t entry) const
+    {
+        auto const* spawns = index->CreatureSpawns(entry);
+        if (!spawns || spawns->empty())
+            return Reach::Unknown;
+        for (auto const& [map, difficulty] : *spawns)
+            if (SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable)
+                return Reach::Reachable;
+        return Reach::Locked;
+    }
+
+    // Locked when the faction has known sources of reputation and none is reachable while at least one is
+    // locked (as for items, a locked raid outweighs creatures nobody can place).
+    Reach FactionReach(std::uint32_t faction, int depth) const
+    {
+        if (depth > MaxDepth)
+            return Reach::Unknown;
+        auto const* sources = index->ReputationSources(faction);
+        if (!sources)
+            return Reach::Unknown;
+        bool locked = false;
+        for (auto const& [quest, id] : *sources)
+        {
+            if (quest)
+                if (QuestFacts const* facts = index->Quest(id); facts && facts->requiredFaction == faction)
+                    continue;  // needs this reputation already: raises it, but is no way in
+            Reach const reach = quest ? QuestReach(id, depth + 1) : CreatureReach(id);
+            if (reach == Reach::Reachable)
+                return Reach::Reachable;
+            locked = locked || reach == Reach::Locked;
+        }
+        return locked ? Reach::Locked : Reach::Unknown;
+    }
+
+    // Chains and hand-ins rarely go deeper than three steps. Past this a quest is Unknown (allowed) and an
+    // item has no source; neither locks a quest that needs it.
+    static constexpr int MaxDepth = 8;
+
+    Reach QuestReach(std::uint32_t quest, int depth) const
+    {
+        if (depth > MaxDepth)
+            return Reach::Unknown;
+        QuestFacts const* facts = index->Quest(quest);
+        if (!facts)
+            return Reach::Unknown;
+        for (std::uint32_t item : facts->items)
+            if (item && ItemReach(item, depth) == Reach::Locked)
+                return Reach::Locked;
+        for (std::int32_t target : facts->npcOrGo)
+        {
+            if (target <= 0)
+                continue;  // game objects are not placed by this index
+            auto const* spawns = index->CreatureSpawns(static_cast<std::uint32_t>(target));
+            if (!spawns || spawns->empty())
+                continue;
+            bool reachable = false;
+            for (auto const& [map, difficulty] : *spawns)
+                reachable = reachable || SpawnReach(map, difficulty, effectiveStage, gates) == Reach::Reachable;
+            if (!reachable)
+                return Reach::Locked;
+        }
+        if (facts->prev != 0)
+        {
+            std::int64_t const prev = facts->prev < 0 ? -static_cast<std::int64_t>(facts->prev) : facts->prev;
+            if (prev != quest && QuestReach(static_cast<std::uint32_t>(prev), depth + 1) == Reach::Locked)
+                return Reach::Locked;
+        }
+        if (facts->requiredFaction && FactionReach(facts->requiredFaction, depth + 1) == Reach::Locked)
+            return Reach::Locked;
+        // An exploration or scripted-event quest cannot be placed: allowed, but it opens nothing.
+        return facts->eventOnly ? Reach::Unknown : Reach::Reachable;
+    }
+};
+
+inline constexpr std::uint8_t StageCount = 19;  // IP ProgressionState 0..18
+
+// Every item each stage refuses among the items some row names. Items no row names are refused by
+// Filter::Allows before it reads these sets.
+inline std::array<std::unordered_set<std::uint32_t>, StageCount> BlockedSets(SourceIndex const& index, Gates gates)
+{
+    std::array<std::unordered_set<std::uint32_t>, StageCount> blocked;
+    for (std::uint8_t stage = 0; stage < StageCount; ++stage)
+    {
+        Filter const filter{&index, stage, gates, nullptr};
+        index.ForEachAccessItem(
+            [&](std::uint32_t item)
+            {
+                if (!filter.Allows(item))
+                    blocked[stage].insert(item);
+            });
+    }
+    return blocked;
+}
+
+// IP's own definition of a character's stage (IndividualProgression::GetPlayerProgressionFromQuests):
+// the highest progression marker quest 66000 + stage the character has been rewarded. Bots carry the
+// same marker quests. Rewarded(questId) answers for one quest.
+inline constexpr std::uint32_t ProgressionMarkerQuestBase = 66000;
+
+template <class Rewarded>
+std::uint8_t StageFromMarkerQuests(Rewarded const& rewarded)
+{
+    std::uint8_t stage = 0;
+    for (std::uint8_t i = 1; i < StageCount; ++i)
+        if (rewarded(ProgressionMarkerQuestBase + i))
+            stage = i;
+    return stage;
+}
+}  // namespace PlayerbotsAutoGearSourceAccess
+
+#endif

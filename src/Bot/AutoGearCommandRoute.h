@@ -13,9 +13,8 @@
 
 namespace PlayerbotsAutoGearSelection
 {
-    // What AutoGearAction::Execute and BisGearAction::Execute should call.
-    // The flags stay off, so this does not run from the live command yet.
-    // TrainerAction.cpp is coordinate-first and is not edited here.
+    // Resolves the commanding player's cap for the queued world-thread AutoGear command.
+    // Disabled unless Playerbots.AutoGearIPCap.Enable is set.
     struct RouteRequest
     {
         bool commandEnabled = false;
@@ -50,6 +49,8 @@ namespace PlayerbotsAutoGearSelection
         // Facts were fully enumerated and the required domain is empty.
         bool domainProvenEmpty = false;
         PlanInput selection{};
+        // Optional tighter policy (config). Null uses the approved table. Valid for this call only.
+        PlayerbotsAutoGearCap::Policy const* policy = nullptr;
     };
 
     struct RouteDecision
@@ -58,6 +59,8 @@ namespace PlayerbotsAutoGearSelection
         bool legacyUnchanged = false;
         bool rejected = false;
         bool preserve = true;
+        // The stage cap itself resolved, independent of whether the set selector ran.
+        bool capVerified = false;
         bool selectionRan = false;
         bool writesProgression = false;
         bool deletesGear = false;
@@ -76,7 +79,7 @@ namespace PlayerbotsAutoGearSelection
         cap.progressionContext = request.progressionContextVerified;
         cap.rawStage = request.rawStage;
         cap.effectiveStage = request.effectiveStage;
-        cap.policy = ApprovedCapPolicy();
+        cap.policy = request.policy ? *request.policy : ApprovedCapPolicy();
         cap.scoreLimit = request.scoreLimit;
     }
 
@@ -222,6 +225,7 @@ namespace PlayerbotsAutoGearSelection
             return decision;
         }
         decision.cap = resolved.cap.cap;
+        decision.capVerified = !resolved.cap.preserve && resolved.cap.cap != 0;
         decision.mode = parsed.requestedMode;
         if (resolved.preserve || !request.selection.authorityValid)
         {

@@ -23,6 +23,7 @@
 #include "PlayerbotIdentityGeneration.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
+#include "AutoGearSourceIndexStore.h"
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
@@ -555,6 +556,27 @@ public:
 
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
+
+        if (sPlayerbotAIConfig.AutoGearIPCapEnable || sPlayerbotAIConfig.RandomBotGearRaidSourceGate)
+        {
+            LOG_INFO("server.loading", "Loading AutoGear raid source index...");
+            PlayerbotsAutoGearMasterSource::SourceIndexStore::LoadFromWorldDatabase();
+        }
+
+        // Owner instruction of 22 Nov 2026 (coordination #74, comment 7079669889): when the random-bot
+        // gate cannot work, random bots keep their normal gear and the server says so once, here.
+        if (sPlayerbotAIConfig.RandomBotGearRaidSourceGate)
+        {
+            if (!sConfigMgr->GetOption<bool>("IndividualProgression.Enable", false, false))
+                LOG_ERROR("server.loading",
+                          ">> Playerbots.RandomBotGear.RaidSourceGate is on, but Individual Progression is not "
+                          "enabled: random bots get their normal gear, without the raid source gate.");
+            else if (!PlayerbotsAutoGearMasterSource::SourceIndexStore::Get())
+                LOG_ERROR("server.loading",
+                          ">> Playerbots.RandomBotGear.RaidSourceGate is on, but the AutoGear source index was not "
+                          "built (see the error above): random bots get their normal gear, without the raid "
+                          "source gate.");
+        }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
     }

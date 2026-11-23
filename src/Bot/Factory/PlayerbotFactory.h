@@ -10,6 +10,8 @@
 #include "InventoryAction.h"
 #include "AutoGearEquipmentSample.h"
 #include "AutoGearSetSolver.h"
+#include "AutoGearProgressionCap.h"
+#include "AutoGearSourceAccess.h"
 #if __has_include("PB59InventorySlotFacts.h")
 #include "AutoGearExactStorageObservation.h"
 #endif
@@ -121,7 +123,11 @@ public:
         uint64 policyRevision, uint32 countedMask, bool eligibilityKnown);
 #endif
     static void AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance = false,
-                        bool applyFinishers = true, uint32 maxRawItemLevel = 0);
+                        bool applyFinishers = true, uint32 maxRawItemLevel = 0,
+                        PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter = nullptr);
+    // IP-capped commands only: refuse items whose only proven source is a raid the commander cannot
+    // enter yet. Null (every other caller) changes nothing. The filter must outlive this factory.
+    void SetSourceFilter(PlayerbotsAutoGearSourceAccess::Filter const* filter) { sourceFilter = filter; }
     void InitPetTalents();
     void CleanupConsumables();
     void InitReagents();
@@ -269,6 +275,19 @@ private:
     uint32 itemQuality;
     uint32 gearScoreLimit;
     uint32 maxRawItemLevel;
+    PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter = nullptr;
+    // Random bots only, when Playerbots.RandomBotGear.RaidSourceGate is on: the bot's own IP stage.
+    PlayerbotsAutoGearSourceAccess::Filter randomBotFilter{};
+    // The raw item-level ceiling and, when set, the raid source filter: one check for every candidate.
+    // A commanded autogear sets sourceFilter (the commander's stage), which takes precedence.
+    bool AllowsCappedItem(ItemTemplate const* proto) const
+    {
+        PlayerbotsAutoGearSourceAccess::Filter const* filter =
+            sourceFilter ? sourceFilter : (randomBotFilter.index ? &randomBotFilter : nullptr);
+        return PlayerbotsAutoGearCap::AllowsRawItemLevel(proto->ItemLevel, maxRawItemLevel) &&
+               (!filter || filter->Allows(proto->ItemId));
+    }
+    void InitRandomBotSourceFilter();
     static std::list<uint32> specialQuestIds;
     static std::unordered_map<uint32, std::vector<uint32>> trainerIdCache;
     static std::vector<uint32> enchantSpellIdCache;
