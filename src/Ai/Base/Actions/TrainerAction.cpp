@@ -14,6 +14,7 @@
 #include "Playerbots.h"
 #include "ReputationMgr.h"
 #include "Trainer.h"
+#include "TrainerLearnOne.h"
 
 bool TrainerAction::Execute(Event event)
 {
@@ -26,6 +27,12 @@ bool TrainerAction::Execute(Event event)
     Trainer::Trainer* trainer = sObjectMgr->GetTrainer(target->GetEntry());
     if (!trainer)
         return false;
+
+    // "trainer learnone <spell>" teaches exactly one spell or nothing (TrainerLearnOne.h). The older forms
+    // below are unchanged.
+    PlayerbotsTrainerLearnOne::Result const one = PlayerbotsTrainerLearnOne::ParseLearnOne(param);
+    if (one.status != PlayerbotsTrainerLearnOne::Parse::NotLearnOne)
+        return LearnOne(target, trainer, one);
 
     // NOTE: Original version uses SpellIds here, but occasionally only inserts
     // a single spell ID value from parameters. If someone wants to impl multiple
@@ -145,6 +152,90 @@ void TrainerAction::Iterate(Creature* creature, bool learnSpells, uint32 spellId
     }
 
     TellFooter(totalCost);
+}
+
+bool TrainerAction::LearnOne(Creature* creature, Trainer::Trainer* trainer,
+                             PlayerbotsTrainerLearnOne::Result const& one)
+{
+    PlayerbotTextMgr& texts = PlayerbotTextMgr::instance();
+    if (one.status != PlayerbotsTrainerLearnOne::Parse::Spell)
+    {
+        botAI->TellError(texts.GetBotTextOrDefault(
+            "trainer_learnone_usage", "Use: trainer learnone [one spell link or spell id]. Nothing learned.", {}));
+        return false;
+    }
+
+    std::map<std::string, std::string> const names{{"%trainer", creature->GetName()},
+                                                   {"%spell", std::to_string(one.spellId)}};
+    if (!trainer->IsTrainerValidForPlayer(bot))
+    {
+        botAI->TellError(texts.GetBotTextOrDefault("trainer_learnone_not_my_trainer",
+                                                   "%trainer does not train me. Nothing learned.", names));
+        return false;
+    }
+
+    Trainer::Spell const* trainerSpell = trainer->GetSpell(one.spellId);
+    SpellInfo const* spellInfo = trainerSpell ? sSpellMgr->GetSpellInfo(trainerSpell->SpellId) : nullptr;
+    if (!spellInfo)
+    {
+        botAI->TellError(texts.GetBotTextOrDefault("trainer_learnone_not_taught",
+                                                   "%trainer does not teach spell %spell. Nothing learned.", names));
+        return false;
+    }
+
+    if (!PlayerbotFactory::IsTrainerSpellAllowedForBot(bot, trainer, trainerSpell) ||
+        !trainer->CanTeachSpell(bot, trainerSpell))
+    {
+        botAI->TellError(texts.GetBotTextOrDefault(
+            "trainer_learnone_cannot_learn",
+            "I cannot learn spell %spell now: already known, or my level, skill or earlier rank is too low. "
+            "Nothing learned.",
+            names));
+        return false;
+    }
+
+    // Unlike Learn(), charge only after the taught spells are confirmed known (#68 comment 7083535451):
+    // a refusal or a failed learn reports failure and costs nothing.
+    std::vector<PlayerbotsTrainerLearnOne::LearnEffect> effects;
+    for (SpellEffectInfo const& effect : spellInfo->GetEffects())
+        effects.push_back({effect.Effect == SPELL_EFFECT_LEARN_SPELL, effect.TriggerSpell});
+    std::vector<uint32> const taught = PlayerbotsTrainerLearnOne::SpellsTaught(spellInfo->Id, effects);
+    if (taught.empty())
+    {
+        botAI->TellError(texts.GetBotTextOrDefault(
+            "trainer_learnone_not_confirmed",
+            "Learning spell %spell could not be confirmed. Nothing was charged; check my spell book.", names));
+        return false;
+    }
+
+    uint32 const cost = static_cast<uint32>(floor(trainerSpell->MoneyCost * bot->GetReputationPriceDiscount(creature)));
+    bool const freeTraining = botAI->HasCheat(BotCheatMask::gold);
+    if (!freeTraining && AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::spells) < cost)
+    {
+        botAI->TellError(texts.GetBotTextOrDefault(
+            "trainer_learnone_too_expensive", "I cannot spare the money for spell %spell. Nothing learned.", names));
+        return false;
+    }
+
+    if (spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+        bot->CastSpell(bot, spellInfo->Id, true);
+    else
+        bot->learnSpell(spellInfo->Id, false);
+
+    if (!PlayerbotsTrainerLearnOne::AllKnown(taught, [&](uint32 spell) { return bot->HasSpell(spell); }))
+    {
+        botAI->TellError(texts.GetBotTextOrDefault(
+            "trainer_learnone_not_confirmed",
+            "Learning spell %spell could not be confirmed. Nothing was charged; check my spell book.", names));
+        return false;
+    }
+
+    if (!freeTraining)
+        bot->ModifyMoney(-static_cast<int32>(cost));
+    std::ostringstream out;
+    out << chat->FormatSpell(spellInfo) << chat->formatMoney(cost) << " - learned";
+    botAI->TellMaster(out);
+    return true;
 }
 
 void TrainerAction::Learn(SpellInfo const* spellInfo, uint32 cost, std::ostringstream& out)
