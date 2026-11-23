@@ -56,6 +56,8 @@ inline constexpr char const* QuestReputations =
     "RewardFactionValue4, RewardFactionOverride4, RewardFactionID5, RewardFactionValue5, RewardFactionOverride5 FROM "
     "quest_template WHERE RewardFactionID1 > 0 OR RewardFactionID2 > 0 OR RewardFactionID3 > 0 OR RewardFactionID4 > 0 "
     "OR RewardFactionID5 > 0";
+inline constexpr char const* EncounterCredits =
+    "SELECT entry, creditEntry FROM instance_encounters WHERE creditType = 0";
 }  // namespace SourceQueries
 
 // The same queries with the exact column types (see TableQuery). Read completely or not at all.
@@ -78,6 +80,7 @@ inline constexpr SourceTableSet SourceTables{
     {"item_template reputation", SourceQueries::ItemReputations, "uh"},
     {"creature_onkill_reputation", SourceQueries::KillReputations, "un"},
     {"quest_template reputation", SourceQueries::QuestReputations, "uhsshsshsshsshss"},
+    {"instance_encounters", SourceQueries::EncounterCredits, "uu"},
 };
 
 // Built once on the world thread during startup, before map updates run, and immutable afterwards.

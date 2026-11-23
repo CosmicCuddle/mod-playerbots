@@ -26,7 +26,10 @@
 //
 // An item is refused when the world rows show raid loot for it and every source is a raid the
 // commander cannot enter yet: two locked raids, or a locked raid plus loot nobody can place (unspawned
-// or script-summoned templates, container contents). A source the commander can reach clears it: a
+// templates, container contents). Script-summoned raid bosses (Nefarian, Ragnaros, Ouro) are placed where
+// their encounter is fought (instance_encounters + DungeonEncounter.dbc, AutoGearSourceRowLoad.h
+// EncounterSpawns), so their loot is raid evidence like any other boss. A source the commander can reach
+// clears it: a
 // spawned dungeon or world drop, a raid they can enter, a vendor or quest row, or a recipe they can
 // learn.
 //
@@ -115,7 +118,7 @@ enum class Reach : std::uint8_t
 {
     Reachable,  // at least one source the commander can use now
     Locked,     // raid evidence, and every source is out of reach
-    Unknown,    // a source exists but cannot be placed (script-summoned loot, containers, deep quest chains)
+    Unknown,    // a source exists but cannot be placed (unplaced templates, containers, deep quest chains)
     NoSource    // no row names the item, or its only sources are items nobody can obtain
 };
 

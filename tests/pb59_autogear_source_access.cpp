@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "AutoGearSourceAccess.h"
+#include "AutoGearSourceRowLoad.h"
 
 using namespace PlayerbotsAutoGearMasterSource;
 using namespace PlayerbotsAutoGearSourceAccess;
@@ -549,6 +550,48 @@ void TestVendorsAndReputation()
           "an event quest neither opens nor locks a reputation");
 }
 
+// A script-summoned raid boss has no spawn; its encounter places it (instance_encounters + DungeonEncounter.dbc).
+void TestSummonedBossByEncounter()
+{
+    constexpr std::uint32_t Nefarian = 11583;
+    constexpr std::uint32_t HeadOfNefarian = 19003;
+    constexpr std::uint32_t Medallion = 19383;
+    World world;
+    world.creatures.push_back({Nefarian, {}, Nefarian});
+    world.creatureLoot.push_back({Nefarian, HeadOfNefarian, 0});
+    world.Boss(1, 0, 1, 1);  // something spawned in the open world
+    std::vector<QuestRow> quests;
+    QuestRow first;
+    first.id = 7781;
+    first.items[0] = HeadOfNefarian;
+    QuestRow second;
+    second.id = 7782;
+    second.rewards[0] = Medallion;
+    quests = {first, second};
+    std::vector<QuestChainRow> chains{{7782, 7781, 0, false}};
+
+    WorldRows unplaced = world.View();
+    unplaced.quests = quests;
+    unplaced.questChains = chains;
+    SourceIndex const before = SourceIndex::Build(unplaced);
+    Check(Offered(before, Medallion, 1), "without the encounter, Nefarian's loot cannot be placed: allowed");
+
+    std::vector<EncounterCreditRow> const credits{{617, Nefarian}};
+    std::map<std::uint32_t, EncounterPlace> const places{{617, {469, 0}}};
+    std::vector<SpawnRow> spawns = world.creatureSpawns;
+    for (SpawnRow const& placed : EncounterSpawns(credits, places, world.creatureSpawns))
+        spawns.push_back(placed);
+    WorldRows rows = world.View();
+    rows.creatureSpawns = spawns;
+    rows.quests = quests;
+    rows.questChains = chains;
+    SourceIndex const after = SourceIndex::Build(rows);
+    Check(!Offered(after, HeadOfNefarian, 1) && Offered(after, HeadOfNefarian, 2),
+          "placed by its encounter, Nefarian's loot waits for BWL");
+    Check(!Offered(after, Medallion, 1) && Offered(after, Medallion, 2),
+          "and so does the Head of Nefarian follow-up reward");
+}
+
 // Random-bot gearing reads precomputed sets; they must say exactly what the live rule says.
 void TestBlockedSetsAndBotStage()
 {
@@ -615,6 +658,7 @@ int main()
     TestQuestRewards();
     TestCraftsAndNoSource();
     TestVendorsAndReputation();
+    TestSummonedBossByEncounter();
     TestBlockedSetsAndBotStage();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;

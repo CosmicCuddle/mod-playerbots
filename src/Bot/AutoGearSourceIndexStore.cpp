@@ -111,9 +111,11 @@ public:
         return true;
     }
 };
-// What each spell creates and teaches, and which spells come with a profession skill, from the spell
-// data Core loaded before this hook (Spell.dbc with spell_dbc overrides, SkillLineAbility.dbc).
-void AddSpellData(OwnedWorldRows& rows)
+// What each spell creates and teaches, which spells come with a profession skill, what vendor prices ask
+// for, and where encounters are fought, from the DBC data Core loaded before this hook (Spell.dbc with
+// spell_dbc overrides, SkillLineAbility.dbc, ItemExtendedCost.dbc, DungeonEncounter.dbc). Returns the
+// number of script-summoned bosses placed.
+std::size_t AddDbcData(OwnedWorldRows& rows)
 {
     std::multimap<std::uint32_t, std::uint32_t> learns;
     for (uint32 id = 0; id < sSpellMgr->GetSpellInfoStoreSize(); ++id)
@@ -146,6 +148,15 @@ void AddSpellData(OwnedWorldRows& rows)
                 costs[cost->ID][k] = cost->reqitem[k];
     rows.vendorOffers = ResolveVendorOffers(rows.vendorRows, costs);
     rows.reputationSources = ResolveReputationSources(rows.killReputations, rows.questReputations);
+
+    // Script-summoned raid bosses: placed where their encounter is fought (DungeonEncounter.dbc).
+    std::map<std::uint32_t, EncounterPlace> places;
+    for (uint32 i = 0; i < sDungeonEncounterStore.GetNumRows(); ++i)
+        if (DungeonEncounterEntry const* encounter = sDungeonEncounterStore.LookupEntry(i))
+            places[encounter->id] = {encounter->mapId, encounter->difficulty};
+    std::vector<SpawnRow> const summoned = EncounterSpawns(rows.encounterCredits, places, rows.creatureSpawns);
+    rows.creatureSpawns.insert(rows.creatureSpawns.end(), summoned.begin(), summoned.end());
+    return summoned.size();
 }
 }  // namespace
 
@@ -164,7 +175,7 @@ void SourceIndexStore::LoadFromWorldDatabase()
         return;
     }
 
-    AddSpellData(*rows);
+    std::size_t const placedBosses = AddDbcData(*rows);
     storedIndex = std::make_unique<SourceIndex const>(SourceIndex::Build(rows->View()));
     loadGates.zulGurub = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulGurubProgression", 3, false);
     loadGates.zulAman = sConfigMgr->GetOption<uint8>("IndividualProgression.RequiredZulAmanProgression", 12, false);
@@ -177,10 +188,11 @@ void SourceIndexStore::LoadFromWorldDatabase()
              rows->referenceLoot.size(), GetMSTimeDiffToNow(started));
     LOG_INFO("server.loading",
              ">> AutoGear raid source gate: {} sourced items refused at stage 0, {} at stage 1 ({} craft, {} vendor, "
-             "{} reputation rows); items without a known source are refused at every stage. Snapshot of startup: "
-             "restart after reloading loot, vendor, quest, trainer or reputation tables",
+             "{} reputation rows, {} script-summoned bosses placed by encounter); items without a known source are "
+             "refused at every stage. Snapshot of startup: restart after reloading loot, vendor, quest, trainer, "
+             "reputation or encounter tables",
              blockedByStage[0].size(), blockedByStage[1].size(), rows->crafts.size(), rows->vendorOffers.size(),
-             rows->reputationSources.size());
+             rows->reputationSources.size(), placedBosses);
 }
 
 SourceIndex const* SourceIndexStore::Get() { return publishedIndex.load(std::memory_order_acquire); }

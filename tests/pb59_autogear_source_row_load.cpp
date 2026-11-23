@@ -52,6 +52,7 @@ constexpr SourceTableSet Tables{
     {"item_template reputation", "item_reputations", "uh"},
     {"creature_onkill_reputation", "kill_reputations", "un"},
     {"quest_template reputation", "quest_reputations", "uhsshsshsshsshss"},
+    {"instance_encounters", "encounters", "uu"},
 };
 
 // One quest_template row: ID, 10 rewards, 6 hand-ins, start item, 4 kill targets, 4 hand-in sources.
@@ -96,6 +97,7 @@ struct FakeDatabase
         tables["item_reputations"] = {};
         tables["kill_reputations"] = {};
         tables["quest_reputations"] = {};
+        tables["encounters"] = {};
     }
 
     std::optional<std::uint64_t> Count(char const* sql)
@@ -448,6 +450,47 @@ void TestVendorAndReputationRows()
     auto const dropRows = Load(dropOk, report);
     Check(dropRows.has_value() && dropRows->quests[0].items[7] == 19881, "ItemDrop1 lands after the start item");
 }
+// Script-summoned bosses are placed where their encounter is fought.
+void TestEncounterRows()
+{
+    LoadReport report;
+    FakeDatabase db;
+    db.tables["encounters"] = {{617, 11583}, {672, 11502}, {999, 12345}, {707, 10184}};
+    db.tables["creature_spawns"] = {{1, 469, 1}, {10184, 249, 4}};
+    auto rows = Load(db, report);
+    Check(rows.has_value() && rows->encounterCredits.size() == 4 && rows->encounterCredits[0].creature == 11583,
+          "encounter credits load");
+    if (!rows)
+        return;
+    std::map<std::uint32_t, EncounterPlace> const places{
+        {617, {469, 0}}, {672, {409, 0}}, {707, {249, 1}}, {700, {533, 9}}};
+    auto const placed = EncounterSpawns(rows->encounterCredits, places, rows->creatureSpawns);
+    auto at = [&](std::uint32_t creature, std::uint32_t map, std::uint8_t mask)
+    {
+        for (SpawnRow const& s : placed)
+            if (s.id == creature && s.map == map && s.spawnMask == mask)
+                return true;
+        return false;
+    };
+    Check(at(11583, 469, 1) && at(11502, 409, 1), "unspawned bosses are placed at their encounter's map");
+    Check(placed.size() == 2, "a spawned boss keeps its own spawns; an encounter the DBC lacks adds nothing");
+    std::vector<EncounterCreditRow> const highDifficulty{{700, 5}};
+    Check(EncounterSpawns(highDifficulty, places, rows->creatureSpawns).empty(),
+          "a difficulty no spawn mask can hold adds nothing");
+    std::vector<EncounterCreditRow> const heroic{{707, 20}};
+    auto const heroicPlaced = EncounterSpawns(heroic, places, rows->creatureSpawns);
+    Check(heroicPlaced.size() == 1 && heroicPlaced[0].spawnMask == 2, "difficulty 1 is spawn mask bit 1");
+
+    FakeDatabase failed;
+    failed.tables["encounters"] = {{617, 11583}};
+    failed.queryFails.insert("encounters");
+    Check(!Load(failed, report).has_value() && std::string(report.table) == "instance_encounters",
+          "a failed encounter query publishes nothing");
+    FakeDatabase bad;
+    bad.tables["encounters"] = {{617, -1}};
+    Check(!Load(bad, report).has_value() && report.failure == LoadFailure::MalformedRow,
+          "a negative credit entry is malformed");
+}
 }  // namespace
 
 int main()
@@ -459,6 +502,7 @@ int main()
     TestQuestRows();
     TestSpellRows();
     TestVendorAndReputationRows();
+    TestEncounterRows();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

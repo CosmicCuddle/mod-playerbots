@@ -207,6 +207,46 @@ inline std::vector<ReputationSourceRow> ResolveReputationSources(std::span<KillR
     return out;
 }
 
+// instance_encounters with creditType 0: the creature whose kill completes a DungeonEncounter.dbc entry.
+struct EncounterCreditRow
+{
+    std::uint32_t encounter = 0;
+    std::uint32_t creature = 0;
+};
+
+// Where an encounter happens (DungeonEncounter.dbc mapId and difficulty).
+struct EncounterPlace
+{
+    std::uint32_t map = 0;
+    std::uint32_t difficulty = 0;
+};
+
+// Raid bosses that a script summons (Nefarian, Ragnaros, Ouro, the Edge of Madness bosses) have no row in
+// `creature`, so their loot cannot be placed and stays Unknown. Their encounter says where they are
+// fought: one spawn row per unspawned credit creature, at the encounter's map and difficulty, in the
+// same form `creature` rows have (spawnMask bit = difficulty). Creatures with real spawns are left alone.
+template <class Places>
+std::vector<SpawnRow> EncounterSpawns(std::span<EncounterCreditRow const> credits, Places const& places,
+                                      std::span<SpawnRow const> creatureSpawns)
+{
+    std::vector<std::uint32_t> spawned;
+    spawned.reserve(creatureSpawns.size());
+    for (SpawnRow const& spawn : creatureSpawns)
+        spawned.push_back(spawn.id);
+    std::sort(spawned.begin(), spawned.end());
+    std::vector<SpawnRow> out;
+    for (EncounterCreditRow const& credit : credits)
+    {
+        if (!credit.creature || std::binary_search(spawned.begin(), spawned.end(), credit.creature))
+            continue;
+        auto const place = places.find(credit.encounter);
+        if (place == places.end() || place->second.difficulty >= 8)
+            continue;  // an encounter the DBC does not know, or a difficulty no spawn mask can hold
+        out.push_back({credit.creature, place->second.map, static_cast<std::uint8_t>(1u << place->second.difficulty)});
+    }
+    return out;
+}
+
 // Owns what WorldRows points at.
 struct OwnedWorldRows
 {
@@ -228,6 +268,7 @@ struct OwnedWorldRows
     std::vector<ItemReputationRow> itemReputations;
     std::vector<KillReputationRow> killReputations;
     std::vector<QuestReputationRow> questReputations;
+    std::vector<EncounterCreditRow> encounterCredits;
     // Filled by the caller: vendorRows resolved with the ExtendedCost data (DBC), and reputation sources.
     std::vector<VendorOfferRow> vendorOffers;
     std::vector<ReputationSourceRow> reputationSources;
@@ -334,7 +375,7 @@ struct SourceTableSet
 {
     TableQuery creatureLoot, gameobjectLoot, referenceLoot, itemLoot, creatures, creatureSpawns, chests, chestSpawns,
         vendorItems, questRewards, questChains, trainerSpells, itemSpells, questSpells, vendorRows, itemReputations,
-        killReputations, questReputations;
+        killReputations, questReputations, encounterCredits;
 };
 
 template <class Source>
@@ -521,6 +562,15 @@ std::optional<OwnedWorldRows> LoadWorldRows(Source& source, SourceTableSet const
                 r[1] > std::numeric_limits<std::int16_t>::max())
                 return false;
             rows.killReputations.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::int32_t>(r[1])});
+            return true;
+        });
+    loader.Table(
+        tables.encounterCredits,
+        [&](std::span<std::int64_t const> r)
+        {
+            if (!Unsigned32(r[0]) || !Unsigned32(r[1]))
+                return false;
+            rows.encounterCredits.push_back({static_cast<std::uint32_t>(r[0]), static_cast<std::uint32_t>(r[1])});
             return true;
         });
     // ID, then RewardFactionID, RewardFactionValue, RewardFactionOverride for 1..5.

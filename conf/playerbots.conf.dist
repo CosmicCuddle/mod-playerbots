@@ -659,9 +659,11 @@ Playerbots.AutoGearScoreLimit = 0
 # from a locked raid, is not offered.
 # Enabling this loads a raid source index from the world database at startup
 # (a few seconds); if it cannot load, capped commands keep the current gear.
+# Raid bosses a script summons (e.g. Nefarian) count as part of the raid their
+# encounter belongs to.
 # The index is a snapshot of startup: after ".reload" of loot, npc_vendor,
-# quest, trainer or reputation tables, or GM-added spawns, restart the server
-# for AutoGear to see them.
+# quest, trainer, reputation or encounter tables, or GM-added spawns, restart
+# the server for AutoGear to see them.
 # Missing/zero stage caps or era ceilings refuse the command before changing gear.
 # These tables can only lower the caps compiled into AutoGearSelectionCap.h; a
 # higher value here has no effect.
