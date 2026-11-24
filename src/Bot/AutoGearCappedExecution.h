@@ -143,6 +143,7 @@ struct Outcome
     std::uint32_t newItems = 0;
     std::uint32_t revoked = 0;
     bool capHeld = false;
+    bool factoryStopped = false;     // the factory stopped: one of its exact moves needs recovery
     bool bisRestoreFailed = false;   // BiS stopped: an item could not be put back, or a strip was unproven
     std::uint32_t ownedMissing = 0;  // items the bot owned before that are no longer in its inventory
 
@@ -163,7 +164,7 @@ inline bool Carried(Snapshot const& snapshot, std::uint64_t guid)
 // Inventory adapter contract:
 //   Snapshot Capture();
 //   StripResult StripToBags(uint32 slotMask);        exact, all-or-nothing (bit = equipment slot)
-//   void RunFactory(uint32 quality, uint32 cap, bool incremental);
+//   bool RunFactory(uint32 quality, uint32 cap, bool incremental);  false: stopped, recovery needed
 //   bool ApplyBisOverlay(uint32 cap);                 false: stopped, recovery needed
 //   void ApplyFinishers(uint32 cap);
 //   bool DestroyCreatedEquipped(uint8 slot, uint64 guid);
@@ -220,9 +221,10 @@ Outcome Execute(Inventory& inventory, Plan const& plan)
         }
     }
 
-    inventory.RunFactory(plan.quality, plan.cap, plan.incremental);
-    // A BiS restore that failed leaves an item in the bags: stop further optional work (finishers).
-    if (plan.bisOverlay && !inventory.ApplyBisOverlay(plan.cap))
+    // A move that needs recovery stops all further optional work: no BiS swaps, no finishers.
+    if (!inventory.RunFactory(plan.quality, plan.cap, plan.incremental))
+        outcome.factoryStopped = true;
+    else if (plan.bisOverlay && !inventory.ApplyBisOverlay(plan.cap))
         outcome.bisRestoreFailed = true;
     else
         inventory.ApplyFinishers(plan.cap);
@@ -248,8 +250,9 @@ Outcome Execute(Inventory& inventory, Plan const& plan)
         if (!Carried(after, guid))
             ++outcome.ownedMissing;
     outcome.ran = true;
-    outcome.refusal =
-        (outcome.bisRestoreFailed || outcome.ownedMissing) ? Refusal::RecoveryRequired : Refusal::None;
+    outcome.refusal = (outcome.factoryStopped || outcome.bisRestoreFailed || outcome.ownedMissing)
+                          ? Refusal::RecoveryRequired
+                          : Refusal::None;
     return outcome;
 }
 

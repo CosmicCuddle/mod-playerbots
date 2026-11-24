@@ -2458,7 +2458,18 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         // PvP specs: force TRINKET1 to the best available CC-break trinket.
         if (slot == EQUIPMENT_SLOT_TRINKET1 && pvpTrinket1 != 0)
         {
-            if (oldItem)
+            if (oldItem && exactMoves)
+            {
+                PlayerbotsAutoGearExec::StripResult const strip = exactMoves->strip(1u << slot);
+                if (strip == PlayerbotsAutoGearExec::StripResult::RecoveryRequired)
+                {
+                    exactMoves->stopped = true;
+                    return;
+                }
+                if (strip != PlayerbotsAutoGearExec::StripResult::Done)
+                    continue;
+            }
+            else if (oldItem)
             {
                 uint8 bagIndex = oldItem->GetBagSlot();
                 uint8 oldSlot  = oldItem->GetSlot();
@@ -2647,6 +2658,50 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                 continue;
         }
         ObjectGuid const oldItemGuid = oldItem ? oldItem->GetGUID() : ObjectGuid::Empty;
+        if (exactMoves)
+        {
+            // The old item, and an off-hand the new main-hand item would push out, leave in one exact strip
+            // (off-hand first). The off-hand is never left for Core to store or mail afterwards.
+            Item* offhand =
+                slot == EQUIPMENT_SLOT_MAINHAND && DisplacesOffhand(bot, sObjectMgr->GetItemTemplate(bestItemForSlot))
+                    ? bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND)
+                    : nullptr;
+            ObjectGuid const offhandGuid = offhand ? offhand->GetGUID() : ObjectGuid::Empty;
+            uint32 const mask = (oldItem ? 1u << slot : 0u) | (offhand ? 1u << EQUIPMENT_SLOT_OFFHAND : 0u);
+            if (mask)
+            {
+                PlayerbotsAutoGearExec::StripResult const strip = exactMoves->strip(mask);
+                if (strip == PlayerbotsAutoGearExec::StripResult::RecoveryRequired)
+                {
+                    exactMoves->stopped = true;
+                    return;
+                }
+                if (strip != PlayerbotsAutoGearExec::StripResult::Done)
+                    continue;
+            }
+            // Equip only into the now empty slot; otherwise put back what was moved, main hand first.
+            if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) || !CanEquipUnseenItem(slot, dest, bestItemForSlot) ||
+                !bot->EquipNewItem(dest, bestItemForSlot, true))
+            {
+                if ((!oldItemGuid.IsEmpty() && !exactMoves->restore(oldItemGuid, slot)) ||
+                    (!offhandGuid.IsEmpty() && !exactMoves->restore(offhandGuid, EQUIPMENT_SLOT_OFFHAND)))
+                {
+                    exactMoves->stopped = true;
+                    return;
+                }
+                continue;
+            }
+            if (Item* equipped = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot); equipped && bestRandomPropForSlot)
+            {
+                bot->_ApplyItemMods(equipped, slot, false);
+                equipped->SetItemRandomProperties(bestRandomPropForSlot);
+                bot->_ApplyItemMods(equipped, slot, true);
+            }
+            // With the off-hand slot empty this only refreshes Titan's Grip; it never moves an item.
+            if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
+                bot->AutoUnequipOffhandIfNeed();
+            continue;
+        }
         if (oldItem)
         {
             uint8 bagIndex = oldItem->GetBagSlot();
@@ -2699,7 +2754,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
     }
     // Secondary init for better equips
     /// @todo: clean up duplicate code
-    if (second_chance)
+    if (second_chance && !exactMoves)
     {
         for (int32 slot : initSlotsOrder)
         {
@@ -4052,7 +4107,8 @@ void PlayerbotFactory::InitAmmo()
     if (!ammoProto || !AllowsCappedItem(ammoProto))
         return;
 
-    DestroyObsoleteAmmo(bot, ammoProto);
+    if (!keepOwnedItems)
+        DestroyObsoleteAmmo(bot, ammoProto);
 
     uint32 count = bot->GetItemCount(entry);
     uint32 maxCount = botClass == CLASS_HUNTER ? 6000 : 1000;
@@ -4400,13 +4456,34 @@ void PlayerbotFactory::InitRandomBotSourceFilter()
         PlayerbotsAutoGearMasterSource::SourceIndexStore::BlockedAtStage(stage)};
 }
 
+bool PlayerbotFactory::DisplacesOffhand(Player* bot, ItemTemplate const* mainhand)
+{
+    Item* offhand = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
+    if (!offhand || !mainhand)
+        return false;
+    ItemTemplate const* offProto = offhand->GetTemplate();
+    if (!offProto)
+        return true;
+    if (!bot->CanDualWield() &&
+        (offProto->InventoryType == INVTYPE_WEAPONOFFHAND || offProto->InventoryType == INVTYPE_WEAPON))
+        return true;
+    if (mainhand->Class == ITEM_CLASS_WEAPON &&
+        (mainhand->SubClass == ITEM_SUBCLASS_WEAPON_POLEARM || mainhand->SubClass == ITEM_SUBCLASS_WEAPON_STAFF ||
+         mainhand->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE))
+        return true;
+    bool const twoHandUsed = mainhand->InventoryType == INVTYPE_2HWEAPON && !bot->CanTitanGrip();
+    return !(bot->CanTitanGrip() || (offProto->InventoryType != INVTYPE_2HWEAPON && !twoHandUsed));
+}
+
 void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance,
                                 bool applyFinishers, uint32 maxRawItemLevel,
-                                PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter)
+                                PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter, ExactMoves* exactMoves)
 {
     uint32 gs = ilvl == 0 ? 0 : CalcMixedGearScore(ilvl, itemQuality);
     PlayerbotFactory factory(bot, bot->GetLevel(), itemQuality, gs, maxRawItemLevel);
     factory.SetSourceFilter(sourceFilter);
+    factory.SetExactMoves(exactMoves);
+    factory.SetKeepOwnedItems(exactMoves != nullptr);
     factory.InitEquipment(incremental, secondChance);
 
     if (!applyFinishers)

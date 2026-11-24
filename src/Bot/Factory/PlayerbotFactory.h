@@ -18,10 +18,13 @@
 #if __has_include("EquipmentCaptureState.h")
 #include "AutoGearNativeAuthority.h"
 #endif
-#include "Player.h"
-#include "PlayerbotAI.h"
+#include <functional>
 #include <string>
 #include <utility>
+
+#include "AutoGearCappedExecution.h"
+#include "Player.h"
+#include "PlayerbotAI.h"
 
 class Item;
 
@@ -127,9 +130,26 @@ public:
         PlayerbotsAutoGearNativeAuthority::Sample const& expected,
         uint64 policyRevision, uint32 countedMask, bool eligibilityKnown);
 #endif
+    // IP-capped commands only: how an item the bot already owns is moved. Every such move goes through
+    // `strip` (Core's batch executor) or `restore`, never through a public inventory helper; a strip that
+    // cannot be proven makes the factory stop (coordination #52 7130978738 Layer 2, 7133329461). Null (every
+    // other caller) keeps the factory's ordinary behaviour.
+    struct ExactMoves
+    {
+        std::function<PlayerbotsAutoGearExec::StripResult(uint32 slotMask)> strip;
+        std::function<bool(ObjectGuid guid, uint8 slot)> restore;
+        bool stopped = false;  // a move needs recovery: the factory changed nothing after it
+    };
     static void AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bool incremental, bool secondChance = false,
-                        bool applyFinishers = true, uint32 maxRawItemLevel = 0,
-                        PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter = nullptr);
+                         bool applyFinishers = true, uint32 maxRawItemLevel = 0,
+                         PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter = nullptr,
+                         ExactMoves* exactMoves = nullptr);
+    void SetExactMoves(ExactMoves* moves) { exactMoves = moves; }
+    // Owned items are never destroyed or moved by the finishers (old ammo stays).
+    void SetKeepOwnedItems(bool keep) { keepOwnedItems = keep; }
+    // Mirrors Player::AutoUnequipOffhandIfNeed for a new main-hand item: true when equipping it would push the
+    // current off-hand out, which Core would store or mail outside any plan.
+    static bool DisplacesOffhand(Player* bot, ItemTemplate const* mainhand);
     // IP-capped commands only: refuse items whose only proven source is a raid the commander cannot
     // enter yet. Null (every other caller) changes nothing. The filter must outlive this factory.
     void SetSourceFilter(PlayerbotsAutoGearSourceAccess::Filter const* filter) { sourceFilter = filter; }
@@ -281,6 +301,8 @@ private:
     uint32 gearScoreLimit;
     uint32 maxRawItemLevel;
     PlayerbotsAutoGearSourceAccess::Filter const* sourceFilter = nullptr;
+    ExactMoves* exactMoves = nullptr;
+    bool keepOwnedItems = false;
     // Random bots only, when Playerbots.RandomBotGear.RaidSourceGate is on: the bot's own IP stage.
     PlayerbotsAutoGearSourceAccess::Filter randomBotFilter{};
     // The raw item-level ceiling and, when set, the raid source filter: one check for every candidate.
