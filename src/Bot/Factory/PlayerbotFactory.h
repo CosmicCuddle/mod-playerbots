@@ -109,8 +109,13 @@ public:
 #endif
     };
     // Call on the bot-owning thread. Does not move items; output is empty on failure.
-    static InventoryResult PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves);
-    static InventoryResult ValidateEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove> const& moves);
+    // slotMask (bit = equipment slot) limits the plan to those slots; the default plans every equipped
+    // item. Validation then requires exactly the masked equipped items to be planned.
+    static constexpr uint32 AllEquipmentSlots = 0xFFFFFFFFu;
+    static InventoryResult PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves,
+                                                   uint32 slotMask = AllEquipmentSlots);
+    static InventoryResult ValidateEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove> const& moves,
+                                                    uint32 slotMask = AllEquipmentSlots);
     // Sender-owning thread only; publication/freshness must be supplied separately.
     static PlayerbotsAutoGearSample::Result CaptureEquipmentSample(Player* sender,
         std::span<uint8 const> countedSlots, bool eligibilityKnown);

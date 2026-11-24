@@ -8,7 +8,9 @@ Each rule is also run against a deliberately broken copy (negative controls), so
 stops matching fails this script.
 
 CS01 coordination #52 Part 28, item 1: unique/equip-slot restrictions, no owned gear destruction,
-Altbot protection, refuse before mutation.
+Altbot protection, refuse before mutation. #52 7118592534 / 7118646677 (gates A03-A06): exact
+all-or-nothing strips through the transaction runner, identity checks, no pointer kept across a
+script hook, checked restores, success only when it is true, and no off-hand mailed by the factory.
 """
 from pathlib import Path
 import re
@@ -60,12 +62,12 @@ def check(trainer, factory_cpp, factory_h):
             errors.append(text)
 
     cls = between(trainer, "class PlayerAutoGearInventory", "std::string RefusalText(")
-    move = method(cls, "bool MoveEquippedToBags(uint8 slot)")
+    strip = method(cls, "PlayerbotsAutoGearExec::StripResult StripToBags(uint32 slotMask)")
     run_factory = method(cls, "void RunFactory(uint32 quality, uint32 cap, bool incremental)")
-    bis = method(cls, "void ApplyBisOverlay(uint32 cap)")
+    bis = method(cls, "bool ApplyBisOverlay(uint32 cap)")
     finishers = method(cls, "void ApplyFinishers(uint32 cap)")
     destroy = method(cls, "bool DestroyCreatedEquipped(uint8 slot, uint64 guid)")
-    restore = method(cls, "void RestoreToSlot(ObjectGuid guid, uint8 slot)")
+    restore = method(cls, "bool RestoreToSlot(ObjectGuid guid, uint8 slot)")
 
     # Nothing owned is destroyed: the only destroy call checks the exact created item's guid first.
     rule(cls.count("DestroyItem(") == 1 and "DestroyItem(" in destroy,
@@ -75,9 +77,28 @@ def check(trainer, factory_cpp, factory_h):
     for banned in ("DestroyEquippedGear", "SwapItem(", "DestroyItemCount(", "DeleteFromDB", "RemoveItemFromUpdateQueue"):
         rule(banned not in cls, f"the adapter never calls {banned}")
 
-    # Strips are non-destructive moves after Core's store and unequip checks.
-    rule(ordered(move, "CanStoreItem(", "CanUnequipItem(", "return false;", "RemoveItem(", "StoreItem("),
-         "MoveEquippedToBags checks store and unequip before RemoveItem/StoreItem")
+    # Strips: one exact plan (own empty bag slot per item, off-hand first) run all-or-nothing by the
+    # transaction runner, which checks slot facts around every move and undoes earlier moves.
+    rule(ordered(strip, "PrepareEquipmentStorage(_bot, plan, slotMask)", "EQUIP_ERR_INVENTORY_FULL",
+                 "return StripResult::NoSpace;", "PlayerbotsAutoGearStorage::Execute("),
+         "StripToBags plans exact destinations before the transaction runs")
+    rule(ordered(strip, "CapturePB59InventorySlot(position)", "return std::nullopt;"),
+         "StripToBags inspects exact slot facts and reports unknown slots as unknown")
+    rule(strip.count("item->GetGUID().GetRawValue() != move.position.itemGuid") >= 2,
+         "StripToBags checks the item identity before and after the unequip hook")
+    rule(ordered(strip, "CanUnequipItem(from, false)", "return false;", "item = _bot->GetItemByPos(from);",
+                 "CanStoreItem(to >> 8, to & 255, dest, item, false)", "dest.front().pos != to",
+                 "RemoveItem(from >> 8, from & 255, true)", "StoreItem(dest, item, true) == item"),
+         "a forward move re-reads the item after the hook and stores it at exactly the planned slot")
+    rule(ordered(strip, "if (restore)", "CanEquipItem(to & 255, dest, item, false)", "dest != to", "return false;",
+                 "RemoveItem(", "EquipItem(dest, item, true) == item"),
+         "a restore move checks the exact original slot and the returned item")
+    rule(ordered(strip, "TransactionStatus::Committed:", "return StripResult::Done;",
+                 "TransactionStatus::RolledBack:", "return StripResult::Restored;",
+                 "TransactionStatus::RecoveryRequired:", "return StripResult::RecoveryRequired;"),
+         "only a committed transaction is a finished strip")
+    rule(len(re.findall(r"(?<!Can)StoreItem\(", strip)) == 1 and "SwapItem(" not in strip,
+         "StripToBags has no other store or swap path")
 
     # The factory runs without the second-chance pass (which destroys the equipped item first).
     rule(re.search(r"/\*secondChance\*/\s*false", run_factory) is not None,
@@ -88,14 +109,16 @@ def check(trainer, factory_cpp, factory_h):
     # any change; a failed equip restores the previous item.
     rule(ordered(bis, "AllowsRawItemLevel(", "_sources->Allows(", "CanUseItem(", "continue;"),
          "BiS rows pass the cap, the raid gate and CanUseItem before anything else")
-    rule(ordered(bis, "CanEquipNewItem(slot, dest, entry, true)", "continue;", "MoveEquippedToBags(slot)"),
+    rule(ordered(bis, "CanEquipNewItem(slot, dest, entry, true)", "continue;", "StripToBags(1u << slot)"),
          "BiS checks CanEquipNewItem before moving the current item")
-    rule(ordered(bis, "MoveEquippedToBags(slot)", "CanEquipNewItem(slot, dest, entry, false)", "EquipNewItem(",
-                 "RestoreToSlot(previous, slot)"),
-         "BiS re-checks, equips, and restores the previous item on failure")
+    rule(ordered(bis, "StripToBags(1u << slot) != PlayerbotsAutoGearExec::StripResult::Done", "continue;",
+                 "CanEquipNewItem(slot, dest, entry, false)", "EquipNewItem(", "!RestoreToSlot(previous, slot)",
+                 "return false;"),
+         "BiS moves only after an exact strip, re-checks, and stops when the restore fails")
     rule("SetReputation" not in bis and "GiveReputation" not in bis, "BiS never grants reputation")
-    rule(ordered(restore, "CanEquipItem(", "return;", "RemoveItem(", "EquipItem("),
-         "RestoreToSlot checks CanEquipItem before moving the item back")
+    rule(ordered(restore, "CanEquipItem(", "return false;", "RemoveItem(", "EquipItem(dest, item, true) != item",
+                 "return false;", "restored->GetGUID() == guid"),
+         "RestoreToSlot checks CanEquipItem first and reports whether exactly that item is back")
     rule("SetSourceFilter(_sources)" in finishers, "finishers (ammo, gems) use the raid source filter")
 
     # The world plan: facts first, refusal decided by the plan before the executor touches anything.
@@ -104,10 +127,26 @@ def check(trainer, factory_cpp, factory_h):
                  "Execute(inventory, plan)"),
          "the index state is a plan fact, decided before the executor runs")
     rule(plan.count("Execute(inventory, plan)") == 1, "the executor runs once")
-    for call in ("RunFactory(", "MoveEquippedToBags(", "ApplyBisOverlay(", "DestroyEquippedGear", "EquipNewItem("):
+    for call in ("RunFactory(", "StripToBags(", "ApplyBisOverlay(", "DestroyEquippedGear", "EquipNewItem("):
         rule(call not in plan, f"the world plan never calls {call} directly")
     rule(ordered(plan, "if (!sPlayerbotAIConfig.AutoGearIPCapEnable", "return false;"),
          "the world plan returns before anything when the IP cap is off")
+    rule(ordered(plan, "Execute(inventory, plan)", "if (!outcome.Succeeded())", "return false;",
+                 "\"autogear_ip_done_msg\""),
+         "the world plan whispers success only after outcome.Succeeded()")
+    refusals = between(trainer, "std::string RefusalText(", "\n}\n")
+    for refusal in ("StripRefused", "StripRestored", "RecoveryRequired", "BagsFull"):
+        rule(f"case Refusal::{refusal}:" in refusals, f"RefusalText explains {refusal}")
+    rule("StripFailed" not in trainer, "the old StripFailed refusal is gone")
+
+    # The factory re-checks a replacement after the old item took a bag slot, so a displaced off-hand
+    # is never mailed; otherwise the old item goes back.
+    equip = between(factory_cpp, "void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)",
+                    "bool PlayerbotFactory::IsDesiredReplacement(")
+    rule(ordered(equip, "// fail to store in bag", "!oldItemGuid.IsEmpty() && !CanEquipUnseenItem(slot, dest, bestItemForSlot)",
+                 "CanEquipItem(slot, back, stored, false) == EQUIP_ERR_OK", "EquipItem(back, stored, true)", "continue;",
+                 "EquipNewItem(dest, bestItemForSlot, true)"),
+         "the factory re-checks the replacement after moving the old item and puts it back otherwise")
 
     # Random-bot gate: only random bots, only with its option and IP, never for alt bots or humans,
     # and a commanded filter takes precedence.
@@ -126,11 +165,22 @@ def check(trainer, factory_cpp, factory_h):
 
 def mutants(trainer, factory_cpp, factory_h):
     """Each broken copy must fail at least one rule."""
-    yield "extra destroy", trainer.replace("_bot->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);",
-                                           "_bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);", 1), factory_cpp, factory_h
+    yield "extra destroy", trainer.replace("_bot->RemoveItem(from >> 8, from & 255, true);",
+                                           "_bot->DestroyItem(from >> 8, from & 255, true);", 1), factory_cpp, factory_h
     yield "second chance on", re.sub(r"/\*secondChance\*/\s*false", "/*secondChance*/ true", trainer, count=1), factory_cpp, factory_h
     yield "no CanUseItem", trainer.replace("_bot->CanUseItem(proto) != EQUIP_ERR_OK", "false", 1), factory_cpp, factory_h
-    yield "no restore", trainer.replace("RestoreToSlot(previous, slot);", "{}", 1), factory_cpp, factory_h
+    yield "no restore", trainer.replace("!RestoreToSlot(previous, slot)", "false", 1), factory_cpp, factory_h
+    yield "restore unchecked", trainer.replace("if (_bot->EquipItem(dest, item, true) != item)", "if (false)", 1), factory_cpp, factory_h
+    yield "rollback as done", trainer.replace("return StripResult::Restored;", "return StripResult::Done;", 1), factory_cpp, factory_h
+    yield "store unchecked", trainer.replace("return _bot->StoreItem(dest, item, true) == item;",
+                                             "_bot->StoreItem(dest, item, true);\n                return true;", 1), factory_cpp, factory_h
+    yield "pointer across hook", trainer.replace(
+        "return false;\n                item = _bot->GetItemByPos(from);", "return false;", 1), factory_cpp, factory_h
+    yield "any store slot", trainer.replace("dest.front().pos != to ||", "", 1), factory_cpp, factory_h
+    yield "success when ran", trainer.replace("if (!outcome.Succeeded())", "if (!outcome.ran)", 1), factory_cpp, factory_h
+    yield "no recovery text", trainer.replace("case Refusal::RecoveryRequired:", "case Refusal::None:", 1), factory_cpp, factory_h
+    yield "factory mails off-hand", trainer, factory_cpp.replace(
+        "!oldItemGuid.IsEmpty() && !CanEquipUnseenItem(slot, dest, bestItemForSlot)", "false", 1), factory_h
     yield "no source gate on BiS", trainer.replace("(_sources && !_sources->Allows(entry)) ||", "", 1), factory_cpp, factory_h
     yield "index after execute", trainer.replace("facts.sourcesAvailable =", "bool unusedSources =", 1), factory_cpp, factory_h
     hook = between(factory_cpp, "void PlayerbotFactory::InitRandomBotSourceFilter()", "\n}\n")

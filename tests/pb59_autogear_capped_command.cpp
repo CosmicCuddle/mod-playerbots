@@ -2,7 +2,10 @@
 // Drives the same ResolveCommand -> ResolveAutoGearRoute -> PlanExecution -> Execute path the
 // world-thread command uses, against a fake inventory with failure injection.
 // This is a model of the live adapter: it does not prove Worldserver or client gameplay.
+#include <algorithm>
 #include <cstdlib>
+#include <optional>
+#include <stdexcept>
 #include <iostream>
 #include <map>
 #include <string>
@@ -11,6 +14,7 @@
 #include "AutoGearCapCommand.h"
 #include "AutoGearMasterSourceIndex.h"
 #include "AutoGearSlotPolicy.h"
+#include "AutoGearStorageTransaction.h"
 
 namespace
 {
@@ -41,24 +45,49 @@ struct Candidate
     std::uint32_t itemLevel;
 };
 
+constexpr std::uint8_t SlotOffHand = 16;
+
+// Positions for the transaction runner: equipment 0xFF00|slot, bag slot index 0x0100|index.
+constexpr std::uint16_t EquipPos(std::uint8_t slot) { return static_cast<std::uint16_t>(0xFF00u | slot); }
+constexpr std::uint16_t BagPos(std::uint32_t index) { return static_cast<std::uint16_t>(0x0100u | index); }
+
+// How an injected StripToBags move fails.
+enum class MoveFault
+{
+    ReturnFalse,      // refuses before moving
+    Throw,            // throws before moving
+    MoveThenThrow,    // moves the item, then throws
+    ClaimWithoutMove  // reports success without moving
+};
+
 class FakeInventory
 {
 public:
     std::array<ItemFact, EquipmentSlots> equipped{};
-    std::vector<ItemFact> bags;
+    std::map<std::uint32_t, ItemFact> bags;  // bag slot index -> item
     std::uint32_t bagCapacity = 16;
     std::vector<Candidate> catalog;              // factory candidates, any slot
     std::map<std::uint8_t, Candidate> bisTable;  // BiS rows
     std::uint64_t nextGuid = 1000;
 
     // Failure injection.
-    int failMoveAfter = -1;  // the Nth MoveEquippedToBags fails (0-based)
+    bool stripRefuses = false;      // the exact plan cannot be made (stale facts, script hook)
+    bool stripNoSpace = false;      // the exact plan finds too few empty bag slots
+    int failStripMove = -1;         // the Nth forward StripToBags move fails (0-based, across strips)
+    MoveFault fault = MoveFault::ReturnFalse;
+    bool failRollback = false;      // every restore move fails
+    int loseContextAtMove = -1;     // the bot leaves the world before the Nth forward move
+    int replaceBeforeMove = -1;     // a different item takes the source slot before the Nth move
     bool factoryIgnoresCap = false;
+    bool factoryMailsOriginal = false;  // the factory loses one original (Core mail path)
     bool failDestroy = false;
     bool failBisEquip = false;
+    bool failBisRestore = false;
 
     // Observations.
-    int moves = 0;
+    int moves = 0;         // item moves of any kind
+    int stripCalls = 0;
+    int forwardMoves = 0;  // attempted forward strip moves
     int factoryRuns = 0;
     bool lastIncremental = true;
     std::uint32_t lastFactoryCap = 0;
@@ -81,22 +110,109 @@ public:
         for (ItemFact const& item : equipped)
             if (item.guid)
                 snapshot.carried.push_back(item.guid);
-        for (ItemFact const& item : bags)
+        for (auto const& [index, item] : bags)
             snapshot.carried.push_back(item.guid);
-        snapshot.freeBagSlots = bagCapacity - static_cast<std::uint32_t>(bags.size());
+        snapshot.freeBagSlots = FreeBagSlots();
         return snapshot;
     }
 
-    bool MoveEquippedToBags(std::uint8_t slot)
+    std::uint32_t FreeBagSlots() const
     {
-        int const index = moves++;
-        if (!equipped[slot].guid)
-            return true;
-        if (index == failMoveAfter || bags.size() >= bagCapacity)
+        return bags.size() >= bagCapacity ? 0 : bagCapacity - static_cast<std::uint32_t>(bags.size());
+    }
+
+    // Exact, all-or-nothing strip through the real transaction runner. Like PrepareEquipmentStorage
+    // the plan puts the off-hand first and gives every item its own empty bag slot.
+    StripResult StripToBags(std::uint32_t slotMask)
+    {
+        ++stripCalls;
+        if (stripRefuses)
+            return StripResult::Refused;
+        std::vector<std::uint8_t> slots;
+        if (slotMask & (1u << SlotOffHand) && equipped[SlotOffHand].guid)
+            slots.push_back(SlotOffHand);
+        for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+            if (slot != SlotOffHand && (slotMask & (1u << slot)) && IsCombatSlot(slot) && equipped[slot].guid)
+                slots.push_back(slot);
+        if (slots.empty())
+            return StripResult::Refused;
+        std::vector<PlayerbotsAutoGearStorage::ExactMove> plan;
+        std::uint32_t index = 0;
+        for (std::uint8_t slot : slots)
+        {
+            while (index < bagCapacity && bags.count(index))
+                ++index;
+            if (stripNoSpace || index >= bagCapacity)
+                return StripResult::NoSpace;
+            plan.push_back({{equipped[slot].guid, EquipPos(slot), BagPos(index)}, 1, 0});
+            ++index;
+        }
+
+        bool contextLost = false;
+        // Called before each move's preflight: a different item (same slot, new GUID) can appear there.
+        auto contextValid = [&]()
+        {
+            if (replaceBeforeMove >= 0 && forwardMoves == replaceBeforeMove &&
+                static_cast<std::size_t>(replaceBeforeMove) < plan.size())
+            {
+                // Another actor moves the original to a spare bag slot and equips a different item.
+                std::uint8_t const slot = plan[replaceBeforeMove].position.source & 255;
+                std::uint32_t spare = bagCapacity - 1;
+                bags[spare] = equipped[slot];
+                equipped[slot] = {nextGuid++, 999, 1};
+                replaceBeforeMove = -1;
+            }
+            return !contextLost;
+        };
+        auto inspect = [&](std::uint16_t position) -> std::optional<PlayerbotsAutoGearStorage::ExactSlot>
+        {
+            ItemFact const* item = Slot(position);
+            if (!item)
+                return std::nullopt;
+            return PlayerbotsAutoGearStorage::ExactSlot{item->guid, 0, item->guid ? 1u : 0u};
+        };
+        auto moveExact = [&](PlayerbotsAutoGearStorage::ExactMove const& move, bool restore)
+        {
+            if (restore)
+            {
+                if (failRollback)
+                    return false;
+                return Relocate(move.position.destination, move.position.source, move.position.itemGuid);
+            }
+            int const n = forwardMoves++;
+            if (n == loseContextAtMove)
+            {
+                contextLost = true;
+                return false;
+            }
+            if (n != failStripMove)
+                return Relocate(move.position.source, move.position.destination, move.position.itemGuid);
+            switch (fault)
+            {
+                case MoveFault::ReturnFalse:
+                    return false;
+                case MoveFault::Throw:
+                    throw std::runtime_error("injected");
+                case MoveFault::MoveThenThrow:
+                    Relocate(move.position.source, move.position.destination, move.position.itemGuid);
+                    throw std::runtime_error("injected");
+                case MoveFault::ClaimWithoutMove:
+                    return true;
+            }
             return false;
-        bags.push_back(equipped[slot]);
-        equipped[slot] = {};
-        return true;
+        };
+        switch (PlayerbotsAutoGearStorage::Execute(plan, true, inspect, contextValid, moveExact))
+        {
+            case PlayerbotsAutoGearStorage::TransactionStatus::Committed:
+                return StripResult::Done;
+            case PlayerbotsAutoGearStorage::TransactionStatus::RolledBack:
+                return StripResult::Restored;
+            case PlayerbotsAutoGearStorage::TransactionStatus::RecoveryRequired:
+                return StripResult::RecoveryRequired;
+            case PlayerbotsAutoGearStorage::TransactionStatus::Rejected:
+                break;
+        }
+        return StripResult::Refused;
     }
 
     void RunFactory(std::uint32_t /*quality*/, std::uint32_t cap, bool incremental)
@@ -104,6 +220,10 @@ public:
         ++factoryRuns;
         lastIncremental = incremental;
         lastFactoryCap = cap;
+        if (factoryMailsOriginal)
+            for (std::uint64_t guid : originals)
+                if (Remove(guid))
+                    break;
         for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
         {
             if (!IsCombatSlot(slot))
@@ -119,14 +239,14 @@ public:
             {
                 if (!incremental || best->itemLevel <= equipped[slot].itemLevel)
                     continue;
-                if (!MoveEquippedToBags(slot))
+                if (!FactoryMoveToBags(slot))
                     continue;
             }
             equipped[slot] = {nextGuid++, best->entry, best->itemLevel};
         }
     }
 
-    void ApplyBisOverlay(std::uint32_t cap)
+    bool ApplyBisOverlay(std::uint32_t cap)
     {
         ++bisRuns;
         for (auto const& [slot, candidate] : bisTable)
@@ -134,22 +254,25 @@ public:
             if (candidate.itemLevel > cap || equipped[slot].entry == candidate.entry)
                 continue;
             ItemFact const previous = equipped[slot];
-            if (previous.guid && !MoveEquippedToBags(slot))
+            if (previous.guid && StripToBags(1u << slot) != StripResult::Done)
                 continue;
             if (failBisEquip)
             {
-                // Restore the previous item from the bags.
+                if (failBisRestore)
+                    return false;  // the previous item stays in the bags
                 for (auto it = bags.begin(); it != bags.end(); ++it)
-                    if (it->guid == previous.guid)
+                    if (it->second.guid == previous.guid)
                     {
-                        equipped[slot] = *it;
+                        equipped[slot] = it->second;
                         bags.erase(it);
+                        ++moves;
                         break;
                     }
                 continue;
             }
             equipped[slot] = {nextGuid++, candidate.entry, candidate.itemLevel};
         }
+        return true;
     }
 
     void ApplyFinishers(std::uint32_t /*cap*/) { ++finisherRuns; }
@@ -188,14 +311,79 @@ public:
             bool found = false;
             for (ItemFact const& item : equipped)
                 found = found || item.guid == guid;
-            for (ItemFact const& item : bags)
+            for (auto const& [index, item] : bags)
                 found = found || item.guid == guid;
             count += found ? 1 : 0;
         }
         return count;
     }
 
-    bool Untouched() const { return moves == 0 && factoryRuns == 0 && bisRuns == 0 && finisherRuns == 0; }
+private:
+    // Nullptr for a position that does not exist (unknown, never "empty").
+    ItemFact* Slot(std::uint16_t position)
+    {
+        static ItemFact empty;
+        empty = {};
+        if ((position >> 8) == 0xFF)
+            return (position & 255) < EquipmentSlots ? &equipped[position & 255] : nullptr;
+        std::uint32_t const index = position & 255;
+        if ((position >> 8) != 0x01 || index >= bagCapacity)
+            return nullptr;
+        auto it = bags.find(index);
+        return it == bags.end() ? &empty : &it->second;
+    }
+
+    // Identity-checked move into an empty position; never merges or overwrites.
+    bool Relocate(std::uint16_t from, std::uint16_t to, std::uint64_t guid)
+    {
+        ItemFact* source = Slot(from);
+        ItemFact* target = Slot(to);
+        if (!source || !target || source->guid != guid || target->guid)
+            return false;
+        ItemFact const item = *source;
+        if ((from >> 8) == 0xFF)
+            equipped[from & 255] = {};
+        else
+            bags.erase(from & 255);
+        if ((to >> 8) == 0xFF)
+            equipped[to & 255] = item;
+        else
+            bags[to & 255] = item;
+        ++moves;
+        return true;
+    }
+
+    // The factory's own per-slot replacement (incremental forms): first empty bag slot.
+    bool FactoryMoveToBags(std::uint8_t slot)
+    {
+        for (std::uint32_t index = 0; index < bagCapacity; ++index)
+            if (!bags.count(index))
+                return Relocate(EquipPos(slot), BagPos(index), equipped[slot].guid);
+        return false;
+    }
+
+    bool Remove(std::uint64_t guid)
+    {
+        for (ItemFact& item : equipped)
+            if (item.guid == guid)
+            {
+                item = {};
+                return true;
+            }
+        for (auto it = bags.begin(); it != bags.end(); ++it)
+            if (it->second.guid == guid)
+            {
+                bags.erase(it);
+                return true;
+            }
+        return false;
+    }
+
+public:
+    bool Untouched() const
+    {
+        return moves == 0 && forwardMoves == 0 && factoryRuns == 0 && bisRuns == 0 && finisherRuns == 0;
+    }
 };
 
 FakeInventory StandardInventory()
@@ -520,21 +708,6 @@ void TestFailureInjection()
         Check(!run.outcome.ran && run.outcome.refusal == Refusal::BagsFull, "full bags refuse reset");
         Check(inventory.Untouched() && inventory.equipped[0].entry == 900, "full bags leave gear equipped");
     }
-    // A move fails part way: moved items stay in bags, the factory never runs.
-    {
-        FakeInventory inventory = StandardInventory();
-        inventory.Equip(0, 900, 60);
-        inventory.Equip(4, 901, 60);
-        inventory.Equip(6, 903, 60);
-        inventory.failMoveAfter = 1;
-        CommandFacts facts = MaxLevelSender(1);
-        facts.argument = "reset";
-        Run const run = Execute(facts, inventory);
-        Check(!run.outcome.ran && run.outcome.refusal == Refusal::StripFailed && run.outcome.stripped == 1,
-              "mid-strip failure is classified, not reported as rollback");
-        Check(inventory.factoryRuns == 0, "no gearing after a failed strip");
-        Check(inventory.OwnedOriginalsStillCarried() == 3, "mid-strip failure loses nothing");
-    }
     // Factory creates an over-cap item: it is revoked, originals untouched.
     {
         FakeInventory inventory = StandardInventory();
@@ -822,6 +995,207 @@ void TestBagAccounting()
     Check(run.outcome.ran && run.outcome.stripped == 17, "all 17 over-cap combat items stripped");
     Check(inventory.OwnedOriginalsStillCarried() == 17, "all 17 originals are in the bags");
 }
+
+// Three equipped originals (head, chest, off-hand) on a random bot, reset form: everything is stripped.
+FakeInventory ThreeOriginals(std::uint32_t capacity = 16)
+{
+    FakeInventory inventory = StandardInventory();
+    inventory.bagCapacity = capacity;
+    inventory.Equip(0, 900, 60);
+    inventory.Equip(4, 901, 60);
+    inventory.Equip(SlotOffHand, 902, 60);
+    return inventory;
+}
+
+CommandFacts ResetFacts()
+{
+    CommandFacts facts = MaxLevelSender(1);
+    facts.argument = "reset";
+    return facts;
+}
+
+bool SameEquipped(FakeInventory const& inventory, std::array<ItemFact, EquipmentSlots> const& before)
+{
+    for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+        if (inventory.equipped[slot].guid != before[slot].guid)
+            return false;
+    return true;
+}
+
+// CS01 #52 7118592534 / gate A04: a multi-item strip is all-or-nothing at every failure position.
+void TestStripFailurePositions()
+{
+    for (MoveFault fault :
+         {MoveFault::ReturnFalse, MoveFault::Throw, MoveFault::MoveThenThrow, MoveFault::ClaimWithoutMove})
+        for (int position = 0; position < 3; ++position)
+        {
+            std::string const name =
+                "fault " + std::to_string(static_cast<int>(fault)) + " at move " + std::to_string(position);
+            FakeInventory inventory = ThreeOriginals();
+            auto const before = inventory.equipped;
+            inventory.failStripMove = position;
+            inventory.fault = fault;
+            Run const run = Execute(ResetFacts(), inventory);
+            // Once a move was attempted the runner reports a proven rollback, even if nothing moved.
+            Check(!run.outcome.ran && run.outcome.refusal == Refusal::StripRestored && !run.outcome.Succeeded(),
+                  name + ": refused and rolled back");
+            Check(SameEquipped(inventory, before) && inventory.bags.empty(),
+                  name + ": every original is back in its own slot");
+            Check(inventory.factoryRuns == 0 && inventory.bisRuns == 0 && inventory.finisherRuns == 0,
+                  name + ": no gearing after a failed strip");
+            Check(inventory.OwnedOriginalsStillCarried() == 3 && inventory.destroyed == 0,
+                  name + ": nothing lost or destroyed");
+        }
+    // The rollback itself fails: reported as recovery, items stay owned, nothing is destroyed.
+    for (int position = 1; position < 3; ++position)
+    {
+        FakeInventory inventory = ThreeOriginals();
+        inventory.failStripMove = position;
+        inventory.failRollback = true;
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::RecoveryRequired,
+              "failed rollback at move " + std::to_string(position) + " needs recovery");
+        Check(inventory.factoryRuns == 0 && inventory.OwnedOriginalsStillCarried() == 3 && inventory.destroyed == 0,
+              "failed rollback at move " + std::to_string(position) + " still loses nothing");
+    }
+    // The bot leaves the world mid-strip: no restore may run without the bot context.
+    {
+        FakeInventory inventory = ThreeOriginals();
+        inventory.loseContextAtMove = 1;
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::RecoveryRequired,
+              "lost bot context mid-strip needs recovery");
+        Check(inventory.factoryRuns == 0 && inventory.OwnedOriginalsStillCarried() == 3,
+              "lost bot context loses nothing");
+    }
+    // Same slot, different item (GUID changed) before the second move: detected, first move undone.
+    {
+        FakeInventory inventory = ThreeOriginals();
+        inventory.replaceBeforeMove = 1;
+        Run const run = Execute(ResetFacts(), inventory);
+        // The runner undoes its own move but cannot prove the original state: another actor changed
+        // a planned slot, so it reports recovery instead of a rollback.
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::RecoveryRequired,
+              "a replaced item in a planned slot is detected and reported for recovery");
+        Check(inventory.equipped[SlotOffHand].entry == 902, "replaced item: the first move was undone");
+        Check(inventory.factoryRuns == 0 && inventory.OwnedOriginalsStillCarried() == 3,
+              "replaced item: the originals are all still owned");
+    }
+    // Exact planning finds no room (bag became full or a destination is not empty).
+    {
+        FakeInventory inventory = ThreeOriginals();
+        auto const before = inventory.equipped;
+        inventory.stripNoSpace = true;
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::BagsFull && SameEquipped(inventory, before) &&
+                  inventory.moves == 0,
+              "no exact destination: bags full, nothing moved");
+    }
+    // Planning refused (stale facts, script hook): nothing moved.
+    {
+        FakeInventory inventory = ThreeOriginals();
+        auto const before = inventory.equipped;
+        inventory.stripRefuses = true;
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::StripRefused && SameEquipped(inventory, before) &&
+                  inventory.moves == 0,
+              "refused plan: nothing moved");
+    }
+    // Exactly enough bag slots: the strip succeeds and every item has its own slot.
+    {
+        FakeInventory inventory = ThreeOriginals(3);
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(run.outcome.ran && run.outcome.stripped == 3 && inventory.stripCalls == 1,
+              "three items into exactly three bag slots in one strip");
+        Check(inventory.OwnedOriginalsStillCarried() == 3, "exact fit keeps every original");
+    }
+    // One slot short: refused before any move.
+    {
+        FakeInventory inventory = ThreeOriginals(2);
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::BagsFull && inventory.moves == 0 &&
+                  inventory.stripCalls == 0,
+              "one bag slot short refuses before the strip");
+    }
+}
+
+// Gate A06: success is reported only when it is true; owned items never leave silently.
+void TestOutcomeTruthfulness()
+{
+    {
+        FakeInventory inventory = ThreeOriginals();
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(run.outcome.Succeeded(), "a clean reset succeeds");
+    }
+    // The factory loses an original (Core's off-hand mail path): recovery, not success.
+    {
+        FakeInventory inventory = StandardInventory();
+        inventory.Equip(SlotOffHand, 902, 60);
+        inventory.factoryMailsOriginal = true;
+        Run const run = Execute(MaxLevelSender(1), inventory);
+        Check(run.outcome.ran && run.outcome.ownedMissing == 1 && run.outcome.refusal == Refusal::RecoveryRequired &&
+                  !run.outcome.Succeeded(),
+              "an original that left the inventory is reported, never success");
+    }
+    // A BiS restore failure leaves the replaced item in the bags and stops the finishers.
+    {
+        FakeInventory inventory = StandardInventory();
+        inventory.catalog = {{101, 50}};
+        inventory.bisTable[0] = {777, 70};
+        inventory.failBisEquip = true;
+        inventory.failBisRestore = true;
+        CommandFacts facts = MaxLevelSender(1);
+        facts.bis = true;
+        Run const run = Execute(facts, inventory);
+        Check(run.outcome.ran && run.outcome.bisRestoreFailed && run.outcome.refusal == Refusal::RecoveryRequired &&
+                  !run.outcome.Succeeded(),
+              "a failed BiS restore needs recovery");
+        Check(inventory.finisherRuns == 0, "no finishers after a failed BiS restore");
+        bool inBags = false;
+        for (auto const& [index, item] : inventory.bags)
+            inBags = inBags || item.entry == 101;
+        Check(inBags, "the replaced factory item is still in the bags");
+    }
+    // Cap broken (revocation failed): ran, but not success.
+    {
+        FakeInventory inventory = StandardInventory();
+        inventory.factoryIgnoresCap = true;
+        inventory.failDestroy = true;
+        Run const run = Execute(MaxLevelSender(0), inventory);
+        Check(run.outcome.ran && run.outcome.refusal == Refusal::None && !run.outcome.capHeld &&
+                  !run.outcome.Succeeded(),
+              "a broken cap is never reported as success");
+    }
+}
+
+// Gate A07: an alt bot's own gear is never stripped, moved or destroyed, at any cap.
+void TestAltBotIsolation()
+{
+    for (char const* argument : {"", "match", "blue", "70"})
+    {
+        FakeInventory inventory = StandardInventory();
+        inventory.Equip(0, 900, 92);
+        inventory.Equip(4, 901, 60);
+        inventory.Equip(SlotOffHand, 902, 120);
+        auto const before = inventory.equipped;
+        CommandFacts facts = MaxLevelSender(1);
+        facts.randomBot = false;
+        facts.randomAccount = false;
+        facts.argument = argument;
+        Run const run = Execute(facts, inventory);
+        std::string const name = std::string("alt bot autogear '") + argument + "'";
+        Check(run.outcome.ran && inventory.stripCalls == 0 && run.outcome.stripped == 0, name + ": no strip");
+        // The factory may still upgrade a slot (the old item goes to the bags), but over-cap gear
+        // stays where it is and nothing the alt owns is lost or destroyed.
+        Check(inventory.equipped[0].guid == before[0].guid &&
+                  inventory.equipped[SlotOffHand].guid == before[SlotOffHand].guid,
+              name + ": over-cap gear stays in its own slots");
+        Check(inventory.OwnedOriginalsStillCarried() == 3 && inventory.originalsDestroyed == 0 &&
+                  run.outcome.ownedMissing == 0,
+              name + ": nothing it owns is lost or destroyed");
+        Check(run.outcome.retainedOverCap == 2, name + ": both over-cap items retained");
+    }
+}
 }  // namespace
 
 // CS01 #52 Part 28: without the raid source index nothing changes, before any strip or gearing.
@@ -888,6 +1262,9 @@ int main()
     TestSourceIndexTierLift();
     TestConfigTables();
     TestSourcesUnavailable();
+    TestStripFailurePositions();
+    TestOutcomeTruthfulness();
+    TestAltBotIsolation();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }

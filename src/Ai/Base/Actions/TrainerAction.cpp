@@ -11,6 +11,7 @@
 #include "AutoGearProgressionCap.h"
 #include "AutoGearSourceAccess.h"
 #include "AutoGearSourceIndexStore.h"
+#include "AutoGearStorageTransaction.h"
 #include "AutoGearSlotPolicy.h"
 #include "BisListMgr.h"
 #include "BudgetValues.h"
@@ -689,18 +690,87 @@ namespace
             return snapshot;
         }
 
-        bool MoveEquippedToBags(uint8 slot)
+        // Every masked equipped item to its own reserved empty bag slot, or none (coordination #52
+        // 7118646677, gates A03/A04). The plan comes from PlayerbotFactory::PrepareEquipmentStorage
+        // (exact destinations and bag GUIDs, re-checked after every script hook, off-hand first); the
+        // moves run through PlayerbotsAutoGearStorage::Execute, which checks exact slot facts before and
+        // after every move and undoes earlier moves in reverse order if one fails. Equipment never
+        // stacks, so Core's public RemoveItem/StoreItem/EquipItem to one pre-checked position is an exact
+        // move; the returned item must be the same object.
+        PlayerbotsAutoGearExec::StripResult StripToBags(uint32 slotMask)
         {
-            Item* item = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-            if (!item)
-                return true;
-            ItemPosCountVec dest;
-            if (_bot->CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) != EQUIP_ERR_OK ||
-                _bot->CanUnequipItem((INVENTORY_SLOT_BAG_0 << 8) | slot, false) != EQUIP_ERR_OK)
-                return false;
-            _bot->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
-            _bot->StoreItem(dest, item, true);
-            return !_bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            using PlayerbotsAutoGearExec::StripResult;
+#if !__has_include("PB59InventorySlotFacts.h")
+            (void)slotMask;
+            return StripResult::Refused;
+#else
+            std::vector<PlayerbotFactory::EquipmentStorageMove> plan;
+            InventoryResult const prepared = PlayerbotFactory::PrepareEquipmentStorage(_bot, plan, slotMask);
+            if (prepared == EQUIP_ERR_INVENTORY_FULL)
+                return StripResult::NoSpace;
+            if (prepared != EQUIP_ERR_OK || plan.empty())
+                return StripResult::Refused;
+
+            std::vector<PlayerbotsAutoGearStorage::ExactMove> moves;
+            for (auto const& move : plan)
+                moves.push_back({{move.itemGuid.GetRawValue(), move.source, move.destination},
+                                 move.count,
+                                 move.destinationBagGuid.GetRawValue()});
+
+            WorldSession* const session = _bot->GetSession();
+            auto inspect = [&](uint16 position) -> std::optional<PlayerbotsAutoGearStorage::ExactSlot>
+            {
+                auto facts = _bot->CapturePB59InventorySlot(position);
+                if (!facts)
+                    return std::nullopt;
+                return PlayerbotsAutoGearStorage::ExactSlot{facts->item ? facts->item->guid : 0, facts->bag,
+                                                            facts->item ? facts->item->count : 0};
+            };
+            auto contextValid = [&]()
+            { return _bot->IsInWorld() && _bot->GetSession() == session && session && !session->PlayerLogout(); };
+            auto moveExact = [&](PlayerbotsAutoGearStorage::ExactMove const& move, bool restore)
+            {
+                uint16 const from = restore ? move.position.destination : move.position.source;
+                uint16 const to = restore ? move.position.source : move.position.destination;
+                Item* item = _bot->GetItemByPos(from);
+                if (!item || item->GetGUID().GetRawValue() != move.position.itemGuid || item->GetCount() != move.count)
+                    return false;
+                if (restore)
+                {
+                    uint16 dest = 0;
+                    if (_bot->CanEquipItem(to & 255, dest, item, false) != EQUIP_ERR_OK || dest != to)
+                        return false;
+                    _bot->RemoveItem(from >> 8, from & 255, true);
+                    return _bot->EquipItem(dest, item, true) == item;
+                }
+                // The unequip check runs a script hook: never reuse the pointer across it.
+                if (_bot->CanUnequipItem(from, false) != EQUIP_ERR_OK)
+                    return false;
+                item = _bot->GetItemByPos(from);
+                if (!item || item->GetGUID().GetRawValue() != move.position.itemGuid)
+                    return false;
+                ItemPosCountVec dest;
+                if (_bot->CanStoreItem(to >> 8, to & 255, dest, item, false) != EQUIP_ERR_OK || dest.size() != 1 ||
+                    dest.front().pos != to || dest.front().count != move.count)
+                    return false;
+                _bot->RemoveItem(from >> 8, from & 255, true);
+                return _bot->StoreItem(dest, item, true) == item;
+            };
+
+            switch (
+                PlayerbotsAutoGearStorage::Execute(moves, /*admittedFinalB*/ true, inspect, contextValid, moveExact))
+            {
+                case PlayerbotsAutoGearStorage::TransactionStatus::Committed:
+                    return StripResult::Done;
+                case PlayerbotsAutoGearStorage::TransactionStatus::RolledBack:
+                    return StripResult::Restored;
+                case PlayerbotsAutoGearStorage::TransactionStatus::RecoveryRequired:
+                    return StripResult::RecoveryRequired;
+                case PlayerbotsAutoGearStorage::TransactionStatus::Rejected:
+                    break;
+            }
+            return StripResult::Refused;
+#endif
         }
 
         void RunFactory(uint32 quality, uint32 cap, bool incremental)
@@ -710,7 +780,8 @@ namespace
                                        /*applyFinishers*/ false, cap, _sources);
         }
 
-        void ApplyBisOverlay(uint32 cap)
+        // False when a replaced item could not be put back: it stays in the bags and the caller stops.
+        bool ApplyBisOverlay(uint32 cap)
         {
             uint8 const cls = _bot->getClass();
             uint8 const tab = AiFactory::GetPlayerSpecTab(_bot);
@@ -738,17 +809,19 @@ namespace
                 if (_bot->CanEquipNewItem(slot, dest, entry, true) != EQUIP_ERR_OK)
                     continue;
                 ObjectGuid const previous = current ? current->GetGUID() : ObjectGuid::Empty;
-                if (current && !MoveEquippedToBags(slot))
+                if (current && StripToBags(1u << slot) != PlayerbotsAutoGearExec::StripResult::Done)
                     continue;
                 if (_bot->CanEquipNewItem(slot, dest, entry, false) != EQUIP_ERR_OK ||
                     !_bot->EquipNewItem(dest, entry, true))
                 {
-                    if (!previous.IsEmpty())
-                        RestoreToSlot(previous, slot);
+                    if (!previous.IsEmpty() && !RestoreToSlot(previous, slot))
+                        return false;
                     continue;
                 }
+                // CanEquipNewItem already required room for a displaced off-hand, so this stores it.
                 _bot->AutoUnequipOffhandIfNeed();
             }
+            return true;
         }
 
         void ApplyFinishers(uint32 cap)
@@ -771,15 +844,19 @@ namespace
         }
 
     private:
-        void RestoreToSlot(ObjectGuid guid, uint8 slot)
+        // True only if exactly that item is back in the slot.
+        bool RestoreToSlot(ObjectGuid guid, uint8 slot)
         {
             Item* item = _bot->GetItemByGuid(guid);
             uint16 dest = 0;
             if (!item || _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) ||
                 _bot->CanEquipItem(slot, dest, item, false) != EQUIP_ERR_OK)
-                return;
+                return false;
             _bot->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
-            _bot->EquipItem(dest, item, true);
+            if (_bot->EquipItem(dest, item, true) != item)
+                return false;
+            Item* restored = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            return restored && restored->GetGUID() == guid;
         }
 
         Player* _bot;
@@ -805,10 +882,20 @@ namespace
             case Refusal::BagsFull:
                 return PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "autogear_ip_bags_full_error", "My bags are too full to take off my gear first.", {});
-            case Refusal::StripFailed:
+            case Refusal::StripRefused:
                 return PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                    "autogear_ip_strip_failed_error",
-                    "I couldn't take off all my gear, so I stopped. Nothing was destroyed.", {});
+                    "autogear_ip_strip_refused_error",
+                    "Something about my gear or bags changed, so I didn't touch anything.", {});
+            case Refusal::StripRestored:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_strip_restored_error",
+                    "I couldn't take off all my gear, so I put everything back as it was.", {});
+            case Refusal::RecoveryRequired:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_recovery_error",
+                    "Something went wrong with my gear and not everything is where it was. Nothing was destroyed; "
+                    "please check my bags and equipment.",
+                    {});
             case Refusal::SourcesUnavailable:
                 return PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "autogear_ip_sources_error",
@@ -898,19 +985,31 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     PlayerbotsAutoGearExec::Outcome const outcome = PlayerbotsAutoGearExec::Execute(inventory, plan);
 
     LOG_INFO("playerbots",
-        "PB59 AutoGear bot={} sender={} raw={} effective={} authority={} cap={} form={} refusal={} ran={} "
-        "stripped={} new={} revoked={} capHeld={}",
-        bot->GetGUID().ToString(), sender->GetGUID().ToString(), request.rawStage, request.effectiveStage,
-        request.progressionContextVerified, decision.cap, static_cast<uint32>(decision.form),
-        static_cast<uint32>(outcome.refusal), outcome.ran, outcome.stripped, outcome.newItems, outcome.revoked,
-        outcome.capHeld);
+             "PB59 AutoGear bot={} sender={} raw={} effective={} authority={} cap={} form={} refusal={} ran={} "
+             "stripped={} new={} revoked={} capHeld={} bisRestoreFailed={} ownedMissing={}",
+             bot->GetGUID().ToString(), sender->GetGUID().ToString(), request.rawStage, request.effectiveStage,
+             request.progressionContextVerified, decision.cap, static_cast<uint32>(decision.form),
+             static_cast<uint32>(outcome.refusal), outcome.ran, outcome.stripped, outcome.newItems, outcome.revoked,
+             outcome.capHeld, outcome.bisRestoreFailed, outcome.ownedMissing);
     if (outcome.ran && !outcome.capHeld)
         LOG_ERROR("playerbots", "PB59 AutoGear bot={} kept a new item above cap {}", bot->GetGUID().ToString(),
             plan.cap);
+    if (outcome.refusal == PlayerbotsAutoGearExec::Refusal::RecoveryRequired)
+        LOG_ERROR("playerbots",
+                  "PB59 AutoGear bot={} needs recovery: stripRecovery={} bisRestoreFailed={} ownedMissing={}",
+                  bot->GetGUID().ToString(), !outcome.ran, outcome.bisRestoreFailed, outcome.ownedMissing);
 
-    if (!outcome.ran)
+    // Success is whispered only when gearing ran, the cap held and nothing needs recovery
+    // (coordination #52 7118646677, gate A06).
+    if (!outcome.Succeeded())
     {
-        ai->Whisper(RefusalText(outcome.refusal), sender->GetName());
+        if (outcome.ran && outcome.refusal == PlayerbotsAutoGearExec::Refusal::None)
+            ai->Whisper(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                            "autogear_ip_cap_error",
+                            "I couldn't keep my new gear under your progression limit. Please check my gear.", {}),
+                        sender->GetName());
+        else
+            ai->Whisper(RefusalText(outcome.refusal), sender->GetName());
         return false;
     }
     std::map<std::string, std::string> phs;
