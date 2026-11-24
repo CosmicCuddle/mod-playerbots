@@ -51,6 +51,16 @@ constexpr std::uint8_t SlotOffHand = 16;
 constexpr std::uint16_t EquipPos(std::uint8_t slot) { return static_cast<std::uint16_t>(0xFF00u | slot); }
 constexpr std::uint16_t BagPos(std::uint32_t index) { return static_cast<std::uint16_t>(0x0100u | index); }
 
+// What CanUnequipItem's script hook does while a strip is planned and validated (Grok F1).
+enum class PlanHook
+{
+    None,
+    AddsItem,        // puts a new item into a free bag slot; the plan stays valid
+    TakesPlanned,    // takes away an item that was planned to move
+    Logout,          // the bot starts logging out
+    TakesAndBlocks   // takes away a planned item and the plan is then refused
+};
+
 // How an injected StripToBags move fails.
 enum class MoveFault
 {
@@ -72,6 +82,8 @@ public:
 
     // Failure injection.
     bool stripRefuses = false;      // the exact plan cannot be made (stale facts, script hook)
+    PlanHook planHook = PlanHook::None;  // what the unequip hook does while the strip is planned
+    bool loggedOut = false;
     bool stripNoSpace = false;      // the exact plan finds too few empty bag slots
     int failStripMove = -1;         // the Nth forward StripToBags move fails (0-based, across strips)
     MoveFault fault = MoveFault::ReturnFalse;
@@ -126,7 +138,41 @@ public:
     StripResult StripToBags(std::uint32_t slotMask)
     {
         ++stripCalls;
-        if (stripRefuses)
+        // Like the adapter: "nothing changed" only if the whole inventory and context are unchanged
+        // across planning, whose unequip checks run script hooks.
+        auto fingerprint = [&]()
+        {
+            std::vector<std::uint64_t> print{loggedOut ? 1u : 0u};
+            for (ItemFact const& item : equipped)
+                print.push_back(item.guid);
+            for (auto const& [index, item] : bags)
+                print.insert(print.end(), {index + 1u, item.guid});
+            return print;
+        };
+        auto const before = fingerprint();
+        switch (planHook)
+        {
+            case PlanHook::None:
+                break;
+            case PlanHook::AddsItem:
+                bags[bagCapacity - 1] = {nextGuid++, 998, 1};
+                break;
+            case PlanHook::TakesPlanned:
+            case PlanHook::TakesAndBlocks:
+                for (ItemFact& item : equipped)
+                    if (item.guid)
+                    {
+                        item = {};
+                        break;
+                    }
+                break;
+            case PlanHook::Logout:
+                loggedOut = true;
+                break;
+        }
+        if (fingerprint() != before)
+            return StripResult::RecoveryRequired;
+        if (stripRefuses || planHook == PlanHook::TakesAndBlocks)
             return StripResult::Refused;
         std::vector<std::uint8_t> slots;
         if (slotMask & (1u << SlotOffHand) && equipped[SlotOffHand].guid)
@@ -162,7 +208,7 @@ public:
                 equipped[slot] = {nextGuid++, 999, 1};
                 replaceBeforeMove = -1;
             }
-            return !contextLost;
+            return !contextLost && !loggedOut;
         };
         auto inspect = [&](std::uint16_t position) -> std::optional<PlayerbotsAutoGearStorage::ExactSlot>
         {
@@ -254,8 +300,14 @@ public:
             if (candidate.itemLevel > cap || equipped[slot].entry == candidate.entry)
                 continue;
             ItemFact const previous = equipped[slot];
-            if (previous.guid && StripToBags(1u << slot) != StripResult::Done)
-                continue;
+            if (previous.guid)
+            {
+                StripResult const strip = StripToBags(1u << slot);
+                if (strip == StripResult::RecoveryRequired)
+                    return false;
+                if (strip != StripResult::Done)
+                    continue;
+            }
             if (failBisEquip)
             {
                 if (failBisRestore)
@@ -1119,6 +1171,51 @@ void TestStripFailurePositions()
     }
 }
 
+// Grok F1 (#52 7130945923): a script hook that changes the inventory or the bot's context while the
+// strip is planned or validated is never reported as "nothing changed", even though nothing of ours moved.
+void TestPlanHookChanges()
+{
+    struct Case
+    {
+        PlanHook hook;
+        char const* name;
+    };
+    for (Case const c : {Case{PlanHook::AddsItem, "hook adds an item, plan still valid"},
+                         Case{PlanHook::TakesPlanned, "hook takes a planned item"},
+                         Case{PlanHook::Logout, "hook starts a logout"},
+                         Case{PlanHook::TakesAndBlocks, "hook takes an item and the plan is refused"}})
+    {
+        FakeInventory inventory = ThreeOriginals();
+        inventory.planHook = c.hook;
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::RecoveryRequired && !run.outcome.Succeeded(),
+              std::string(c.name) + ": recovery, not refused");
+        Check(inventory.forwardMoves == 0 && inventory.factoryRuns == 0 && inventory.destroyed == 0,
+              std::string(c.name) + ": nothing of ours moved, no gearing");
+    }
+    // A hook that changes nothing keeps the truthful refusal.
+    {
+        FakeInventory inventory = ThreeOriginals();
+        inventory.stripRefuses = true;
+        Run const run = Execute(ResetFacts(), inventory);
+        Check(run.outcome.refusal == Refusal::StripRefused, "unchanged inventory keeps the plain refusal");
+    }
+    // A hook change during a BiS swap's one-slot strip stops the run as a recovery.
+    {
+        FakeInventory inventory = StandardInventory();
+        inventory.catalog = {{101, 50}};
+        inventory.bisTable[0] = {777, 70};
+        inventory.planHook = PlanHook::AddsItem;
+        CommandFacts facts = MaxLevelSender(1);
+        facts.bis = true;
+        Run const run = Execute(facts, inventory);
+        Check(run.outcome.ran && run.outcome.refusal == Refusal::RecoveryRequired && !run.outcome.Succeeded(),
+              "BiS one-slot strip with a hook change stops the run as a recovery");
+        Check(inventory.equipped[0].entry == 101 && inventory.finisherRuns == 0,
+              "BiS hook change: the factory pick stays and no finishers run");
+    }
+}
+
 // Gate A06: success is reported only when it is true; owned items never leave silently.
 void TestOutcomeTruthfulness()
 {
@@ -1263,6 +1360,7 @@ int main()
     TestConfigTables();
     TestSourcesUnavailable();
     TestStripFailurePositions();
+    TestPlanHookChanges();
     TestOutcomeTruthfulness();
     TestAltBotIsolation();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
