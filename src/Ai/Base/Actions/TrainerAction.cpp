@@ -5,14 +5,21 @@
  */
 
 #include "TrainerAction.h"
+
+#include <limits>
+#include <optional>
+#include <span>
+#include <unordered_set>
+#include <vector>
+
 #include "AiFactory.h"
 #include "AutoGearCapCommand.h"
 #include "AutoGearCommandRoute.h"
+#include "AutoGearCoreBatchRequest.h"
 #include "AutoGearProgressionCap.h"
+#include "AutoGearSlotPolicy.h"
 #include "AutoGearSourceAccess.h"
 #include "AutoGearSourceIndexStore.h"
-#include "AutoGearStorageTransaction.h"
-#include "AutoGearSlotPolicy.h"
 #include "BisListMgr.h"
 #include "BudgetValues.h"
 #include "Config.h"
@@ -22,12 +29,16 @@
 #include "Playerbots.h"
 #include "ReputationMgr.h"
 #include "ScriptMgr.h"
-#include "WorldSession.h"
 #include "Trainer.h"
-#include <limits>
-#include <optional>
-#include <unordered_set>
-#include <vector>
+#include "WorldSession.h"
+
+// Core's batch inventory executor (Core PR74 API v1). Without it the capped AutoGear command moves no item the
+// bot owns: there is no fallback to public inventory helpers (coordination #52 7130978738, Layer 2).
+#if defined(COSMIC_PB59_INVENTORY_BATCH_API_VERSION) && COSMIC_PB59_INVENTORY_BATCH_API_VERSION == 1
+#define PB59_AUTOGEAR_CORE_BATCH 1
+#else
+#define PB59_AUTOGEAR_CORE_BATCH 0
+#endif
 
 namespace
 {
@@ -692,21 +703,15 @@ namespace
             return snapshot;
         }
 
-        // Every masked equipped item to its own reserved empty bag slot, or none (coordination #52
-        // 7118646677, gates A03/A04). The plan comes from PlayerbotFactory::PrepareEquipmentStorage
-        // (exact destinations and bag GUIDs, re-checked after every script hook, off-hand first); the
-        // moves run through PlayerbotsAutoGearStorage::Execute, which checks exact slot facts before and
-        // after every move and undoes earlier moves in reverse order if one fails. Equipment never
-        // stacks, so Core's public RemoveItem/StoreItem/EquipItem to one pre-checked position is an exact
-        // move; the returned item must be the same object.
+        // Every masked equipped item to its own empty slot in the backpack or a general-purpose bag, off-hand
+        // first, through Core's batch executor (Core PR74 API v1, coordination #51 7134116129). Core runs the
+        // native checks and script hooks, moves the items exactly, and restores them in reverse order if a move
+        // fails. Playerbots plans without calling any script hook and never moves an owned item itself:
+        // without the executor the strip refuses (no fallback, #52 7130978738 Layer 2).
         PlayerbotsAutoGearExec::StripResult StripToBags(uint32 slotMask)
         {
             using PlayerbotsAutoGearExec::StripResult;
-#if !__has_include("PB59InventorySlotFacts.h")
-            (void)slotMask;
-            return StripResult::Refused;
-#else
-            // A script hook could start another strip of this bot while one is running.
+            // A script hook inside Core's executor could start another strip of this bot.
             if (_stripping)
                 return StripResult::Refused;
             _stripping = true;
@@ -715,114 +720,86 @@ namespace
                 bool& flag;
                 ~Reset() { flag = false; }
             } const reset{_stripping};
+#if !PB59_AUTOGEAR_CORE_BATCH
+            (void)slotMask;
+            return StripResult::Refused;
+#else
+            std::vector<uint8> slots;
+            if (slotMask & (1u << EQUIPMENT_SLOT_OFFHAND))
+                slots.push_back(EQUIPMENT_SLOT_OFFHAND);
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+                if (slot != EQUIPMENT_SLOT_OFFHAND && slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD &&
+                    (slotMask & (1u << slot)))
+                    slots.push_back(slot);
 
-            // Planning and validation run CanUnequipItem, whose script hook can change anything. Nothing of
-            // ours has moved before the transaction, so "nothing changed" (Refused, NoSpace) is reported only
-            // if the whole inventory and the bot's context are proven unchanged; otherwise recovery is needed
-            // (coordination #52 7130720231 point 2, Grok F1). A hook change that leaves the plan valid still
-            // stops the strip: nothing is moved on top of changes we did not make.
-            auto const before = Fingerprint();
-            if (!before)
-                return StripResult::Refused;
-            auto unchanged = [&]()
+            std::vector<PlayerbotsAutoGearCoreBatch::PlannedMove> plan;
+            std::vector<PB59::InventorySlotFacts> sources;
+            for (uint8 slot : slots)
             {
-                auto const after = Fingerprint();
-                return after && *after == *before;
-            };
-            std::vector<PlayerbotFactory::EquipmentStorageMove> plan;
-            InventoryResult const prepared = PlayerbotFactory::PrepareEquipmentStorage(_bot, plan, slotMask);
-            if (!unchanged())
-                return StripResult::RecoveryRequired;
-            if (prepared == EQUIP_ERR_INVENTORY_FULL)
-                return StripResult::NoSpace;
-            if (prepared != EQUIP_ERR_OK || plan.empty())
-                return StripResult::Refused;
-
-            std::vector<PlayerbotsAutoGearStorage::ExactMove> moves;
-            for (auto const& move : plan)
-                moves.push_back({{move.itemGuid.GetRawValue(), move.source, move.destination},
-                                 move.count,
-                                 move.destinationBagGuid.GetRawValue()});
-
-            WorldSession* const session = _bot->GetSession();
-            auto inspect = [&](uint16 position) -> std::optional<PlayerbotsAutoGearStorage::ExactSlot>
-            {
+                uint16 const position = (uint16(INVENTORY_SLOT_BAG_0) << 8) | slot;
                 auto facts = _bot->CapturePB59InventorySlot(position);
                 if (!facts)
-                    return std::nullopt;
-                return PlayerbotsAutoGearStorage::ExactSlot{facts->item ? facts->item->guid : 0, facts->bag,
-                                                            facts->item ? facts->item->count : 0};
-            };
-            auto contextValid = [&]()
-            { return _bot->IsInWorld() && _bot->GetSession() == session && session && !session->PlayerLogout(); };
-            auto moveExact = [&](PlayerbotsAutoGearStorage::ExactMove const& move, bool restore)
-            {
-                uint16 const from = restore ? move.position.destination : move.position.source;
-                uint16 const to = restore ? move.position.source : move.position.destination;
-                // The exact item at `from`, re-read each time: CanEquipItem and CanUnequipItem run script hooks,
-                // so no pointer is kept across them.
-                auto current = [&]() -> Item*
-                {
-                    Item* item = _bot->GetItemByPos(from);
-                    return item && item->GetGUID().GetRawValue() == move.position.itemGuid &&
-                                   item->GetCount() == move.count
-                               ? item
-                               : nullptr;
-                };
-                Item* item = current();
-                if (!item)
-                    return false;
-                uint16 equipDest = 0;
-                ItemPosCountVec storeDest;
-                if (restore)
-                {
-                    if (_bot->CanEquipItem(to & 255, equipDest, item, false) != EQUIP_ERR_OK || equipDest != to)
-                        return false;
-                }
-                else if (_bot->CanUnequipItem(from, false) != EQUIP_ERR_OK)
-                    return false;
-                // After the hook and before any write: the bot is still here and the item is still in place
-                // (Grok F2). The store check itself runs no script.
-                item = current();
-                if (!item || !contextValid())
-                    return false;
-                if (!restore &&
-                    (_bot->CanStoreItem(to >> 8, to & 255, storeDest, item, false) != EQUIP_ERR_OK ||
-                     storeDest.size() != 1 || storeDest.front().pos != to || storeDest.front().count != move.count))
-                    return false;
-                _bot->RemoveItem(from >> 8, from & 255, true);
-                // Never link an item that is still linked somewhere (Grok F4): it must have left `from`.
-                if (!Detached(item, from))
-                    return false;
-                return restore ? _bot->EquipItem(equipDest, item, true) == item
-                               : _bot->StoreItem(storeDest, item, true) == item;
-            };
-
-            switch (
-                PlayerbotsAutoGearStorage::Execute(moves, /*admittedFinalB*/ true, inspect, contextValid, moveExact))
-            {
-                case PlayerbotsAutoGearStorage::TransactionStatus::Committed:
-                    return StripResult::Done;
-                case PlayerbotsAutoGearStorage::TransactionStatus::RolledBack:
-                    return StripResult::Restored;
-                case PlayerbotsAutoGearStorage::TransactionStatus::RecoveryRequired:
-                    return StripResult::RecoveryRequired;
-                case PlayerbotsAutoGearStorage::TransactionStatus::Rejected:
-                    break;
+                    return StripResult::Refused;
+                if (!facts->item)
+                    continue;
+                plan.push_back({facts->item->guid, position, 0, facts->item->count, 0});
+                sources.push_back(std::move(*facts));
             }
-            return unchanged() ? StripResult::Refused : StripResult::RecoveryRequired;
+            if (plan.empty())
+                return StripResult::Refused;
+
+            // Empty destinations, backpack first, then general-purpose bags (equipment fits nothing else).
+            std::vector<PB59::InventorySlotFacts> destinations;
+            auto take = [&](uint8 bag, uint8 slot)
+            {
+                if (destinations.size() == plan.size())
+                    return true;
+                auto facts = _bot->CapturePB59InventorySlot((uint16(bag) << 8) | slot);
+                if (!facts)
+                    return false;
+                if (!facts->item)
+                    destinations.push_back(std::move(*facts));
+                return true;
+            };
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                if (!take(INVENTORY_SLOT_BAG_0, slot))
+                    return StripResult::Refused;
+            for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            {
+                Bag* container = _bot->GetBagByPos(bag);
+                ItemTemplate const* proto = container ? container->GetTemplate() : nullptr;
+                if (!proto || proto->BagFamily != 0)
+                    continue;
+                for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                    if (!take(bag, static_cast<uint8>(slot)))
+                        return StripResult::Refused;
+            }
+            if (destinations.size() < plan.size())
+                return StripResult::NoSpace;
+            for (std::size_t i = 0; i < plan.size(); ++i)
+            {
+                plan[i].destination = destinations[i].position;
+                plan[i].destinationBag = destinations[i].bag;
+            }
+            return RunCoreBatch(plan, sources, destinations);
 #endif
         }
 
-        void RunFactory(uint32 quality, uint32 cap, bool incremental)
+        // Equipment the factory replaces, and an off-hand a new two-hander would push out, leave through the
+        // same exact strip; the factory stops if one cannot be proven (#52 7133329461).
+        bool RunFactory(uint32 quality, uint32 cap, bool incremental)
         {
+            PlayerbotFactory::ExactMoves moves;
+            moves.strip = [this](uint32 mask) { return StripToBags(mask); };
+            moves.restore = [this](ObjectGuid guid, uint8 slot) { return RestoreToSlot(guid, slot); };
             // No second chance: that pass destroys the equipped item before searching.
             PlayerbotFactory::AutoGear(_bot, quality, cap, incremental, /*secondChance*/ false,
-                                       /*applyFinishers*/ false, cap, _sources);
+                                       /*applyFinishers*/ false, cap, _sources, &moves);
+            return !moves.stopped;
         }
 
         // False when the run must stop for recovery: a replaced item could not be put back (it stays in the
-        // bags), or a one-slot strip could not be proven to have changed nothing.
+        // bags), or a strip could not be proven.
         bool ApplyBisOverlay(uint32 cap)
         {
             uint8 const cls = _bot->getClass();
@@ -850,12 +827,19 @@ namespace
                 uint16 dest = 0;
                 if (_bot->CanEquipNewItem(slot, dest, entry, true) != EQUIP_ERR_OK)
                     continue;
+                // The current item, and an off-hand a new main-hand item would push out, leave in one exact
+                // strip (off-hand first). Nothing is left for Core to store or mail afterwards.
+                Item* offhand = slot == EQUIPMENT_SLOT_MAINHAND && PlayerbotFactory::DisplacesOffhand(_bot, proto)
+                                    ? _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND)
+                                    : nullptr;
                 ObjectGuid const previous = current ? current->GetGUID() : ObjectGuid::Empty;
-                if (current)
+                ObjectGuid const previousOffhand = offhand ? offhand->GetGUID() : ObjectGuid::Empty;
+                uint32 const mask = (current ? 1u << slot : 0u) | (offhand ? 1u << EQUIPMENT_SLOT_OFFHAND : 0u);
+                if (mask)
                 {
                     // Nothing changed (refused, no room, rolled back): keep the factory pick. Anything we
-                    // cannot prove unchanged stops the run as a recovery.
-                    PlayerbotsAutoGearExec::StripResult const strip = StripToBags(1u << slot);
+                    // cannot prove stops the run as a recovery.
+                    PlayerbotsAutoGearExec::StripResult const strip = StripToBags(mask);
                     if (strip == PlayerbotsAutoGearExec::StripResult::RecoveryRequired)
                         return false;
                     if (strip != PlayerbotsAutoGearExec::StripResult::Done)
@@ -864,20 +848,25 @@ namespace
                 if (_bot->CanEquipNewItem(slot, dest, entry, false) != EQUIP_ERR_OK || !InWorld() ||
                     _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) || !_bot->EquipNewItem(dest, entry, true))
                 {
-                    if (!previous.IsEmpty() && !RestoreToSlot(previous, slot))
+                    // Put back what was moved, main hand before off-hand.
+                    if ((!previous.IsEmpty() && !RestoreToSlot(previous, slot)) ||
+                        (!previousOffhand.IsEmpty() && !RestoreToSlot(previousOffhand, EQUIPMENT_SLOT_OFFHAND)))
                         return false;
                     continue;
                 }
-                // CanEquipNewItem already required room for a displaced off-hand, so this stores it.
-                _bot->AutoUnequipOffhandIfNeed();
+                // With the off-hand slot empty this only refreshes Titan's Grip; it never moves an item.
+                if (!_bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
+                    _bot->AutoUnequipOffhandIfNeed();
             }
             return true;
         }
 
+        // Ammo, enchants and repairs. Old ammo the bot owns is kept, never destroyed.
         void ApplyFinishers(uint32 cap)
         {
             PlayerbotFactory factory(_bot, _bot->GetLevel(), _quality, 0, cap);
             factory.SetSourceFilter(_sources);
+            factory.SetKeepOwnedItems(true);
             factory.InitAmmo();
             if (_bot->GetLevel() >= sPlayerbotAIConfig.MinEnchantingBotLevel)
                 factory.ApplyEnchantAndGemsNew();
@@ -894,25 +883,30 @@ namespace
         }
 
     private:
-        // True only if exactly that item is back in the slot.
+        // True only if Core's executor put exactly that item back into the empty slot.
         bool RestoreToSlot(ObjectGuid guid, uint8 slot)
         {
+#if !PB59_AUTOGEAR_CORE_BATCH
+            (void)guid;
+            (void)slot;
+            return false;
+#else
             Item* item = _bot->GetItemByGuid(guid);
-            uint16 dest = 0;
-            if (!item || _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (!item)
                 return false;
             uint16 const from = item->GetPos();
-            if (_bot->CanEquipItem(slot, dest, item, false) != EQUIP_ERR_OK)
+            uint16 const to = (uint16(INVENTORY_SLOT_BAG_0) << 8) | slot;
+            auto source = _bot->CapturePB59InventorySlot(from);
+            auto destination = _bot->CapturePB59InventorySlot(to);
+            if (!source || !source->item || source->item->guid != guid.GetRawValue() || !destination ||
+                destination->item)
                 return false;
-            // CanEquipItem ran a script hook: the item must still be where it was, and the bot still here.
-            item = _bot->GetItemByPos(from);
-            if (!item || item->GetGUID() != guid || _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) || !InWorld())
-                return false;
-            _bot->RemoveItem(from >> 8, from & 255, true);
-            if (!Detached(item, from) || _bot->EquipItem(dest, item, true) != item)
-                return false;
-            Item* restored = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-            return restored && restored->GetGUID() == guid;
+            std::vector<PlayerbotsAutoGearCoreBatch::PlannedMove> const plan{
+                {guid.GetRawValue(), from, to, source->item->count, destination->bag}};
+            std::vector<PB59::InventorySlotFacts> const sources{*source};
+            std::vector<PB59::InventorySlotFacts> const destinations{*destination};
+            return RunCoreBatch(plan, sources, destinations) == PlayerbotsAutoGearExec::StripResult::Done;
+#endif
         }
 
         bool InWorld() const
@@ -921,14 +915,66 @@ namespace
             return _bot->IsInWorld() && session && !session->PlayerLogout();
         }
 
-        // RemoveItem took the item out of `from` and out of every container.
-        bool Detached(Item* item, uint16 from) const
+#if PB59_AUTOGEAR_CORE_BATCH
+        // One synchronous call to Core's executor on the bot's own world thread. Its result is believed only
+        // when Playerbots' own observation agrees (#52 7133329461): see PlayerbotsAutoGearCoreBatch::ToStripResult.
+        PlayerbotsAutoGearExec::StripResult RunCoreBatch(
+            std::vector<PlayerbotsAutoGearCoreBatch::PlannedMove> const& plan,
+            std::vector<PB59::InventorySlotFacts> const& sources,
+            std::vector<PB59::InventorySlotFacts> const& destinations)
         {
-            return !_bot->GetItemByPos(from) && item->GetSlot() == NULL_SLOT &&
-                   item->GetGuidValue(ITEM_FIELD_CONTAINED).IsEmpty();
+            using namespace PlayerbotsAutoGearCoreBatch;
+            using PlayerbotsAutoGearExec::StripResult;
+            WorldSession* const session = _bot->GetSession();
+            auto const before = Fingerprint();
+            auto const stamp = _bot->CapturePB59InventoryStamp();
+            if (!session || !before || !stamp)
+                return StripResult::Refused;
+            uint64 const owner = _bot->GetGUID().GetRawValue();
+            Built const built = BuildMoves(owner, plan, sources, destinations);
+            if (built.error != BuildError::None)
+                return StripResult::Refused;
+
+            PB59::InventoryBatchResult const result = _bot->ExecutePB59InventoryBatchPlan(
+                owner, _bot->GetPB59OwnerIncarnation(), session->GetPB59SessionIncarnation(), *stamp, built.moves);
+
+            CoreBatchObservation observed;
+            auto const after = Fingerprint();
+            observed.unchangedSinceStart = after && *after == *before;
+            observed.everyMoveAtDestination = AllAtDestination(plan);
+            observed.missing = result.recoveryCount;
+            observed.failureReported = result.failure != PB59::InventoryBatchFailure::None;
+            CoreBatchOutcome const outcome = OutcomeFrom(result.outcome);
+            StripResult const strip = ToStripResult(outcome, observed);
+            if (strip != StripResult::Done)
+            {
+                std::size_t const listed = std::min<std::size_t>(result.recoveryCount, result.recoveryGuids.size());
+                std::string const line =
+                    Diagnostic(outcome, observed, std::span<uint64 const>(result.recoveryGuids.data(), listed)) +
+                    " nativeFailure=" + std::to_string(static_cast<uint32>(result.failure));
+                if (strip == StripResult::RecoveryRequired)
+                    LOG_ERROR("playerbots", "PB59 AutoGear bot={} {}", _bot->GetGUID().ToString(), line);
+                else
+                    LOG_DEBUG("playerbots", "PB59 AutoGear bot={} {}", _bot->GetGUID().ToString(), line);
+            }
+            return strip;
         }
 
-#if __has_include("PB59InventorySlotFacts.h")
+        // Each planned item is exactly at its planned destination and its source is empty.
+        bool AllAtDestination(std::vector<PlayerbotsAutoGearCoreBatch::PlannedMove> const& plan) const
+        {
+            for (auto const& move : plan)
+            {
+                auto const source = _bot->CapturePB59InventorySlot(move.source);
+                auto const destination = _bot->CapturePB59InventorySlot(move.destination);
+                if (!source || source->item || !destination || !destination->item ||
+                    destination->item->guid != move.itemGuid || destination->item->count != move.count ||
+                    destination->bag != move.destinationBag)
+                    return false;
+            }
+            return true;
+        }
+
         // Everything a script hook could change: every inventory position the bot has, with the exact copied
         // item instance, plus the session it is in. Unknown when any position is unreadable.
         struct InventoryFingerprint

@@ -37,14 +37,33 @@ void Check(bool ok, std::string const& what)
 constexpr CoreBatchOutcome AllOutcomes[] = {CoreBatchOutcome::Refused, CoreBatchOutcome::Applied,
                                             CoreBatchOutcome::Restored, CoreBatchOutcome::RecoveryRequired};
 
-CoreBatchObservation Observed(bool unchanged, bool atDestination, std::size_t missing = 0)
+CoreBatchObservation Observed(bool unchanged, bool atDestination, std::size_t missing = 0, bool failure = false)
 {
     CoreBatchObservation observed;
     observed.unchangedSinceStart = unchanged;
     observed.everyMoveAtDestination = atDestination;
     observed.missing = missing;
+    observed.failureReported = failure;
     return observed;
 }
+
+// Core's native result type as published in Core PR74 API v1 (PB59InventoryBatchPlan.h at 7fdc3a65): the same
+// four names, in Core's own order. The mapping goes by name.
+enum class NativeOutcome
+{
+    Refused,
+    Applied,
+    Restored,
+    RecoveryRequired
+};
+// A native enum declared in a different order still maps by name.
+enum class ReorderedNativeOutcome
+{
+    RecoveryRequired,
+    Restored,
+    Applied,
+    Refused
+};
 
 void TestMapping()
 {
@@ -74,6 +93,27 @@ void TestMapping()
                     std::string(PlayerbotsAutoGearCoreBatch::OutcomeName(outcome)) + " with missing items -> recovery");
     Check(ToStripResult(static_cast<CoreBatchOutcome>(7), Observed(true, true)) == StripResult::RecoveryRequired,
           "an unknown result fails closed to recovery");
+    // Applied with a failure reason from Core is inconsistent.
+    Check(ToStripResult(CoreBatchOutcome::Applied, Observed(false, true, 0, true)) == StripResult::RecoveryRequired,
+          "Applied with a failure reason -> recovery");
+    // Refused and Restored carry a failure reason normally; that alone does not make them recovery.
+    Check(ToStripResult(CoreBatchOutcome::Refused, Observed(true, false, 0, true)) == StripResult::Refused,
+          "Refused with its reason and nothing changed -> Refused");
+    Check(ToStripResult(CoreBatchOutcome::Restored, Observed(true, false, 0, true)) == StripResult::Restored,
+          "Restored with its reason and nothing changed -> Restored");
+    // Native names.
+    using PlayerbotsAutoGearCoreBatch::OutcomeFrom;
+    Check(OutcomeFrom(NativeOutcome::Refused) == CoreBatchOutcome::Refused &&
+              OutcomeFrom(NativeOutcome::Applied) == CoreBatchOutcome::Applied &&
+              OutcomeFrom(NativeOutcome::Restored) == CoreBatchOutcome::Restored &&
+              OutcomeFrom(NativeOutcome::RecoveryRequired) == CoreBatchOutcome::RecoveryRequired,
+          "native results map by name");
+    Check(OutcomeFrom(ReorderedNativeOutcome::Applied) == CoreBatchOutcome::Applied &&
+              OutcomeFrom(ReorderedNativeOutcome::Refused) == CoreBatchOutcome::Refused,
+          "a reordered native enum still maps by name");
+    Check(ToStripResult(OutcomeFrom(static_cast<NativeOutcome>(9)), Observed(true, true)) ==
+              StripResult::RecoveryRequired,
+          "an unknown native value reads as recovery");
     for (CoreBatchOutcome outcome : AllOutcomes)
         for (bool unchanged : {true, false})
             for (bool atDestination : {true, false})
@@ -136,22 +176,28 @@ struct RouteInventory
     }
 
     // An equipped slot is replaced only after an exact Core strip of that slot; an empty slot is filled.
-    void RunFactory(std::uint32_t, std::uint32_t cap, bool incremental)
+    bool RunFactory(std::uint32_t, std::uint32_t cap, bool incremental)
     {
         std::uint32_t const level = std::min(factoryLevel, cap);
         if (!level)
-            return;  // no candidate at all
+            return true;  // no candidate at all
         for (std::uint8_t slot = 0; slot < 6; ++slot)
         {
             if (!IsCombatSlot(slot))
                 continue;
             if (equipped[slot].guid)
             {
-                if (!incremental || level <= equipped[slot].itemLevel || StripToBags(1u << slot) != StripResult::Done)
+                if (!incremental || level <= equipped[slot].itemLevel)
+                    continue;
+                StripResult const strip = StripToBags(1u << slot);
+                if (strip == StripResult::RecoveryRequired)
+                    return false;  // the factory stops; nothing after it
+                if (strip != StripResult::Done)
                     continue;
             }
             Create(slot, 700u + slot, level);
         }
+        return true;
     }
 
     bool ApplyBisOverlay(std::uint32_t cap)
@@ -312,6 +358,20 @@ void TestRoutesWithExecutor()
     }
 }
 
+// A factory replacement whose Core strip needs recovery stops the factory, BiS and finishers.
+void TestFactoryStop()
+{
+    RouteInventory inventory;
+    inventory.coreExecutor = true;
+    inventory.outcome = CoreBatchOutcome::RecoveryRequired;
+    inventory.equipped[0] = {101, 1, 50};
+    inventory.bisTable[1] = {0, 778, 70};
+    Outcome const outcome = Execute(inventory, MakePlan(false, Population::RandomBot, CommandForm::Bis));
+    Check(outcome.ran && outcome.factoryStopped && outcome.refusal == Refusal::RecoveryRequired && !outcome.Succeeded(),
+          "factory strip needing recovery stops the run as a recovery");
+    Check(inventory.equipped[1].entry != 778, "no BiS swap after the factory stopped");
+}
+
 void TestPathSelection()
 {
     Check(SelectStripPath(true) == StripPath::CoreBatch && MayMoveOwnedItems(true), "with the executor: Core path");
@@ -323,10 +383,11 @@ void TestDiagnostic()
 {
     std::uint64_t const missing[] = {101, 103};
     std::string const line = Diagnostic(CoreBatchOutcome::Applied, Observed(false, true), missing);
-    Check(line == "core batch outcome=Applied unchanged=0 atDestination=1 strip=RecoveryRequired missing=101,103",
+    Check(line ==
+              "core batch outcome=Applied unchanged=0 atDestination=1 failure=0 strip=RecoveryRequired missing=101,103",
           "Applied with missing items is logged as recovery, with the items: " + line);
     Check(Diagnostic(CoreBatchOutcome::Restored, Observed(false, false), {}) ==
-              "core batch outcome=Restored unchanged=0 atDestination=0 strip=RecoveryRequired",
+              "core batch outcome=Restored unchanged=0 atDestination=0 failure=0 strip=RecoveryRequired",
           "Restored over a changed inventory is logged as recovery");
     Check(Diagnostic(CoreBatchOutcome::Refused, Observed(true, false), {}).find("strip=Refused") != std::string::npos,
           "a clean refusal is logged as refused");
@@ -339,6 +400,7 @@ int main()
     TestStripRouteResults();
     TestRoutesWithoutExecutor();
     TestRoutesWithExecutor();
+    TestFactoryStop();
     TestPathSelection();
     TestDiagnostic();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";

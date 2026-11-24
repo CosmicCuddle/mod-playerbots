@@ -8,10 +8,10 @@
 #define _PLAYERBOT_AUTOGEARCOREBATCHREQUEST_H
 
 // Preparation for the Core batch inventory executor (coordination #52 7130978738, Layer 2; Core PR74).
-// Pure and dormant: it maps the executor's four agreed results to the strip result, and turns Playerbots'
-// exact strip plan into Core's batch moves and runs Core's own structural check on them. It moves nothing,
-// authorizes nothing and has no caller yet. The native call that may move items is Codex's four-outcome
-// executor, still to come; Core's read-only Player::CheckPB59InventoryBatchPlan is not permission to move.
+// Pure: it maps the executor's four results to the strip result, and turns Playerbots' exact strip plan into
+// Core's batch moves and runs Core's own structural check on them. It moves nothing itself. The live adapter
+// (TrainerAction.cpp) calls Core's Player::ExecutePB59InventoryBatchPlan (API v1, Core PR74 7fdc3a65) with
+// these moves; Core's read-only CheckPB59InventoryBatchPlan is never treated as permission to move.
 
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +40,7 @@ struct CoreBatchObservation
     bool unchangedSinceStart = false;     // the whole inventory and context match the fingerprint taken before
     bool everyMoveAtDestination = false;  // each planned item is exactly at its planned destination
     std::size_t missing = 0;              // GUIDs Core reported as not where they should be
+    bool failureReported = false;         // Core gave a failure reason
 };
 
 // What a Core result means for the strip. A result is believed only when Playerbots' own observation agrees
@@ -47,7 +48,7 @@ struct CoreBatchObservation
 // - Refused and Restored both mean "nothing changed", so both need the fingerprint unchanged. Restored stays
 //   Restored even when no move had taken effect (Grok F5): Playerbots does not second-guess which one Core
 //   proved, but never lets a changed inventory pass as either.
-// - Applied needs every planned item at its destination.
+// - Applied needs every planned item at its destination and no failure reason from Core.
 // - Any result that comes with missing GUIDs, and any value outside the four, is a recovery.
 // There is no fallback: no result leads to Playerbots moving items itself.
 constexpr PlayerbotsAutoGearExec::StripResult ToStripResult(CoreBatchOutcome outcome,
@@ -61,7 +62,8 @@ constexpr PlayerbotsAutoGearExec::StripResult ToStripResult(CoreBatchOutcome out
         case CoreBatchOutcome::Refused:
             return observed.unchangedSinceStart ? StripResult::Refused : StripResult::RecoveryRequired;
         case CoreBatchOutcome::Applied:
-            return observed.everyMoveAtDestination ? StripResult::Done : StripResult::RecoveryRequired;
+            return observed.everyMoveAtDestination && !observed.failureReported ? StripResult::Done
+                                                                                : StripResult::RecoveryRequired;
         case CoreBatchOutcome::Restored:
             return observed.unchangedSinceStart ? StripResult::Restored : StripResult::RecoveryRequired;
         case CoreBatchOutcome::RecoveryRequired:
@@ -92,6 +94,25 @@ constexpr bool MayMoveOwnedItems(bool coreBatchExecutor)
     return SelectStripPath(coreBatchExecutor) == StripPath::CoreBatch;
 }
 
+// Core's native result (PB59::InventoryBatchOutcome, Core PR74 API v1) by name, so a reordered or renamed
+// native value cannot be read as a different result. A value outside the four reads as unknown (recovery).
+template <class NativeOutcome>
+constexpr CoreBatchOutcome OutcomeFrom(NativeOutcome native)
+{
+    switch (native)
+    {
+        case NativeOutcome::Refused:
+            return CoreBatchOutcome::Refused;
+        case NativeOutcome::Applied:
+            return CoreBatchOutcome::Applied;
+        case NativeOutcome::Restored:
+            return CoreBatchOutcome::Restored;
+        case NativeOutcome::RecoveryRequired:
+            return CoreBatchOutcome::RecoveryRequired;
+    }
+    return static_cast<CoreBatchOutcome>(0xFF);
+}
+
 constexpr char const* OutcomeName(CoreBatchOutcome outcome)
 {
     switch (outcome)
@@ -116,7 +137,8 @@ inline std::string Diagnostic(CoreBatchOutcome outcome, CoreBatchObservation obs
     observed.missing = missing.size();
     std::string line = std::string("core batch outcome=") + OutcomeName(outcome) +
                        " unchanged=" + (observed.unchangedSinceStart ? "1" : "0") +
-                       " atDestination=" + (observed.everyMoveAtDestination ? "1" : "0") + " strip=";
+                       " atDestination=" + (observed.everyMoveAtDestination ? "1" : "0") +
+                       " failure=" + (observed.failureReported ? "1" : "0") + " strip=";
     switch (ToStripResult(outcome, observed))
     {
         case PlayerbotsAutoGearExec::StripResult::Done:

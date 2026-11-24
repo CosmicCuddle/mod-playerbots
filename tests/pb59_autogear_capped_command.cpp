@@ -261,7 +261,7 @@ public:
         return StripResult::Refused;
     }
 
-    void RunFactory(std::uint32_t /*quality*/, std::uint32_t cap, bool incremental)
+    bool RunFactory(std::uint32_t /*quality*/, std::uint32_t cap, bool incremental)
     {
         ++factoryRuns;
         lastIncremental = incremental;
@@ -290,6 +290,7 @@ public:
             }
             equipped[slot] = {nextGuid++, best->entry, best->itemLevel};
         }
+        return true;
     }
 
     bool ApplyBisOverlay(std::uint32_t cap)
