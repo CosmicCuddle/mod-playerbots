@@ -37,6 +37,7 @@
 // bot owns: there is no fallback to public inventory helpers (coordination #52 7130978738, Layer 2).
 #if defined(COSMIC_PB59_INVENTORY_BATCH_API_VERSION) && COSMIC_PB59_INVENTORY_BATCH_API_VERSION == 1
 #define PB59_AUTOGEAR_CORE_BATCH 1
+#include "AutoGearBatchCustody.h"
 #else
 #define PB59_AUTOGEAR_CORE_BATCH 0
 #endif
@@ -967,6 +968,18 @@ namespace
                 return StripResult::RecoveryRequired;
             }
             auto const after = Fingerprint();
+            // Applied proves the native plan, not unrelated carried-inventory custody. Compare only
+            // identity, count and location for that inventory; legitimate metadata changes may differ.
+            // A Playerbots-detected discrepancy stops this command; it does not assert native quarantine.
+            if (outcome == CoreBatchOutcome::Applied &&
+                (!after || before->session != after->session || before->inWorld != after->inWorld ||
+                 before->alive != after->alive || before->logout != after->logout || before->others != after->others ||
+                 !AppliedCustodyPreserved(owner, before->slots, after->slots, built.moves)))
+            {
+                LOG_ERROR("playerbots", "PB59 AutoGear bot={} Applied custody unproven; command stopped{}", botText,
+                          native);
+                return StripResult::RecoveryRequired;
+            }
             observed.unchangedSinceStart = after && *after == *before;
             observed.everyMoveAtDestination = AllAtDestination(plan);
             StripResult const strip = ToStripResult(outcome, observed);
