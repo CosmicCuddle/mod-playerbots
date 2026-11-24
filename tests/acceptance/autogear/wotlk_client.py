@@ -52,6 +52,7 @@ CHAT_MSG_PARTY = 0x02
 CHAT_MSG_WHISPER = 0x07
 CHAT_MSG_WHISPER_INFORM = 0x09
 LANG_UNIVERSAL = 0
+LANG_COMMON = 7  # the runner's characters are Alliance humans
 
 AUTH_OK = 0x0C
 CHAR_CREATE_SUCCESS = 0x2F
@@ -312,6 +313,9 @@ class WorldClient:
         return payload[0]
 
     def login(self, guid, settle=5.0):
+        # The server only accepts a character listed by this session's own character enum.
+        if guid not in {c["guid"] for c in self.enum_characters()}:
+            raise RuntimeError(f"character {guid} is not on this account")
         self.send(CMSG_PLAYER_LOGIN, struct.pack("<Q", guid))
         self.wait_for(SMSG_LOGIN_VERIFY_WORLD, timeout=60.0)
         self.player_guid = guid
@@ -332,7 +336,7 @@ class WorldClient:
 
     # --- chat ------------------------------------------------------------------------------------
     def say(self, text):
-        self.send(CMSG_MESSAGECHAT, struct.pack("<II", CHAT_MSG_SAY, LANG_UNIVERSAL) + text.encode() + b"\0")
+        self.send(CMSG_MESSAGECHAT, struct.pack("<II", CHAT_MSG_SAY, LANG_COMMON) + text.encode() + b"\0")
 
     def command(self, text, wait=2.0):
         """Run a GM command (sent as say text starting with '.'); returns the system lines it printed."""
@@ -342,7 +346,7 @@ class WorldClient:
         return [m.text for m in self.chat[start:] if m.type == CHAT_MSG_SYSTEM]
 
     def whisper(self, target, text):
-        self.send(CMSG_MESSAGECHAT, struct.pack("<II", CHAT_MSG_WHISPER, LANG_UNIVERSAL) + target.encode() + b"\0" +
+        self.send(CMSG_MESSAGECHAT, struct.pack("<II", CHAT_MSG_WHISPER, LANG_COMMON) + target.encode() + b"\0" +
                   text.encode() + b"\0")
 
     def whispers_since(self, start, sender_guid=None):
