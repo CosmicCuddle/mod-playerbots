@@ -43,6 +43,13 @@ def method(cls, signature):
     raise RuntimeError(f"unterminated method: {signature}")
 
 
+def section(text, start, end):
+    """Like between(), but empty when the start is missing or repeated (an ordering rule reports that)."""
+    if text.count(start) != 1 or end not in text[text.index(start) + len(start):]:
+        return ""
+    return between(text, start, end)
+
+
 def ordered(text, *needles):
     """Every needle occurs, in this order."""
     pos = -1
@@ -102,16 +109,36 @@ def check(trainer, factory_cpp, factory_h):
     for hook in ("CanUnequipItem(", "CanStoreItem(", "CanEquipItem("):
         rule(hook not in strip, f"planning calls no script hook ({hook})")
     rule(ordered(core, "auto const before = Fingerprint();", "CapturePB59InventoryStamp()",
-                 "return StripResult::Refused;", "BuildMoves(owner, plan, sources, destinations)",
-                 "ExecutePB59InventoryBatchPlan(", "GetPB59OwnerIncarnation()", "GetPB59SessionIncarnation()",
-                 "observed.unchangedSinceStart = after && *after == *before;",
-                 "observed.everyMoveAtDestination = AllAtDestination(plan);",
-                 "observed.missing = result.recoveryCount;",
+                 "return StripResult::Refused;", "GetPB59OwnerIncarnation()", "GetPB59SessionIncarnation()",
+                 "BuildMoves(owner, plan, sources, destinations)", "ExecutePB59InventoryBatchPlan(",
+                 "OutcomeFrom(result.outcome)", "observed.missing = result.recoveryCount;",
                  "observed.failureReported = result.failure != PB59::InventoryBatchFailure::None;",
-                 "OutcomeFrom(result.outcome)", "ToStripResult(outcome, observed)"),
+                 "if (outcome == CoreBatchOutcome::RecoveryRequired)", "return StripResult::RecoveryRequired;",
+                 "if (!SameContext(botGuid, session, ownerIncarnation, sessionIncarnation))",
+                 "return StripResult::RecoveryRequired;", "auto const after = Fingerprint();",
+                 "observed.unchangedSinceStart = after && *after == *before;",
+                 "observed.everyMoveAtDestination = AllAtDestination(plan);", "ToStripResult(outcome, observed)"),
          "Core's result is read by name and believed only when Playerbots' own observation agrees")
-    rule(ordered(core, "Diagnostic(", "recoveryGuids.data()", "if (strip == StripResult::RecoveryRequired)", "LOG_ERROR("),
+    native_rr = section(core, "if (outcome == CoreBatchOutcome::RecoveryRequired)", "return StripResult::RecoveryRequired;")
+    context_lost = section(core, "if (!SameContext(", "return StripResult::RecoveryRequired;")
+    rule("_bot" not in native_rr and "Fingerprint" not in native_rr and "LOG_ERROR(" in native_rr,
+         "after Core's recovery nothing is read from the bot (#52 7137340399)")
+    rule("_bot" not in context_lost, "a lost context is reported without reading the bot")
+    same_context = section(cls, "bool SameContext(", "\n        }\n")
+    rule(ordered(same_context, "FindConnectedPlayer(guid)", "current == _bot &&", "GetPB59OwnerIncarnation()",
+                 "GetPB59SessionIncarnation()") and
+         "->" not in section(same_context, "{", "current == _bot"),
+         "the bot is re-resolved by GUID and compared before it is read")
+    rule(ordered(core, "recoveryGuids.data()", "if (outcome == CoreBatchOutcome::RecoveryRequired)", "LOG_ERROR(",
+                 "Diagnostic(outcome, observed, guids)"),
          "a recovery is logged with Core's GUIDs")
+    caller = section(trainer, "bool RunPB59AutoGearWorldPlan(", "\nbool AutoGearAction::Execute(")
+    after_run = section(caller, "Execute(inventory, plan);", "if (!same(botId, bot,")
+    rule(ordered(caller, "std::string const botText = botId.ToString();", "Execute(inventory, plan);",
+                 "FindConnectedPlayer(id)", "current == expected &&", "if (!same(botId, bot,",
+                 "!same(senderId, sender,", "ai->Whisper(") and
+         not any(x in after_run for x in ("bot->", "sender->", "ai->")),
+         "after the run both players are re-resolved before any read or reply")
     rule(all(x in at_destination for x in ("source->item", "destination->item->guid != move.itemGuid",
                                             "destination->bag != move.destinationBag")),
          "applied is checked against every planned destination")
@@ -248,7 +275,15 @@ def mutants(trainer, factory_cpp, factory_h):
     yield "hook in planning", *t("                if (!facts->item)\n                    continue;",
                                  "                _bot->CanUnequipItem(position, false);\n                if (!facts->item)\n                    continue;")
     yield "any bag family", *t("proto->BagFamily != 0", "false")
-    yield "no recovery log", *t("LOG_ERROR(\"playerbots\", \"PB59 AutoGear bot={} {}\"", "LOG_DEBUG(\"playerbots\", \"PB59 AutoGear bot={} {}\"")
+    yield "no recovery log", *t("LOG_ERROR(\"playerbots\", \"PB59 AutoGear bot={} {}{}\"", "LOG_DEBUG(\"playerbots\", \"PB59 AutoGear bot={} {}{}\"")
+    yield "bot read after Core recovery", *t("                return StripResult::RecoveryRequired;\n            }\n            // Any other",
+                                             "                (void)Fingerprint();\n                return StripResult::RecoveryRequired;\n            }\n            // Any other")
+    yield "no context check", *t("if (!SameContext(botGuid, session, ownerIncarnation, sessionIncarnation))", "if (false)")
+    yield "context check reads first", *t("return current == _bot &&", "return _bot->IsInWorld() && current == _bot &&")
+    yield "reply without revalidation", *t("    if (!same(botId, bot, botSession, botIncarnation, botSessionIncarnation) ||",
+                                           "    if (false && !same(botId, bot, botSession, botIncarnation, botSessionIncarnation) ||")
+    yield "log reads the live bot", *t("             botText, senderText, request.rawStage",
+                                       "             bot->GetGUID().ToString(), senderText, request.rawStage")
     yield "restore counts any result", *t("RunCoreBatch(plan, sources, destinations) == PlayerbotsAutoGearExec::StripResult::Done",
                                           "(RunCoreBatch(plan, sources, destinations), true)")
     yield "no nested-strip guard (F3)", *t("if (_stripping)\n                return StripResult::Refused;", "")

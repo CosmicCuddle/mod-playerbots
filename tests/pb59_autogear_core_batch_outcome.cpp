@@ -136,9 +136,14 @@ struct RouteInventory
     int ownedMoves = 0;   // owned items moved; only ever by an Applied Core strip
     int created = 0;      // items created into empty slots
     int gatedRoutes = 0;  // moves refused because the executor is missing
+    mutable int captures = 0;
+    int destroys = 0;
+    int finishers = 0;
+    std::uint32_t createLevel = 0;  // when set, items the factory creates have this level (e.g. above the cap)
 
     Snapshot Capture() const
     {
+        ++captures;
         Snapshot snapshot;
         snapshot.equipped = equipped;
         for (ItemFact const& item : equipped)
@@ -195,7 +200,7 @@ struct RouteInventory
                 if (strip != StripResult::Done)
                     continue;
             }
-            Create(slot, 700u + slot, level);
+            Create(slot, 700u + slot, createLevel ? createLevel : level);
         }
         return true;
     }
@@ -219,8 +224,15 @@ struct RouteInventory
         return true;
     }
 
-    void ApplyFinishers(std::uint32_t) {}
-    bool DestroyCreatedEquipped(std::uint8_t, std::uint64_t) { return false; }
+    void ApplyFinishers(std::uint32_t) { ++finishers; }
+    bool DestroyCreatedEquipped(std::uint8_t slot, std::uint64_t guid)
+    {
+        ++destroys;
+        if (equipped[slot].guid != guid)
+            return false;
+        equipped[slot] = {};
+        return true;
+    }
 };
 
 Plan MakePlan(bool reset, Population population, CommandForm form = CommandForm::Plain)
@@ -372,6 +384,57 @@ void TestFactoryStop()
     Check(inventory.equipped[1].entry != 778, "no BiS swap after the factory stopped");
 }
 
+// After a factory or BiS recovery stop nothing reads or writes the inventory again: no capture, no cleanup
+// destroy, no finishers. The cap is not claimed (#52 7137340399).
+void TestNoInventoryAccessAfterStop()
+{
+    {
+        RouteInventory inventory;
+        inventory.coreExecutor = true;
+        inventory.outcome = CoreBatchOutcome::RecoveryRequired;
+        inventory.createLevel = 90;  // an empty slot is filled above the cap before the stop
+        inventory.equipped[2] = {103, 3, 50};
+        Outcome const outcome = Execute(inventory, MakePlan(false, Population::RandomBot, CommandForm::Bis));
+        Check(outcome.ran && outcome.factoryStopped && outcome.refusal == Refusal::RecoveryRequired,
+              "factory stop: RecoveryRequired, ran");
+        Check(!outcome.capHeld && !outcome.Succeeded(), "factory stop: the cap is not claimed");
+        Check(inventory.captures == 1, "factory stop: no inventory capture after the stop");
+        Check(inventory.destroys == 0, "factory stop: no cleanup destroy after the stop");
+        Check(inventory.finishers == 0, "factory stop: no finishers");
+        Check(inventory.equipped[0].itemLevel == 90 && inventory.equipped[0].guid != 0,
+              "factory stop: the created item is left for recovery, not destroyed");
+        Check(outcome.newItems == 0 && outcome.revoked == 0 && outcome.ownedMissing == 0,
+              "factory stop: nothing is counted after the stop");
+    }
+    {
+        // The factory succeeds and creates an over-cap item; BiS then needs recovery.
+        RouteInventory inventory;
+        inventory.coreExecutor = true;
+        inventory.factoryLevel = 60;
+        inventory.createLevel = 90;
+        inventory.bisTable[0] = {0, 778, 70};
+        // The factory only fills empty slots (no strip); BiS must strip slot 0 and Core needs recovery.
+        inventory.outcome = CoreBatchOutcome::RecoveryRequired;
+        Outcome const outcome = Execute(inventory, MakePlan(false, Population::RandomBot, CommandForm::Bis));
+        Check(outcome.ran && outcome.bisRestoreFailed && outcome.refusal == Refusal::RecoveryRequired,
+              "BiS stop: RecoveryRequired, ran");
+        Check(!outcome.capHeld && !outcome.Succeeded(), "BiS stop: the cap is not claimed");
+        Check(inventory.captures == 1 && inventory.destroys == 0 && inventory.finishers == 0,
+              "BiS stop: no capture, destroy or finishers after the stop");
+    }
+    {
+        // Control: a run that does not stop still removes a created over-cap item and runs finishers.
+        RouteInventory inventory;
+        inventory.coreExecutor = true;
+        inventory.createLevel = 90;
+        Outcome const outcome = Execute(inventory, MakePlan(false, Population::RandomBot));
+        Check(outcome.ran && outcome.refusal == Refusal::None && outcome.capHeld && outcome.revoked > 0,
+              "control: over-cap created items are still removed on a normal run");
+        Check(inventory.captures == 2 && inventory.destroys > 0 && inventory.finishers == 1,
+              "control: normal run captures twice, cleans up and runs finishers");
+    }
+}
+
 void TestPathSelection()
 {
     Check(SelectStripPath(true) == StripPath::CoreBatch && MayMoveOwnedItems(true), "with the executor: Core path");
@@ -401,6 +464,7 @@ int main()
     TestRoutesWithoutExecutor();
     TestRoutesWithExecutor();
     TestFactoryStop();
+    TestNoInventoryAccessAfterStop();
     TestPathSelection();
     TestDiagnostic();
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";

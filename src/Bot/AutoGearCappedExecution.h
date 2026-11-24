@@ -228,6 +228,15 @@ Outcome Execute(Inventory& inventory, Plan const& plan)
         outcome.bisRestoreFailed = true;
     else
         inventory.ApplyFinishers(plan.cap);
+    // After a recovery stop Core may hold the bot in quarantine and the context may be gone: no further
+    // inventory read or write of any kind, and the cap is not claimed (#52 7137340399).
+    if (outcome.factoryStopped || outcome.bisRestoreFailed)
+    {
+        outcome.ran = true;
+        outcome.capHeld = false;
+        outcome.refusal = Refusal::RecoveryRequired;
+        return outcome;
+    }
 
     // Only items this command created are checked; gear the bot already owned is left alone.
     Snapshot const after = inventory.Capture();
