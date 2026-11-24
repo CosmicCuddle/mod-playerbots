@@ -13,6 +13,7 @@
 // authorizes nothing and has no caller yet. The native call that may move items is Codex's four-outcome
 // executor, still to come; Core's read-only Player::CheckPB59InventoryBatchPlan is not permission to move.
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -33,32 +34,47 @@ enum class CoreBatchOutcome : std::uint8_t
     RecoveryRequired  // not proven: the listed items are not where they should be
 };
 
-// What a Core result means for the strip.
-// - Refused is trusted only if Playerbots' own inventory fingerprint is unchanged too (agreed point 2):
-//   otherwise something changed during Core's checks, and recovery is needed.
-// - Restored stays Restored even when no move had taken effect (Grok F5): both Refused and Restored mean
-//   nothing changed, and Playerbots does not second-guess which one Core proved.
-// - Any value outside the four is treated as recovery.
+// What Playerbots itself observes around the Core call (its own inventory fingerprint and slot facts).
+struct CoreBatchObservation
+{
+    bool unchangedSinceStart = false;     // the whole inventory and context match the fingerprint taken before
+    bool everyMoveAtDestination = false;  // each planned item is exactly at its planned destination
+    std::size_t missing = 0;              // GUIDs Core reported as not where they should be
+};
+
+// What a Core result means for the strip. A result is believed only when Playerbots' own observation agrees
+// with it (coordination #52 7133329461); anything else is a recovery.
+// - Refused and Restored both mean "nothing changed", so both need the fingerprint unchanged. Restored stays
+//   Restored even when no move had taken effect (Grok F5): Playerbots does not second-guess which one Core
+//   proved, but never lets a changed inventory pass as either.
+// - Applied needs every planned item at its destination.
+// - Any result that comes with missing GUIDs, and any value outside the four, is a recovery.
 // There is no fallback: no result leads to Playerbots moving items itself.
-constexpr PlayerbotsAutoGearExec::StripResult ToStripResult(CoreBatchOutcome outcome, bool fingerprintUnchanged)
+constexpr PlayerbotsAutoGearExec::StripResult ToStripResult(CoreBatchOutcome outcome,
+                                                            CoreBatchObservation const& observed)
 {
     using PlayerbotsAutoGearExec::StripResult;
+    if (observed.missing)
+        return StripResult::RecoveryRequired;
     switch (outcome)
     {
         case CoreBatchOutcome::Refused:
-            return fingerprintUnchanged ? StripResult::Refused : StripResult::RecoveryRequired;
+            return observed.unchangedSinceStart ? StripResult::Refused : StripResult::RecoveryRequired;
         case CoreBatchOutcome::Applied:
-            return StripResult::Done;
+            return observed.everyMoveAtDestination ? StripResult::Done : StripResult::RecoveryRequired;
         case CoreBatchOutcome::Restored:
-            return StripResult::Restored;
+            return observed.unchangedSinceStart ? StripResult::Restored : StripResult::RecoveryRequired;
         case CoreBatchOutcome::RecoveryRequired:
             return StripResult::RecoveryRequired;
     }
     return StripResult::RecoveryRequired;
 }
 
-// Without Core's batch executor the capped command does not strip at all (coordination #52 7130978738,
-// Layer 2: no legacy public-API fallback for the capped path). A missing executor is a plain refusal.
+// Without Core's batch executor the capped command moves no item the bot owns (coordination #52 7130978738,
+// Layer 2: no legacy public-API fallback for the capped path; 7133329461). Every route that would move one is
+// gated: the strip, the factory replacing an equipped item, and a BiS swap of an equipped item. Each refuses
+// that move and changes nothing. Routes that move nothing stay allowed: creating an item into an empty slot
+// (factory fill, BiS into an empty slot), and a command with nothing to strip.
 enum class StripPath : std::uint8_t
 {
     CoreBatch,
@@ -68,6 +84,12 @@ enum class StripPath : std::uint8_t
 constexpr StripPath SelectStripPath(bool coreBatchExecutor)
 {
     return coreBatchExecutor ? StripPath::CoreBatch : StripPath::Unavailable;
+}
+
+// The gate for every route that moves an item the bot already owns.
+constexpr bool MayMoveOwnedItems(bool coreBatchExecutor)
+{
+    return SelectStripPath(coreBatchExecutor) == StripPath::CoreBatch;
 }
 
 constexpr char const* OutcomeName(CoreBatchOutcome outcome)
@@ -88,12 +110,14 @@ constexpr char const* OutcomeName(CoreBatchOutcome outcome)
 
 // One log line for a Core result: the outcome, how Playerbots read it, and for a recovery the item GUIDs
 // that are not where they should be.
-inline std::string Diagnostic(CoreBatchOutcome outcome, bool fingerprintUnchanged,
+inline std::string Diagnostic(CoreBatchOutcome outcome, CoreBatchObservation observed,
                               std::span<std::uint64_t const> missing)
 {
+    observed.missing = missing.size();
     std::string line = std::string("core batch outcome=") + OutcomeName(outcome) +
-                       " fingerprintUnchanged=" + (fingerprintUnchanged ? "1" : "0") + " strip=";
-    switch (ToStripResult(outcome, fingerprintUnchanged))
+                       " unchanged=" + (observed.unchangedSinceStart ? "1" : "0") +
+                       " atDestination=" + (observed.everyMoveAtDestination ? "1" : "0") + " strip=";
+    switch (ToStripResult(outcome, observed))
     {
         case PlayerbotsAutoGearExec::StripResult::Done:
             line += "Done";

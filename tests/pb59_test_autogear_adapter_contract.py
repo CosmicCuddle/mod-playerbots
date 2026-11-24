@@ -279,7 +279,7 @@ def main():
     batch_mutants = [
         ("batch header moves items", header.replace("namespace PlayerbotsAutoGearCoreBatch\n{", "namespace PlayerbotsAutoGearCoreBatch\n{ // bot->StoreItem(dest, item, true);", 1), trainer),
         ("batch header wired early", header, trainer.replace('#include "AutoGearStorageTransaction.h"', '#include "AutoGearStorageTransaction.h"\n#include "AutoGearCoreBatchRequest.h"', 1)),
-        ("mapping default case", header.replace("        case CoreBatchOutcome::Restored:\n            return StripResult::Restored;", "        default:\n            return StripResult::Restored;", 1), trainer),
+        ("mapping default case", header.replace("        case CoreBatchOutcome::Restored:\n", "        default:\n", 1), trainer),
         ("mapping fails open", header.replace("    }\n    return StripResult::RecoveryRequired;\n}", "    }\n    return StripResult::Refused;\n}", 1), trainer),
     ]
     for name, h, t in batch_mutants:
