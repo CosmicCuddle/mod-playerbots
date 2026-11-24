@@ -34,8 +34,23 @@ enum class Refusal : std::uint8_t
     UnknownPopulation,  // not a proven random bot or alt bot
     ResetNotAllowed,    // reset only strips random bots
     BagsFull,           // not enough free bag slots for the planned strip; nothing changed
-    StripFailed,        // a move to bags failed part way; moved items stay in bags, nothing else ran
-    SourcesUnavailable  // the raid source index is not loaded: item sources cannot be checked
+    StripRefused,       // the exact strip plan was refused before any move (an item, bag or script check
+                        // changed); nothing changed
+    StripRestored,      // a strip move failed part way; every moved item is back in its slot; nothing else ran
+    SourcesUnavailable, // the raid source index is not loaded: item sources cannot be checked
+    RecoveryRequired    // an item is not where it should be: a strip could not be undone exactly, a BiS
+                        // restore failed, or an item the bot owned left its inventory. Reported, never hidden
+};
+
+// What one exact strip did (adapter StripToBags). Every planned item moves to its own reserved empty bag
+// slot, or none does: a failed move undoes the earlier ones in reverse order.
+enum class StripResult : std::uint8_t
+{
+    Done,             // every planned item is in its reserved bag slot
+    NoSpace,          // no exact empty destination for every item; nothing changed
+    Refused,          // the plan or a check before the first move refused; nothing changed
+    Restored,         // a move failed and every moved item is back exactly; nothing changed
+    RecoveryRequired  // a move failed and the undo could not be proven exact
 };
 
 struct PlanInput
@@ -128,6 +143,11 @@ struct Outcome
     std::uint32_t newItems = 0;
     std::uint32_t revoked = 0;
     bool capHeld = false;
+    bool bisRestoreFailed = false;   // a replaced item could not be put back; it is in the bags
+    std::uint32_t ownedMissing = 0;  // items the bot owned before that are no longer in its inventory
+
+    // Success is reported only when gearing ran, the cap held and nothing needs recovery.
+    constexpr bool Succeeded() const { return ran && refusal == Refusal::None && capHeld; }
 };
 
 constexpr bool IsCombatSlot(std::uint8_t slot)
@@ -142,9 +162,9 @@ inline bool Carried(Snapshot const& snapshot, std::uint64_t guid)
 
 // Inventory adapter contract:
 //   Snapshot Capture();
-//   bool MoveEquippedToBags(uint8 slot);              true only if the slot is now empty
+//   StripResult StripToBags(uint32 slotMask);        exact, all-or-nothing (bit = equipment slot)
 //   void RunFactory(uint32 quality, uint32 cap, bool incremental);
-//   void ApplyBisOverlay(uint32 cap);
+//   bool ApplyBisOverlay(uint32 cap);                 false: a replaced item could not be put back
 //   void ApplyFinishers(uint32 cap);
 //   bool DestroyCreatedEquipped(uint8 slot, uint64 guid);
 template <class Inventory>
@@ -156,7 +176,7 @@ Outcome Execute(Inventory& inventory, Plan const& plan)
         return outcome;
 
     Snapshot const before = inventory.Capture();
-    std::array<bool, EquipmentSlots> moveOut{};
+    std::uint32_t stripMask = 0;
     std::uint32_t planned = 0;
     for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
     {
@@ -164,9 +184,13 @@ Outcome Execute(Inventory& inventory, Plan const& plan)
         if (!IsCombatSlot(slot) || !item.guid)
             continue;
         bool const overCap = item.itemLevel > plan.cap;
-        moveOut[slot] = plan.strip || (plan.stripOverCap && overCap);
-        planned += moveOut[slot] ? 1 : 0;
-        if (overCap && !moveOut[slot])
+        bool const moveOut = plan.strip || (plan.stripOverCap && overCap);
+        if (moveOut)
+        {
+            stripMask |= 1u << slot;
+            ++planned;
+        }
+        else if (overCap)
             ++outcome.retainedOverCap;
     }
     if (before.freeBagSlots < planned)
@@ -174,22 +198,34 @@ Outcome Execute(Inventory& inventory, Plan const& plan)
         outcome.refusal = Refusal::BagsFull;
         return outcome;
     }
-    for (std::uint8_t slot = 0; slot < EquipmentSlots; ++slot)
+    if (stripMask)
     {
-        if (!moveOut[slot])
-            continue;
-        if (!inventory.MoveEquippedToBags(slot))
+        switch (inventory.StripToBags(stripMask))
         {
-            outcome.refusal = Refusal::StripFailed;
-            return outcome;
+            case StripResult::Done:
+                outcome.stripped = planned;
+                break;
+            case StripResult::NoSpace:
+                outcome.refusal = Refusal::BagsFull;
+                return outcome;
+            case StripResult::Refused:
+                outcome.refusal = Refusal::StripRefused;
+                return outcome;
+            case StripResult::Restored:
+                outcome.refusal = Refusal::StripRestored;
+                return outcome;
+            case StripResult::RecoveryRequired:
+                outcome.refusal = Refusal::RecoveryRequired;
+                return outcome;
         }
-        ++outcome.stripped;
     }
 
     inventory.RunFactory(plan.quality, plan.cap, plan.incremental);
-    if (plan.bisOverlay)
-        inventory.ApplyBisOverlay(plan.cap);
-    inventory.ApplyFinishers(plan.cap);
+    // A BiS restore that failed leaves an item in the bags: stop further optional work (finishers).
+    if (plan.bisOverlay && !inventory.ApplyBisOverlay(plan.cap))
+        outcome.bisRestoreFailed = true;
+    else
+        inventory.ApplyFinishers(plan.cap);
 
     // Only items this command created are checked; gear the bot already owned is left alone.
     Snapshot const after = inventory.Capture();
@@ -207,8 +243,13 @@ Outcome Execute(Inventory& inventory, Plan const& plan)
         else
             outcome.capHeld = false;
     }
-    outcome.refusal = Refusal::None;
+    // Nothing the bot owned may leave its inventory (Core can mail an off-hand it cannot store).
+    for (std::uint64_t guid : before.carried)
+        if (!Carried(after, guid))
+            ++outcome.ownedMissing;
     outcome.ran = true;
+    outcome.refusal =
+        (outcome.bisRestoreFailed || outcome.ownedMissing) ? Refusal::RecoveryRequired : Refusal::None;
     return outcome;
 }
 

@@ -2646,6 +2646,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             if (bestScoreForSlot < 1.2f * old_score)
                 continue;
         }
+        ObjectGuid const oldItemGuid = oldItem ? oldItem->GetGUID() : ObjectGuid::Empty;
         if (oldItem)
         {
             uint8 bagIndex = oldItem->GetBagSlot();
@@ -2663,6 +2664,21 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
         // fail to store in bag
         if (oldItem)
             continue;
+
+        // The check above ran before the old item took a bag slot. A two-hander needs room for the
+        // off-hand too, and Core mails an off-hand it cannot store, so check again and otherwise put
+        // the old item back.
+        if (!oldItemGuid.IsEmpty() && !CanEquipUnseenItem(slot, dest, bestItemForSlot))
+        {
+            uint16 back = 0;
+            Item* stored = bot->GetItemByGuid(oldItemGuid);
+            if (stored && bot->CanEquipItem(slot, back, stored, false) == EQUIP_ERR_OK)
+            {
+                bot->RemoveItem(stored->GetBagSlot(), stored->GetSlot(), true);
+                bot->EquipItem(back, stored, true);
+            }
+            continue;
+        }
 
         if (Item* equipped = bot->EquipNewItem(dest, bestItemForSlot, true))
         {
@@ -4135,11 +4151,13 @@ bool PlayerbotFactory::IsEquipmentAuthorityCurrent(Player const* sender,
 }
 #endif
 
-InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves)
+InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove>& moves,
+                                                          uint32 slotMask)
 {
     moves.clear();
 #if !__has_include("PB59InventorySlotFacts.h")
     (void)bot;
+    (void)slotMask;
     return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 #else
     if (!bot || !bot->IsInWorld() || !bot->IsAlive())
@@ -4152,7 +4170,7 @@ InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vect
     std::vector<PB59::InventorySlotFacts> originals;
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
-        if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+        if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD || !(slotMask & (1u << slot)))
             continue;
         uint16 const source = (uint16(INVENTORY_SLOT_BAG_0) << 8) | slot;
         auto original = bot->CapturePB59InventorySlot(source);
@@ -4256,7 +4274,7 @@ InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vect
         { return (move.source & 255) == EQUIPMENT_SLOT_OFFHAND; });
     if (offhand != prepared.end())
         std::rotate(prepared.begin(), offhand, offhand + 1);
-    InventoryResult const validation = ValidateEquipmentStorage(bot, prepared);
+    InventoryResult const validation = ValidateEquipmentStorage(bot, prepared, slotMask);
     if (validation != EQUIP_ERR_OK)
         return validation;
     moves = std::move(prepared);
@@ -4264,12 +4282,13 @@ InventoryResult PlayerbotFactory::PrepareEquipmentStorage(Player* bot, std::vect
 #endif
 }
 
-InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
-    std::vector<EquipmentStorageMove> const& moves)
+InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot, std::vector<EquipmentStorageMove> const& moves,
+                                                           uint32 slotMask)
 {
 #if !__has_include("PB59InventorySlotFacts.h")
     (void)bot;
     (void)moves;
+    (void)slotMask;
     return EQUIP_ERR_CANT_DO_RIGHT_NOW;
 #else
     if (!bot || !bot->IsInWorld() || !bot->IsAlive() || moves.size() > EQUIPMENT_SLOT_END)
@@ -4290,7 +4309,7 @@ InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
     {
         std::size_t count = 0;
         for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-            if (slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD &&
+            if (slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD && (slotMask & (1u << slot)) &&
                 bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                 ++count;
         return count;
@@ -4300,8 +4319,8 @@ InventoryResult PlayerbotFactory::ValidateEquipmentStorage(Player* bot,
         uint8 const slot = move.source & 255;
         uint8 const bag = move.destination >> 8;
         uint8 const destinationSlot = move.destination & 255;
-        if ((move.source >> 8) != INVENTORY_SLOT_BAG_0 || slot >= EQUIPMENT_SLOT_END ||
-            slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD || !move.count)
+        if ((move.source >> 8) != INVENTORY_SLOT_BAG_0 || slot >= EQUIPMENT_SLOT_END || slot == EQUIPMENT_SLOT_BODY ||
+            slot == EQUIPMENT_SLOT_TABARD || !(slotMask & (1u << slot)) || !move.count)
             return false;
         bool const backpack = bag == INVENTORY_SLOT_BAG_0 && destinationSlot >= INVENTORY_SLOT_ITEM_START &&
             destinationSlot < INVENTORY_SLOT_ITEM_END;
