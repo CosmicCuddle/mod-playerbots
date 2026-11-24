@@ -84,15 +84,32 @@ def check(trainer, factory_cpp, factory_h):
          "StripToBags plans exact destinations before the transaction runs")
     rule(ordered(strip, "CapturePB59InventorySlot(position)", "return std::nullopt;"),
          "StripToBags inspects exact slot facts and reports unknown slots as unknown")
-    rule(strip.count("item->GetGUID().GetRawValue() != move.position.itemGuid") >= 2,
-         "StripToBags checks the item identity before and after the unequip hook")
-    rule(ordered(strip, "CanUnequipItem(from, false)", "return false;", "item = _bot->GetItemByPos(from);",
-                 "CanStoreItem(to >> 8, to & 255, dest, item, false)", "dest.front().pos != to",
-                 "RemoveItem(from >> 8, from & 255, true)", "StoreItem(dest, item, true) == item"),
-         "a forward move re-reads the item after the hook and stores it at exactly the planned slot")
-    rule(ordered(strip, "if (restore)", "CanEquipItem(to & 255, dest, item, false)", "dest != to", "return false;",
-                 "RemoveItem(", "EquipItem(dest, item, true) == item"),
-         "a restore move checks the exact original slot and the returned item")
+    rule(strip.count("item = current();") == 2 and "Item* item = current();" in strip and
+         "item->GetGUID().GetRawValue() == move.position.itemGuid" in strip,
+         "StripToBags checks the item identity before and after the hook")
+    rule(ordered(strip, "CanEquipItem(to & 255, equipDest, item, false)", "CanUnequipItem(from, false)",
+                 "item = current();", "!contextValid()", "return false;",
+                 "CanStoreItem(to >> 8, to & 255, storeDest, item, false)", "storeDest.front().pos != to",
+                 "RemoveItem(from >> 8, from & 255, true)", "!Detached(item, from)", "return false;",
+                 "EquipItem(equipDest, item, true) == item", "StoreItem(storeDest, item, true) == item"),
+         "every move re-reads the item and the bot context after the hook, writes only to the exact slot, "
+         "and links the item only once it left its old slot (Grok F2/F4)")
+    rule("GetItemByPos(from)" in strip and "move.position.itemGuid" in strip,
+         "a move identifies the item by exact position and GUID")
+    # Grok F1: "nothing changed" only if the whole inventory and context are proven unchanged.
+    rule(ordered(strip, "auto const before = Fingerprint();", "return StripResult::Refused;",
+                 "PrepareEquipmentStorage(_bot, plan, slotMask)", "if (!unchanged())",
+                 "return StripResult::RecoveryRequired;", "return StripResult::NoSpace;"),
+         "a plan or validation hook that changed anything gives recovery, not refused or no space")
+    rule(ordered(strip, "TransactionStatus::Rejected:", "unchanged() ? StripResult::Refused : StripResult::RecoveryRequired"),
+         "a rejected transaction is only 'refused' if nothing changed")
+    fingerprint = method(cls, "std::optional<InventoryFingerprint> Fingerprint() const")
+    rule(all(x in fingerprint for x in ("INVENTORY_SLOT_ITEM_START", "INVENTORY_SLOT_BAG_START", "GetBagSize()",
+                                         "PlayerLogout()", "return std::nullopt;")),
+         "the fingerprint covers equipment, backpack, every bag, the session and logout, and fails closed")
+    # Grok F3: no nested strip and no nested command for the same bot.
+    rule(ordered(strip, "if (_stripping)", "return StripResult::Refused;", "_stripping = true;"),
+         "a strip refuses to start inside another strip")
     rule(ordered(strip, "TransactionStatus::Committed:", "return StripResult::Done;",
                  "TransactionStatus::RolledBack:", "return StripResult::Restored;",
                  "TransactionStatus::RecoveryRequired:", "return StripResult::RecoveryRequired;"),
@@ -111,14 +128,18 @@ def check(trainer, factory_cpp, factory_h):
          "BiS rows pass the cap, the raid gate and CanUseItem before anything else")
     rule(ordered(bis, "CanEquipNewItem(slot, dest, entry, true)", "continue;", "StripToBags(1u << slot)"),
          "BiS checks CanEquipNewItem before moving the current item")
-    rule(ordered(bis, "StripToBags(1u << slot) != PlayerbotsAutoGearExec::StripResult::Done", "continue;",
-                 "CanEquipNewItem(slot, dest, entry, false)", "EquipNewItem(", "!RestoreToSlot(previous, slot)",
-                 "return false;"),
-         "BiS moves only after an exact strip, re-checks, and stops when the restore fails")
+    rule(ordered(bis, "StripToBags(1u << slot)", "StripResult::RecoveryRequired", "return false;",
+                 "StripResult::Done", "continue;", "CanEquipNewItem(slot, dest, entry, false)", "!InWorld()",
+                 "EquipNewItem(", "!RestoreToSlot(previous, slot)", "return false;"),
+         "BiS moves only after an exact strip, stops on an unproven strip, re-checks the bot after the hook, "
+         "and stops when the restore fails")
     rule("SetReputation" not in bis and "GiveReputation" not in bis, "BiS never grants reputation")
-    rule(ordered(restore, "CanEquipItem(", "return false;", "RemoveItem(", "EquipItem(dest, item, true) != item",
-                 "return false;", "restored->GetGUID() == guid"),
-         "RestoreToSlot checks CanEquipItem first and reports whether exactly that item is back")
+    rule(ordered(restore, "CanEquipItem(", "return false;", "item = _bot->GetItemByPos(from);",
+                 "item->GetGUID() != guid", "!InWorld()", "RemoveItem(from >> 8, from & 255, true)",
+                 "!Detached(item, from)", "EquipItem(dest, item, true) != item", "return false;",
+                 "restored->GetGUID() == guid"),
+         "RestoreToSlot re-reads the item and the bot after the hook, checks it was detached, and reports "
+         "whether exactly that item is back")
     rule("SetSourceFilter(_sources)" in finishers, "finishers (ammo, gems) use the raid source filter")
 
     # The world plan: facts first, refusal decided by the plan before the executor touches anything.
@@ -131,6 +152,9 @@ def check(trainer, factory_cpp, factory_h):
         rule(call not in plan, f"the world plan never calls {call} directly")
     rule(ordered(plan, "if (!sPlayerbotAIConfig.AutoGearIPCapEnable", "return false;"),
          "the world plan returns before anything when the IP cap is off")
+    rule(ordered(plan, "thread_local std::unordered_set<uint64> running;", "if (!running.insert(botGuid).second)",
+                 "return false;", "running.erase(guid);", "ResolveCommand("),
+         "one AutoGear command per bot at a time, released on every exit (Grok F3)")
     rule(ordered(plan, "Execute(inventory, plan)", "if (!outcome.Succeeded())", "return false;",
                  "\"autogear_ip_done_msg\""),
          "the world plan whispers success only after outcome.Succeeded()")
@@ -170,13 +194,25 @@ def mutants(trainer, factory_cpp, factory_h):
     yield "second chance on", re.sub(r"/\*secondChance\*/\s*false", "/*secondChance*/ true", trainer, count=1), factory_cpp, factory_h
     yield "no CanUseItem", trainer.replace("_bot->CanUseItem(proto) != EQUIP_ERR_OK", "false", 1), factory_cpp, factory_h
     yield "no restore", trainer.replace("!RestoreToSlot(previous, slot)", "false", 1), factory_cpp, factory_h
-    yield "restore unchecked", trainer.replace("if (_bot->EquipItem(dest, item, true) != item)", "if (false)", 1), factory_cpp, factory_h
+    yield "restore unchecked", trainer.replace("|| _bot->EquipItem(dest, item, true) != item)", "|| false)", 1), factory_cpp, factory_h
     yield "rollback as done", trainer.replace("return StripResult::Restored;", "return StripResult::Done;", 1), factory_cpp, factory_h
-    yield "store unchecked", trainer.replace("return _bot->StoreItem(dest, item, true) == item;",
-                                             "_bot->StoreItem(dest, item, true);\n                return true;", 1), factory_cpp, factory_h
-    yield "pointer across hook", trainer.replace(
-        "return false;\n                item = _bot->GetItemByPos(from);", "return false;", 1), factory_cpp, factory_h
-    yield "any store slot", trainer.replace("dest.front().pos != to ||", "", 1), factory_cpp, factory_h
+    yield "store unchecked", trainer.replace(": _bot->StoreItem(storeDest, item, true) == item;",
+                                             ": (_bot->StoreItem(storeDest, item, true), true);", 1), factory_cpp, factory_h
+    yield "pointer across hook", trainer.replace("                item = current();\n", "", 1), factory_cpp, factory_h
+    yield "no context recheck (F2)", trainer.replace("if (!item || !contextValid())", "if (!item)", 1), factory_cpp, factory_h
+    yield "no detach check (F4)", trainer.replace("if (!Detached(item, from))\n                    return false;", "", 1), factory_cpp, factory_h
+    yield "hook change reported as refused (F1)", trainer.replace(
+        "if (!unchanged())\n                return StripResult::RecoveryRequired;", "", 1), factory_cpp, factory_h
+    yield "rejected always refused (F1)", trainer.replace(
+        "unchanged() ? StripResult::Refused : StripResult::RecoveryRequired", "StripResult::Refused", 1), factory_cpp, factory_h
+    yield "no nested-strip guard (F3)", trainer.replace("if (_stripping)\n                return StripResult::Refused;", "", 1), factory_cpp, factory_h
+    yield "no command guard (F3)", trainer.replace("if (!running.insert(botGuid).second)", "if (false)", 1), factory_cpp, factory_h
+    yield "BiS ignores unproven strip", trainer.replace(
+        "if (strip == PlayerbotsAutoGearExec::StripResult::RecoveryRequired)\n                        return false;", "", 1), factory_cpp, factory_h
+    yield "restore without hook recheck", trainer.replace(
+        "if (!item || item->GetGUID() != guid || _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) || !InWorld())",
+        "if (!item)", 1), factory_cpp, factory_h
+    yield "any store slot", trainer.replace("storeDest.front().pos != to ||", "", 1), factory_cpp, factory_h
     yield "success when ran", trainer.replace("if (!outcome.Succeeded())", "if (!outcome.ran)", 1), factory_cpp, factory_h
     yield "no recovery text", trainer.replace("case Refusal::RecoveryRequired:", "case Refusal::None:", 1), factory_cpp, factory_h
     yield "factory mails off-hand", trainer, factory_cpp.replace(

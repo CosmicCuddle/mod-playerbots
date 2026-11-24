@@ -25,6 +25,8 @@
 #include "WorldSession.h"
 #include "Trainer.h"
 #include <limits>
+#include <optional>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -704,8 +706,33 @@ namespace
             (void)slotMask;
             return StripResult::Refused;
 #else
+            // A script hook could start another strip of this bot while one is running.
+            if (_stripping)
+                return StripResult::Refused;
+            _stripping = true;
+            struct Reset
+            {
+                bool& flag;
+                ~Reset() { flag = false; }
+            } const reset{_stripping};
+
+            // Planning and validation run CanUnequipItem, whose script hook can change anything. Nothing of
+            // ours has moved before the transaction, so "nothing changed" (Refused, NoSpace) is reported only
+            // if the whole inventory and the bot's context are proven unchanged; otherwise recovery is needed
+            // (coordination #52 7130720231 point 2, Grok F1). A hook change that leaves the plan valid still
+            // stops the strip: nothing is moved on top of changes we did not make.
+            auto const before = Fingerprint();
+            if (!before)
+                return StripResult::Refused;
+            auto unchanged = [&]()
+            {
+                auto const after = Fingerprint();
+                return after && *after == *before;
+            };
             std::vector<PlayerbotFactory::EquipmentStorageMove> plan;
             InventoryResult const prepared = PlayerbotFactory::PrepareEquipmentStorage(_bot, plan, slotMask);
+            if (!unchanged())
+                return StripResult::RecoveryRequired;
             if (prepared == EQUIP_ERR_INVENTORY_FULL)
                 return StripResult::NoSpace;
             if (prepared != EQUIP_ERR_OK || plan.empty())
@@ -732,29 +759,43 @@ namespace
             {
                 uint16 const from = restore ? move.position.destination : move.position.source;
                 uint16 const to = restore ? move.position.source : move.position.destination;
-                Item* item = _bot->GetItemByPos(from);
-                if (!item || item->GetGUID().GetRawValue() != move.position.itemGuid || item->GetCount() != move.count)
+                // The exact item at `from`, re-read each time: CanEquipItem and CanUnequipItem run script hooks,
+                // so no pointer is kept across them.
+                auto current = [&]() -> Item*
+                {
+                    Item* item = _bot->GetItemByPos(from);
+                    return item && item->GetGUID().GetRawValue() == move.position.itemGuid &&
+                                   item->GetCount() == move.count
+                               ? item
+                               : nullptr;
+                };
+                Item* item = current();
+                if (!item)
                     return false;
+                uint16 equipDest = 0;
+                ItemPosCountVec storeDest;
                 if (restore)
                 {
-                    uint16 dest = 0;
-                    if (_bot->CanEquipItem(to & 255, dest, item, false) != EQUIP_ERR_OK || dest != to)
+                    if (_bot->CanEquipItem(to & 255, equipDest, item, false) != EQUIP_ERR_OK || equipDest != to)
                         return false;
-                    _bot->RemoveItem(from >> 8, from & 255, true);
-                    return _bot->EquipItem(dest, item, true) == item;
                 }
-                // The unequip check runs a script hook: never reuse the pointer across it.
-                if (_bot->CanUnequipItem(from, false) != EQUIP_ERR_OK)
+                else if (_bot->CanUnequipItem(from, false) != EQUIP_ERR_OK)
                     return false;
-                item = _bot->GetItemByPos(from);
-                if (!item || item->GetGUID().GetRawValue() != move.position.itemGuid)
+                // After the hook and before any write: the bot is still here and the item is still in place
+                // (Grok F2). The store check itself runs no script.
+                item = current();
+                if (!item || !contextValid())
                     return false;
-                ItemPosCountVec dest;
-                if (_bot->CanStoreItem(to >> 8, to & 255, dest, item, false) != EQUIP_ERR_OK || dest.size() != 1 ||
-                    dest.front().pos != to || dest.front().count != move.count)
+                if (!restore &&
+                    (_bot->CanStoreItem(to >> 8, to & 255, storeDest, item, false) != EQUIP_ERR_OK ||
+                     storeDest.size() != 1 || storeDest.front().pos != to || storeDest.front().count != move.count))
                     return false;
                 _bot->RemoveItem(from >> 8, from & 255, true);
-                return _bot->StoreItem(dest, item, true) == item;
+                // Never link an item that is still linked somewhere (Grok F4): it must have left `from`.
+                if (!Detached(item, from))
+                    return false;
+                return restore ? _bot->EquipItem(equipDest, item, true) == item
+                               : _bot->StoreItem(storeDest, item, true) == item;
             };
 
             switch (
@@ -769,7 +810,7 @@ namespace
                 case PlayerbotsAutoGearStorage::TransactionStatus::Rejected:
                     break;
             }
-            return StripResult::Refused;
+            return unchanged() ? StripResult::Refused : StripResult::RecoveryRequired;
 #endif
         }
 
@@ -780,7 +821,8 @@ namespace
                                        /*applyFinishers*/ false, cap, _sources);
         }
 
-        // False when a replaced item could not be put back: it stays in the bags and the caller stops.
+        // False when the run must stop for recovery: a replaced item could not be put back (it stays in the
+        // bags), or a one-slot strip could not be proven to have changed nothing.
         bool ApplyBisOverlay(uint32 cap)
         {
             uint8 const cls = _bot->getClass();
@@ -809,10 +851,18 @@ namespace
                 if (_bot->CanEquipNewItem(slot, dest, entry, true) != EQUIP_ERR_OK)
                     continue;
                 ObjectGuid const previous = current ? current->GetGUID() : ObjectGuid::Empty;
-                if (current && StripToBags(1u << slot) != PlayerbotsAutoGearExec::StripResult::Done)
-                    continue;
-                if (_bot->CanEquipNewItem(slot, dest, entry, false) != EQUIP_ERR_OK ||
-                    !_bot->EquipNewItem(dest, entry, true))
+                if (current)
+                {
+                    // Nothing changed (refused, no room, rolled back): keep the factory pick. Anything we
+                    // cannot prove unchanged stops the run as a recovery.
+                    PlayerbotsAutoGearExec::StripResult const strip = StripToBags(1u << slot);
+                    if (strip == PlayerbotsAutoGearExec::StripResult::RecoveryRequired)
+                        return false;
+                    if (strip != PlayerbotsAutoGearExec::StripResult::Done)
+                        continue;
+                }
+                if (_bot->CanEquipNewItem(slot, dest, entry, false) != EQUIP_ERR_OK || !InWorld() ||
+                    _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) || !_bot->EquipNewItem(dest, entry, true))
                 {
                     if (!previous.IsEmpty() && !RestoreToSlot(previous, slot))
                         return false;
@@ -849,19 +899,94 @@ namespace
         {
             Item* item = _bot->GetItemByGuid(guid);
             uint16 dest = 0;
-            if (!item || _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) ||
-                _bot->CanEquipItem(slot, dest, item, false) != EQUIP_ERR_OK)
+            if (!item || _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                 return false;
-            _bot->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
-            if (_bot->EquipItem(dest, item, true) != item)
+            uint16 const from = item->GetPos();
+            if (_bot->CanEquipItem(slot, dest, item, false) != EQUIP_ERR_OK)
+                return false;
+            // CanEquipItem ran a script hook: the item must still be where it was, and the bot still here.
+            item = _bot->GetItemByPos(from);
+            if (!item || item->GetGUID() != guid || _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) || !InWorld())
+                return false;
+            _bot->RemoveItem(from >> 8, from & 255, true);
+            if (!Detached(item, from) || _bot->EquipItem(dest, item, true) != item)
                 return false;
             Item* restored = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
             return restored && restored->GetGUID() == guid;
         }
 
+        bool InWorld() const
+        {
+            WorldSession* session = _bot->GetSession();
+            return _bot->IsInWorld() && session && !session->PlayerLogout();
+        }
+
+        // RemoveItem took the item out of `from` and out of every container.
+        bool Detached(Item* item, uint16 from) const
+        {
+            return !_bot->GetItemByPos(from) && item->GetSlot() == NULL_SLOT &&
+                   item->GetGuidValue(ITEM_FIELD_CONTAINED).IsEmpty();
+        }
+
+#if __has_include("PB59InventorySlotFacts.h")
+        // Everything a script hook could change: every inventory position the bot has, with the exact copied
+        // item instance, plus the session it is in. Unknown when any position is unreadable.
+        struct InventoryFingerprint
+        {
+            WorldSession* session = nullptr;
+            bool inWorld = false;
+            bool alive = false;
+            bool logout = false;
+            std::vector<PB59::InventorySlotFacts> slots;
+            std::vector<uint64> others;  // shirt, tabard and bag items, which slot facts do not cover
+            bool operator==(InventoryFingerprint const&) const = default;
+        };
+
+        std::optional<InventoryFingerprint> Fingerprint() const
+        {
+            InventoryFingerprint print;
+            print.session = _bot->GetSession();
+            print.inWorld = _bot->IsInWorld();
+            print.alive = _bot->IsAlive();
+            print.logout = !print.session || print.session->PlayerLogout();
+            auto add = [&](uint8 bag, uint8 slot)
+            {
+                auto facts = _bot->CapturePB59InventorySlot((uint16(bag) << 8) | slot);
+                if (facts)
+                    print.slots.push_back(std::move(*facts));
+                return facts.has_value();
+            };
+            auto other = [&](uint8 slot)
+            {
+                Item* item = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                print.others.push_back(item ? item->GetGUID().GetRawValue() : 0);
+            };
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            {
+                if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+                    other(slot);
+                else if (!add(INVENTORY_SLOT_BAG_0, slot))
+                    return std::nullopt;
+            }
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                if (!add(INVENTORY_SLOT_BAG_0, slot))
+                    return std::nullopt;
+            for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            {
+                other(bag);
+                if (Bag* container = _bot->GetBagByPos(bag))
+                    for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                        if (!add(bag, static_cast<uint8>(slot)))
+                            return std::nullopt;
+            }
+            return print;
+        }
+#endif
+
         Player* _bot;
         uint32 _quality;
         PlayerbotsAutoGearSourceAccess::Filter const* _sources;
+        bool _stripping = false;
     };
 
     std::string RefusalText(PlayerbotsAutoGearExec::Refusal refusal)
@@ -915,6 +1040,22 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     if (!sPlayerbotAIConfig.AutoGearIPCapEnable || !bot || !ai || !sender ||
         !bot->IsInWorld() || !sender->IsInWorld() || !bot->GetSession() || !sender->GetSession())
         return false;
+    // One AutoGear command per bot at a time (Grok F3): a script hook inside a running command could
+    // otherwise start a nested one for the same bot. The command runs on the world thread.
+    thread_local std::unordered_set<uint64> running;
+    uint64 const botGuid = bot->GetGUID().GetRawValue();
+    if (!running.insert(botGuid).second)
+    {
+        ai->Whisper(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                        "autogear_ip_busy_error", "I'm already changing my gear. Nothing else was changed.", {}),
+                    sender->GetName());
+        return false;
+    }
+    struct Release
+    {
+        uint64 guid;
+        ~Release() { running.erase(guid); }
+    } const release{botGuid};
     PlayerbotsAutoGearExec::CommandFacts facts;
     facts.bis = bis;
     facts.argument = argument;

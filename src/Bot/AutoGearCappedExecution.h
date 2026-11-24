@@ -143,7 +143,7 @@ struct Outcome
     std::uint32_t newItems = 0;
     std::uint32_t revoked = 0;
     bool capHeld = false;
-    bool bisRestoreFailed = false;   // a replaced item could not be put back; it is in the bags
+    bool bisRestoreFailed = false;   // BiS stopped: an item could not be put back, or a strip was unproven
     std::uint32_t ownedMissing = 0;  // items the bot owned before that are no longer in its inventory
 
     // Success is reported only when gearing ran, the cap held and nothing needs recovery.
@@ -164,7 +164,7 @@ inline bool Carried(Snapshot const& snapshot, std::uint64_t guid)
 //   Snapshot Capture();
 //   StripResult StripToBags(uint32 slotMask);        exact, all-or-nothing (bit = equipment slot)
 //   void RunFactory(uint32 quality, uint32 cap, bool incremental);
-//   bool ApplyBisOverlay(uint32 cap);                 false: a replaced item could not be put back
+//   bool ApplyBisOverlay(uint32 cap);                 false: stopped, recovery needed
 //   void ApplyFinishers(uint32 cap);
 //   bool DestroyCreatedEquipped(uint8 slot, uint64 guid);
 template <class Inventory>
