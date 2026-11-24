@@ -24,6 +24,7 @@
 #include "BudgetValues.h"
 #include "Config.h"
 #include "Event.h"
+#include "ObjectAccessor.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -930,34 +931,64 @@ namespace
             auto const stamp = _bot->CapturePB59InventoryStamp();
             if (!session || !before || !stamp)
                 return StripResult::Refused;
-            uint64 const owner = _bot->GetGUID().GetRawValue();
+            ObjectGuid const botGuid = _bot->GetGUID();
+            std::string const botText = botGuid.ToString();
+            uint64 const owner = botGuid.GetRawValue();
+            uint64 const ownerIncarnation = _bot->GetPB59OwnerIncarnation();
+            uint64 const sessionIncarnation = session->GetPB59SessionIncarnation();
             Built const built = BuildMoves(owner, plan, sources, destinations);
             if (built.error != BuildError::None)
                 return StripResult::Refused;
 
-            PB59::InventoryBatchResult const result = _bot->ExecutePB59InventoryBatchPlan(
-                owner, _bot->GetPB59OwnerIncarnation(), session->GetPB59SessionIncarnation(), *stamp, built.moves);
+            PB59::InventoryBatchResult const result =
+                _bot->ExecutePB59InventoryBatchPlan(owner, ownerIncarnation, sessionIncarnation, *stamp, built.moves);
 
+            CoreBatchOutcome const outcome = OutcomeFrom(result.outcome);
+            std::size_t const listed = std::min<std::size_t>(result.recoveryCount, result.recoveryGuids.size());
+            std::span<uint64 const> const guids(result.recoveryGuids.data(), listed);
+            std::string const native = " nativeFailure=" + std::to_string(static_cast<uint32>(result.failure));
             CoreBatchObservation observed;
+            observed.missing = result.recoveryCount;
+            observed.failureReported = result.failure != PB59::InventoryBatchFailure::None;
+            // Core's recovery may have quarantined the bot or ended its context: nothing more is read from it,
+            // and the log uses only what was copied before the call (#52 7137340399).
+            if (outcome == CoreBatchOutcome::RecoveryRequired)
+            {
+                LOG_ERROR("playerbots", "PB59 AutoGear bot={} {}{}", botText, Diagnostic(outcome, observed, guids),
+                          native);
+                return StripResult::RecoveryRequired;
+            }
+            // Any other result is checked against the bot only while it is provably the same bot in the same
+            // session; otherwise the result cannot be proven and is a recovery.
+            if (!SameContext(botGuid, session, ownerIncarnation, sessionIncarnation))
+            {
+                LOG_ERROR("playerbots", "PB59 AutoGear bot={} {} context changed during the batch{}", botText,
+                          Diagnostic(outcome, observed, guids), native);
+                return StripResult::RecoveryRequired;
+            }
             auto const after = Fingerprint();
             observed.unchangedSinceStart = after && *after == *before;
             observed.everyMoveAtDestination = AllAtDestination(plan);
-            observed.missing = result.recoveryCount;
-            observed.failureReported = result.failure != PB59::InventoryBatchFailure::None;
-            CoreBatchOutcome const outcome = OutcomeFrom(result.outcome);
             StripResult const strip = ToStripResult(outcome, observed);
-            if (strip != StripResult::Done)
-            {
-                std::size_t const listed = std::min<std::size_t>(result.recoveryCount, result.recoveryGuids.size());
-                std::string const line =
-                    Diagnostic(outcome, observed, std::span<uint64 const>(result.recoveryGuids.data(), listed)) +
-                    " nativeFailure=" + std::to_string(static_cast<uint32>(result.failure));
-                if (strip == StripResult::RecoveryRequired)
-                    LOG_ERROR("playerbots", "PB59 AutoGear bot={} {}", _bot->GetGUID().ToString(), line);
-                else
-                    LOG_DEBUG("playerbots", "PB59 AutoGear bot={} {}", _bot->GetGUID().ToString(), line);
-            }
+            if (strip == StripResult::RecoveryRequired)
+                LOG_ERROR("playerbots", "PB59 AutoGear bot={} {}{}", botText, Diagnostic(outcome, observed, guids),
+                          native);
+            else if (strip != StripResult::Done)
+                LOG_DEBUG("playerbots", "PB59 AutoGear bot={} {}{}", botText, Diagnostic(outcome, observed, guids),
+                          native);
             return strip;
+        }
+
+        // The bot is still the connected player with this GUID, owner incarnation and session. The pointer is
+        // compared before it is read, so a deleted or replaced bot is never dereferenced.
+        bool SameContext(ObjectGuid guid, WorldSession* session, uint64 ownerIncarnation,
+                         uint64 sessionIncarnation) const
+        {
+            Player* const current = ObjectAccessor::FindConnectedPlayer(guid);
+            return current == _bot && current->GetSession() == session &&
+                   current->GetPB59OwnerIncarnation() == ownerIncarnation &&
+                   session->GetPB59SessionIncarnation() == sessionIncarnation && current->IsInWorld() &&
+                   !session->PlayerLogout();
         }
 
         // Each planned item is exactly at its planned destination and its source is empty.
@@ -1168,23 +1199,57 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
         LOG_ERROR("playerbots", "PB59 AutoGear bot={} sender={} refused: the raid source index is not loaded",
             bot->GetGUID().ToString(), sender->GetGUID().ToString());
 
+    // Copied before anything moves: after a recovery Core may hold the bot in quarantine, and neither player
+    // is read again until both are proven to be the same players in the same sessions (#52 7137340399).
+    ObjectGuid const botId = bot->GetGUID();
+    ObjectGuid const senderId = sender->GetGUID();
+    std::string const botText = botId.ToString();
+    std::string const senderText = senderId.ToString();
+    std::string const senderName = sender->GetName();
+    WorldSession* const botSession = bot->GetSession();
+    WorldSession* const senderSession = sender->GetSession();
+    uint64 const botIncarnation = bot->GetPB59OwnerIncarnation();
+    uint64 const senderIncarnation = sender->GetPB59OwnerIncarnation();
+    uint64 const botSessionIncarnation = botSession->GetPB59SessionIncarnation();
+    uint64 const senderSessionIncarnation = senderSession->GetPB59SessionIncarnation();
+
     PlayerAutoGearInventory inventory(bot, plan.quality, &sources);
     PlayerbotsAutoGearExec::Outcome const outcome = PlayerbotsAutoGearExec::Execute(inventory, plan);
+    bool const recovery = outcome.refusal == PlayerbotsAutoGearExec::Refusal::RecoveryRequired;
 
     LOG_INFO("playerbots",
              "PB59 AutoGear bot={} sender={} raw={} effective={} authority={} cap={} form={} refusal={} ran={} "
              "stripped={} new={} revoked={} capHeld={} bisRestoreFailed={} ownedMissing={}",
-             bot->GetGUID().ToString(), sender->GetGUID().ToString(), request.rawStage, request.effectiveStage,
-             request.progressionContextVerified, decision.cap, static_cast<uint32>(decision.form),
-             static_cast<uint32>(outcome.refusal), outcome.ran, outcome.stripped, outcome.newItems, outcome.revoked,
-             outcome.capHeld, outcome.bisRestoreFailed, outcome.ownedMissing);
-    if (outcome.ran && !outcome.capHeld)
-        LOG_ERROR("playerbots", "PB59 AutoGear bot={} kept a new item above cap {}", bot->GetGUID().ToString(),
-            plan.cap);
-    if (outcome.refusal == PlayerbotsAutoGearExec::Refusal::RecoveryRequired)
+             botText, senderText, request.rawStage, request.effectiveStage, request.progressionContextVerified,
+             decision.cap, static_cast<uint32>(decision.form), static_cast<uint32>(outcome.refusal), outcome.ran,
+             outcome.stripped, outcome.newItems, outcome.revoked, outcome.capHeld, outcome.bisRestoreFailed,
+             outcome.ownedMissing);
+    if (outcome.ran && !outcome.capHeld && !recovery)
+        LOG_ERROR("playerbots", "PB59 AutoGear bot={} kept a new item above cap {}", botText, plan.cap);
+    if (recovery)
         LOG_ERROR("playerbots",
-                  "PB59 AutoGear bot={} needs recovery: stripRecovery={} bisRestoreFailed={} ownedMissing={}",
-                  bot->GetGUID().ToString(), !outcome.ran, outcome.bisRestoreFailed, outcome.ownedMissing);
+                  "PB59 AutoGear bot={} needs recovery: stripRecovery={} factoryStopped={} bisRestoreFailed={} "
+                  "ownedMissing={}",
+                  botText, !outcome.ran, outcome.factoryStopped, outcome.bisRestoreFailed, outcome.ownedMissing);
+
+    // The reply goes out only while both players are provably the ones that started the command.
+    auto const same =
+        [](ObjectGuid id, Player* expected, WorldSession* session, uint64 incarnation, uint64 sessionIncarnation)
+    {
+        Player* const current = ObjectAccessor::FindConnectedPlayer(id);
+        return current == expected && current->GetSession() == session &&
+               current->GetPB59OwnerIncarnation() == incarnation &&
+               session->GetPB59SessionIncarnation() == sessionIncarnation && current->IsInWorld() &&
+               !session->PlayerLogout();
+    };
+    if (!same(botId, bot, botSession, botIncarnation, botSessionIncarnation) ||
+        !same(senderId, sender, senderSession, senderIncarnation, senderSessionIncarnation) ||
+        GET_PLAYERBOT_AI(bot) != ai)
+    {
+        LOG_ERROR("playerbots", "PB59 AutoGear bot={} sender={} context changed during the command; no reply sent",
+                  botText, senderText);
+        return false;
+    }
 
     // Success is whispered only when gearing ran, the cap held and nothing needs recovery
     // (coordination #52 7118646677, gate A06).
@@ -1194,18 +1259,18 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
             ai->Whisper(PlayerbotTextMgr::instance().GetBotTextOrDefault(
                             "autogear_ip_cap_error",
                             "I couldn't keep my new gear under your progression limit. Please check my gear.", {}),
-                        sender->GetName());
+                        senderName);
         else
-            ai->Whisper(RefusalText(outcome.refusal), sender->GetName());
+            ai->Whisper(RefusalText(outcome.refusal), senderName);
         return false;
     }
     std::map<std::string, std::string> phs;
     phs["%ilvl"] = std::to_string(plan.cap);
     phs["%count"] = std::to_string(outcome.newItems - outcome.revoked);
-    ai->Whisper(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-                    "autogear_ip_done_msg", "Geared up to item level %ilvl from your progression (%count new items).",
-                    phs),
-        sender->GetName());
+    ai->Whisper(
+        PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "autogear_ip_done_msg", "Geared up to item level %ilvl from your progression (%count new items).", phs),
+        senderName);
     return true;
 }
 
