@@ -6,6 +6,7 @@
 
 #include "TrainerAction.h"
 
+#include <array>
 #include <limits>
 #include <optional>
 #include <span>
@@ -1028,7 +1029,9 @@ namespace
             bool alive = false;
             bool logout = false;
             std::vector<PB59::InventorySlotFacts> slots;
-            std::vector<uint64> others;  // shirt, tabard and bag items, which slot facts do not cover
+            // Fixed traversal order identifies the shirt, tabard and equipped bag positions.
+            // Raw identity/owner/entry/count only; not Core-validated slot or lifetime facts.
+            std::vector<std::array<uint64, 4>> others;
             bool operator==(InventoryFingerprint const&) const = default;
         };
 
@@ -1049,7 +1052,9 @@ namespace
             auto other = [&](uint8 slot)
             {
                 Item* item = _bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-                print.others.push_back(item ? item->GetGUID().GetRawValue() : 0);
+                print.others.push_back(item ? std::array<uint64, 4>{item->GetGUID().GetRawValue(),
+                    item->GetOwnerGUID().GetRawValue(), uint64(item->GetEntry()), uint64(item->GetCount())}
+                                            : std::array<uint64, 4>{});
             };
             for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
             {
