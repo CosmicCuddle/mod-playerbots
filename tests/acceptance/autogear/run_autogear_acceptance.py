@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wotlk_client as wc  # noqa: E402
 from fixture_guard import fresh_install, fresh_database_names  # noqa: E402
+from acceptance_oracle import parse_result, evidence_problems  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -228,8 +229,8 @@ class Fixture:
     # --- evidence ---------------------------------------------------------------------------------
     def inventory(self, guid):
         rows = self.sql(self.names["chars"],
-                        f"SELECT ci.bag, ci.slot, ci.item, ii.itemEntry FROM character_inventory ci "
-                        f"JOIN item_instance ii ON ii.guid = ci.item WHERE ci.guid = {guid} ORDER BY ci.bag, ci.slot")
+                        f"SELECT ci.bag, ci.slot, ci.item, COALESCE(ii.itemEntry, 0) FROM character_inventory ci "
+                        f"LEFT JOIN item_instance ii ON ii.guid = ci.item WHERE ci.guid = {guid} ORDER BY ci.bag, ci.slot")
         mail = self.sql(self.names["chars"], f"SELECT COUNT(*) FROM mail WHERE receiver = {guid}")[0][0]
         return {"rows": [tuple(int(v) for v in r) for r in rows], "mail": int(mail)}
 
@@ -255,12 +256,6 @@ class Fixture:
 
 def guid_text(low):
     return f"GUID Full: 0x{low:016x} Type: Player"
-
-
-def parse_result(line):
-    fields = dict(re.findall(r"(\w+)=([^\s]+)", line))
-    return {k: fields.get(k) for k in ("cap", "refusal", "ran", "stripped", "new", "revoked", "capHeld",
-                                       "bisRestoreFailed", "ownedMissing")}
 
 
 class Runner:
@@ -324,12 +319,9 @@ class Runner:
                 problems.append(f"ownedMissing={result['ownedMissing']}")
         if expect.get("unchanged") and before["rows"] != after["rows"]:
             problems.append("inventory changed on a refused command")
-        cap = int(result["cap"]) if result and result["cap"] and result["cap"].isdigit() else 0
         new_equipped = [r for r in after["rows"] if r[0] == 0 and r[1] < 19 and r[2] not in before_guids]
         levels = self.fx.item_levels([r[3] for r in new_equipped])
-        over = [(r[1], r[3], levels.get(r[3])) for r in new_equipped if cap and levels.get(r[3], 0) > cap]
-        if over:
-            problems.append(f"new equipped items above cap {cap}: {over}")
+        problems.extend(evidence_problems(before, after, result, levels))
         if expect.get("reply") and not (reply and re.search(expect["reply"], reply)):
             problems.append(f"reply {reply!r} does not match {expect['reply']!r}")
         return {"case": name, "bot": bot["name"], "pass": not problems, "problems": problems, "result": result,
