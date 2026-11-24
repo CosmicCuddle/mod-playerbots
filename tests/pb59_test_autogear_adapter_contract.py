@@ -228,6 +228,23 @@ def mutants(trainer, factory_cpp, factory_h):
     yield "swap", trainer.replace("_bot->AutoUnequipOffhandIfNeed();", "_bot->SwapItem(0, 0);", 1), factory_cpp, factory_h
 
 
+def check_core_batch(header, trainer):
+    """The Core batch preparation stays dormant and can never move items itself (#52 7132070192)."""
+    errors = []
+    for call in ("RemoveItem(", "StoreItem(", "EquipItem(", "SwapItem(", "DestroyItem(", "MoveItemFromInventory("):
+        if call in header:
+            errors.append(f"the Core batch header never calls {call}")
+    if "AutoGearCoreBatchRequest.h" in trainer:
+        errors.append("the Core batch header has no caller until Codex's executor SHA exists")
+    mapping = between(header, "constexpr PlayerbotsAutoGearExec::StripResult ToStripResult(", "\n}\n")
+    for outcome in ("Refused", "Applied", "Restored", "RecoveryRequired"):
+        if f"case CoreBatchOutcome::{outcome}:" not in mapping:
+            errors.append(f"the mapping handles {outcome}")
+    if "default:" in mapping or not mapping.rstrip().endswith("return StripResult::RecoveryRequired;"):
+        errors.append("the mapping has no default case and fails closed to recovery")
+    return errors
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     trainer = (root / "src/Ai/Base/Actions/TrainerAction.cpp").read_text(encoding="utf-8")
@@ -249,6 +266,28 @@ def main():
             failures += 1
             continue
         if check(t, fc, fh):
+            caught += 1
+        else:
+            print(f"FAIL negative control '{name}' was not caught")
+            failures += 1
+    header = (root / "src/Bot/AutoGearCoreBatchRequest.h").read_text(encoding="utf-8")
+    batch_errors = check_core_batch(header, trainer)
+    for error in batch_errors:
+        print(f"FAIL {error}")
+    failures += len(batch_errors)
+    errors = errors + batch_errors
+    batch_mutants = [
+        ("batch header moves items", header.replace("namespace PlayerbotsAutoGearCoreBatch\n{", "namespace PlayerbotsAutoGearCoreBatch\n{ // bot->StoreItem(dest, item, true);", 1), trainer),
+        ("batch header wired early", header, trainer.replace('#include "AutoGearStorageTransaction.h"', '#include "AutoGearStorageTransaction.h"\n#include "AutoGearCoreBatchRequest.h"', 1)),
+        ("mapping default case", header.replace("        case CoreBatchOutcome::Restored:\n            return StripResult::Restored;", "        default:\n            return StripResult::Restored;", 1), trainer),
+        ("mapping fails open", header.replace("    }\n    return StripResult::RecoveryRequired;\n}", "    }\n    return StripResult::Refused;\n}", 1), trainer),
+    ]
+    for name, h, t in batch_mutants:
+        total += 1
+        if (h, t) == (header, trainer):
+            print(f"FAIL negative control '{name}' did not change the source")
+            failures += 1
+        elif check_core_batch(h, t):
             caught += 1
         else:
             print(f"FAIL negative control '{name}' was not caught")
