@@ -52,13 +52,15 @@ def inventory_index(snapshot):
     return items
 
 
-def evidence_problems(before, after, result, levels):
+def evidence_problems(before, after, result, levels, *, expected_cap):
     """Fail closed when observations are incomplete; return diagnostic strings."""
     try:
         old, new = inventory_index(before), inventory_index(after)
     except ValueError as exc:
         return [str(exc)]
     problems = []
+    if type(expected_cap) is not int or not 0 < expected_cap <= 0xffffffff:
+        problems.append('missing or invalid independent expected cap')
     for guid, entry in old.items():
         if new.get(guid) != entry:
             problems.append(f'original item {guid} missing or entry changed')
@@ -70,6 +72,8 @@ def evidence_problems(before, after, result, levels):
         problems.append('recovery required; not acceptance evidence')
     if result['ran'] == '1':
         cap = int(result['cap'])
+        if cap != expected_cap:
+            problems.append(f'reported cap {cap} differs from independent expected cap {expected_cap}')
         if cap <= 0 or result['capHeld'] != '1':
             problems.append('positive cap and cap-held proof required')
         if result['refusal'] != '0':
