@@ -606,8 +606,8 @@ Playerbots.AltMaintenanceKeyring = 1
 # Default: 1 (enabled)
 Playerbots.AutoGearCommand = 1
 
-# Enable/Disable autogear command on altbots
-# Default: 1 (enabled)
+# Historical compatibility setting. AutoGear commands refuse alt bots regardless of this value.
+# Existing default retained for configuration compatibility.
 Playerbots.AutoGearCommandAltBots = 1
 
 # If 1 (enabled) chat command: autogear bis, gives bots BiS gear from the playerbots_bis_gear table
@@ -617,7 +617,7 @@ Playerbots.AutoGearCommandAltBots = 1
 # If x is bigger than AutoGearScoreLimit, bis wont be given, if lower it will match x when giving items.
 # Commands falls back to autogear when no tier matches or the table is empty for the bot's class/spec.
 # Requires AutoGearQualityLimit = 4 and AutoGearCommand = 1.
-# If AutoGearCommandAltBots = 1 it will be anbled for alt bots.
+# BiS commands are also restricted to confirmed random bots.
 # Default: 0 (disabled)
 Playerbots.AutoGearBisCommand = 0
 
