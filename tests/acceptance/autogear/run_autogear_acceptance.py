@@ -30,7 +30,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wotlk_client as wc  # noqa: E402
 from fixture_guard import fresh_install, fresh_database_names  # noqa: E402
-from acceptance_oracle import parse_result, evidence_problems  # noqa: E402
+from acceptance_oracle import parse_result, evidence_problems, pre_save_problems  # noqa: E402
+from strip_evidence import combat_rows, strip_precondition, strip_outcome_problems  # noqa: E402
+from bag_evidence import free_carried_slots, full_bag_problems  # noqa: E402
+from result_identity import identity_problems  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -247,7 +250,7 @@ class Fixture:
             return []
         text = path.read_text(errors="replace")[since:]
         return [line for line in text.splitlines()
-                if "PB59 AutoGear bot=" + bot_guid_text in line and " refusal=" in line]
+                if "PB59 AutoGear bot=" + bot_guid_text + " " in line]
 
     def log_size(self):
         path = self.logs / "Playerbots.log"
@@ -272,6 +275,18 @@ class Runner:
             prepare()
         self.save_all()
         before = self.fx.inventory(bot["guid"])
+        problems = []
+        if expect.get("over_cap_strip"):
+            levels = self.fx.item_levels([r[3] for r in combat_rows(before)])
+            problems.extend(strip_precondition(before, levels, self.fx.args.expected_cap))
+        if expect.get("full_bags"):
+            problems.extend(full_bag_problems(before["rows"], self.bag_sizes(before)))
+        if problems:
+            verdict = {"case": name, "bot": bot["name"], "pass": False,
+                       "problems": problems, "command_skipped": True}
+            self.results.append(verdict)
+            log(f"case {name}: FAIL {problems}")
+            return verdict
         since = self.fx.log_size()
         start = len(self.cmd.chat)
         self.cmd.whisper(bot["name"], text)
@@ -283,9 +298,33 @@ class Runner:
             reply = reply or (replies[-1] if replies else None)
             lines = self.fx.result_lines(guid_text(bot["guid"]), since)
             line = line or (lines[-1] if lines else None)
+        # Re-read the observed window instead of trusting the first result.
+        # An uncertain result must not trigger a second explicit save or an
+        # acceptance claim. Shutdown/lifecycle handling is a separate gate.
+        self.cmd.pump(1.0)  # bounded observation only; not proof of log completeness
+        lines = self.fx.result_lines(guid_text(bot["guid"]), since)
+        is_operator = self.cmd is self.ops
+        sender = self.operator_guid if is_operator else self.commander["guid"]
+        identity = dict(form=expect.get("form"), require_authority=not is_operator)
+        problems = identity_problems(lines, bot["guid"], sender, **identity)
+        problems.extend(pre_save_problems(lines, self.fx.args.expected_cap))
+        if problems:
+            verdict = {"case": name, "bot": bot["name"], "pass": False,
+                       "problems": problems, "reply": reply, "observed_lines": lines,
+                       "before_count": len(before["rows"]), "after_count": None,
+                       "post_save_skipped": True}
+            self.results.append(verdict)
+            log(f"case {name}: FAIL {problems}")
+            return verdict
+        line = lines[0]
         self.save_all()
         after = self.fx.inventory(bot["guid"])
         verdict = self.check(name, bot, expect, before, after, reply, line)
+        final_lines = self.fx.result_lines(guid_text(bot["guid"]), since)
+        verdict["problems"].extend(identity_problems(final_lines, bot["guid"], sender, **identity))
+        if final_lines != lines:
+            verdict["problems"].append("observed bot event window changed after explicit save")
+        verdict["pass"] = not verdict["problems"]
         self.results.append(verdict)
         log(f"case {name}: {'PASS' if verdict['pass'] else 'FAIL'} {verdict['problems']}")
         return verdict
@@ -321,7 +360,14 @@ class Runner:
             problems.append("inventory changed on a refused command")
         new_equipped = [r for r in after["rows"] if r[0] == 0 and r[1] < 19 and r[2] not in before_guids]
         levels = self.fx.item_levels([r[3] for r in new_equipped])
-        problems.extend(evidence_problems(before, after, result, levels))
+        problems.extend(evidence_problems(before, after, result, levels,
+                                          expected_cap=self.fx.args.expected_cap))
+        if expect.get("over_cap_strip"):
+            combat_levels = self.fx.item_levels([r[3] for r in combat_rows(before) + combat_rows(after)])
+            problems.extend(strip_outcome_problems(before, after, result, combat_levels,
+                                                  self.fx.args.expected_cap))
+        if expect.get("full_bags"):
+            problems.extend(full_bag_problems(before["rows"], self.bag_sizes(before)))
         if expect.get("reply") and not (reply and re.search(expect["reply"], reply)):
             problems.append(f"reply {reply!r} does not match {expect['reply']!r}")
         return {"case": name, "bot": bot["name"], "pass": not problems, "problems": problems, "result": result,
@@ -344,6 +390,7 @@ class Runner:
         chars = {c["name"]: c for c in cmd_setup.enum_characters()}
         cmd_setup.close()
         ops_guid = next(c["guid"] for c in self.ops.enum_characters() if c["name"] == OPS_CHAR)
+        self.operator_guid = ops_guid
         self.ops.login(ops_guid)
         log(f"operator: {self.ops.command(f'.character level {CMD_CHAR} {self.fx.args.commander_level}')}")
         time.sleep(1)
@@ -388,26 +435,25 @@ class Runner:
             self.ops.pump(2.0)
         return prepare
 
+    def bag_sizes(self, inv):
+        entries = {r[3] for r in inv["rows"] if r[0] == 0 and 19 <= r[1] < 23}
+        if not entries:
+            return {}
+        ids = ",".join(str(e) for e in sorted(entries))
+        return {int(e): int(s) for e, s in self.fx.sql(
+            self.fx.names["world"], f"SELECT entry, ContainerSlots FROM item_template WHERE entry IN ({ids})")}
+
     def free_slots(self, bot):
         inv = self.fx.inventory(bot["guid"])
-        bags = {r[1]: r[3] for r in inv["rows"] if r[0] == 0 and 19 <= r[1] < 23}
-        sizes = {}
-        if bags:
-            ids = ",".join(str(e) for e in bags.values())
-            sizes = {int(e): int(s) for e, s in self.fx.sql(
-                self.fx.names["world"], f"SELECT entry, ContainerSlots FROM item_template WHERE entry IN ({ids})")}
-        capacity = 16 + sum(sizes.get(e, 0) for e in bags.values())
-        bag_items = {r[2] for r in inv["rows"] if r[0] == 0 and 19 <= r[1] < 23}
-        used = sum(1 for r in inv["rows"] if (r[0] == 0 and 23 <= r[1] < 39) or r[0] in bag_items)
-        return capacity - used
+        return free_carried_slots(inv["rows"], self.bag_sizes(inv))
 
     # --- cases ------------------------------------------------------------------------------------
     def cases(self):
         done = r"^Geared up to item level \d+"
         alt, rnd = self.alt, self.random
         alt_cases = (
-            ("A1 alt bot incremental", "autogear", {"refusal": 0, "ran": 1, "reply": done}),
-            ("A2 alt bot reset is refused", "autogear reset", {"refusal": 4, "ran": 0, "unchanged": True}),
+            ("A1 alt bot incremental", "autogear", {"refusal": 0, "ran": 1, "reply": done, "form": 0}),
+            ("A2 alt bot reset is refused", "autogear reset", {"refusal": 4, "ran": 0, "unchanged": True, "form": 1}),
             ("A3 bad argument is refused", "autogear banana", {"refusal": 1, "ran": 0, "unchanged": True}),
             ("A4 BiS form disabled", "autogear bis", {"refusal": 1, "ran": 0, "unchanged": True}),
         )
@@ -416,13 +462,13 @@ class Runner:
                 return
         if rnd:
             if not self.run_case("R1 random bot incremental (over-cap strip)", rnd, "autogear",
-                                 {"refusal": 0, "ran": 1, "reply": done})["pass"]:
+                                 {"refusal": 0, "ran": 1, "reply": done, "over_cap_strip": True, "form": 0})["pass"]:
                 return
             if not self.run_case("R2 random bot reset", rnd, "autogear reset",
-                                 {"refusal": 0, "ran": 1, "reply": done})["pass"]:
+                                 {"refusal": 0, "ran": 1, "reply": done, "form": 1})["pass"]:
                 return
             if not self.run_case("R3 random bot reset with full bags is refused", rnd, "autogear reset",
-                                 {"refusal": 5, "ran": 0, "unchanged": True}, prepare=self.fill_bags(rnd, 0))["pass"]:
+                                 {"refusal": 5, "ran": 0, "unchanged": True, "full_bags": True, "form": 1}, prepare=self.fill_bags(rnd, 0))["pass"]:
                 return
         # A GM sender has no verified progression: refused before anything changes.
         # Restore the commander even if the final case raises; main owns teardown.
@@ -446,6 +492,8 @@ def main():
     parser.add_argument("--auth-port", type=int, default=13724)
     parser.add_argument("--world-port", type=int, default=18085)
     parser.add_argument("--commander-level", type=int, default=60)
+    parser.add_argument("--expected-cap", type=int, required=True,
+                        help="independently reviewed effective cap for the fixed commander fixture")
     parser.add_argument("--start-timeout", type=int, default=1800)
     parser.add_argument("--bot-timeout", type=int, default=600)
     parser.add_argument("--isolated-fixture", action="store_true", help="confirm fresh private install and dedicated disposable local DB instance")
@@ -453,6 +501,8 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
+    if not 0 < args.expected_cap <= 0xffffffff:
+        parser.error("--expected-cap must be a positive uint32 value")
     if not args.isolated_fixture:
         parser.error("requires --isolated-fixture; never point at an owner installation or DB")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+\.json", args.report):
@@ -479,7 +529,7 @@ def main():
         fixture.stop()
     errors = (fixture.logs / "Errors.log")
     completed = len(runner.results)
-    report = {"cases": runner.results, "passed": sum(r["pass"] for r in runner.results),
+    report = {"expected_cap": args.expected_cap, "cases": runner.results, "passed": sum(r["pass"] for r in runner.results),
               "total": completed, "expected": 8, "incomplete": max(0, 8 - completed),
               "errors_log": errors.read_text(errors="replace").splitlines() if errors.exists() else []}
     with (fixture.logs / args.report).open("x") as handle:

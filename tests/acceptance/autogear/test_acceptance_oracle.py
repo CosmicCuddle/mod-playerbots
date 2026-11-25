@@ -8,8 +8,9 @@ AFTER = {'rows': [(0, 23, 100, 20), (0, 0, 101, 21)], 'mail': 0}
 
 
 class OracleTests(unittest.TestCase):
-    def check(self, line=LINE, before=BEFORE, after=AFTER, levels=None):
-        return evidence_problems(before, after, parse_result(line), {21: 60} if levels is None else levels)
+    def check(self, line=LINE, before=BEFORE, after=AFTER, levels=None, expected_cap=60):
+        return evidence_problems(before, after, parse_result(line), {21: 60} if levels is None else levels,
+                                 expected_cap=expected_cap)
 
     def test_success(self):
         self.assertEqual(self.check(), [])
@@ -38,6 +39,17 @@ class OracleTests(unittest.TestCase):
 
     def test_zero_cap(self):
         self.assertTrue(self.check(LINE.replace('cap=60', 'cap=0')))
+
+    def test_reported_cap_must_match_independent_expectation(self):
+        for reported in (59, 61, 92, 284):
+            with self.subTest(reported=reported):
+                problems = self.check(LINE.replace('cap=60', f'cap={reported}'), levels={21: 59})
+                self.assertTrue(any('differs from independent expected cap' in p for p in problems))
+
+    def test_invalid_independent_cap(self):
+        for cap in (None, True, False, 0, -1, '60', 4294967296):
+            with self.subTest(cap=cap):
+                self.assertIn('missing or invalid independent expected cap', self.check(expected_cap=cap))
 
     def test_missing_level(self):
         self.assertTrue(self.check(levels={}))

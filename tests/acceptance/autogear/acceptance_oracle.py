@@ -24,7 +24,7 @@ def parse_result(line):
             value = {'true': '1', 'false': '0'}.get(value, value)
             if value not in ('0', '1'):
                 return None
-        elif not re.fullmatch(r'[0-9]{1,10}', value) or int(value) > 0xffffffff:
+        elif not re.fullmatch(r'(?:0|[1-9][0-9]{0,9})', value) or int(value) > 0xffffffff:
             return None
         result[key] = value
     if set(result) != set(FIELDS) or int(result['refusal']) > 9:
@@ -52,13 +52,15 @@ def inventory_index(snapshot):
     return items
 
 
-def evidence_problems(before, after, result, levels):
+def evidence_problems(before, after, result, levels, *, expected_cap):
     """Fail closed when observations are incomplete; return diagnostic strings."""
     try:
         old, new = inventory_index(before), inventory_index(after)
     except ValueError as exc:
         return [str(exc)]
     problems = []
+    if type(expected_cap) is not int or not 0 < expected_cap <= 0xffffffff:
+        problems.append('missing or invalid independent expected cap')
     for guid, entry in old.items():
         if new.get(guid) != entry:
             problems.append(f'original item {guid} missing or entry changed')
@@ -70,6 +72,8 @@ def evidence_problems(before, after, result, levels):
         problems.append('recovery required; not acceptance evidence')
     if result['ran'] == '1':
         cap = int(result['cap'])
+        if cap != expected_cap:
+            problems.append(f'reported cap {cap} differs from independent expected cap {expected_cap}')
         if cap <= 0 or result['capHeld'] != '1':
             problems.append('positive cap and cap-held proof required')
         if result['refusal'] != '0':
@@ -84,3 +88,15 @@ def evidence_problems(before, after, result, levels):
     elif result['refusal'] == '0':
         problems.append('successful result did not run')
     return problems
+
+
+def pre_save_problems(lines, expected_cap):
+    """Reject uncertain command results before issuing another explicit save."""
+    if len(lines) != 1:
+        return ['expected exactly one observed command result before post-command save']
+    result = parse_result(lines[0])
+    if result is None:
+        return ['malformed command result before post-command save']
+    # Reuse the existing semantic checks without claiming an inventory observation.
+    empty = {'rows': [], 'mail': 0}
+    return evidence_problems(empty, empty, result, {}, expected_cap=expected_cap)

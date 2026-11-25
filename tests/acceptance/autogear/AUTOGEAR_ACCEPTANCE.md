@@ -129,6 +129,19 @@ fail, so these are left to Grok's real-executor fault tests on PR75. They are no
 `SourcesUnavailable` needs the source index to fail to load, and the runner doesn't fake that
 either.
 
+## Independent cap expectation (required before running)
+
+The server's reported cap must not serve as its own expected result. Supply
+`--expected-cap` before executing the fixture, using the exact runtime revision,
+reviewed commander level/stage, equipment and effective configuration. Stage 0
+at level 60 can be bounded by the occupied-slot average, so the approved stage
+ceiling of 66 is not automatically the expected result. Keep the commander
+sample fixed for all successful cases; retain the derivation separately with the
+run manifest. If it cannot be established independently, do not run or certify
+the fixture. A matching operator-supplied number is not proof of stage or
+configuration provenance. The report records the expected value; successful
+results must match it exactly in addition to existing item/custody checks.
+
 ## Reproduction checklist
 
 1. Build the tuple into a scratch install prefix. Confirm `COSMIC_PB59_INVENTORY_BATCH_API_VERSION 1`
@@ -141,7 +154,7 @@ either.
      --dist <scratch install> --dbc <dbc dir> --source-dir <core source> \
      --mysql "127.0.0.1;<port>;<user>;<password>" --prefix agacc1 \
      --world-sql <core>/modules/mod-naxxramas-core/docs/install/2026_10_13_00_ep_tower_lock_module_bind.sql \
-     --isolated-fixture --report agacc1_report.json
+     --expected-cap <independently reviewed cap> --isolated-fixture --report agacc1_report.json
    ```
 
    Reuse is disabled. Create a new isolated fixture for every run.
