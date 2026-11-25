@@ -176,3 +176,23 @@ The optional `--bis-phase` argument selects a new two-case observation run, not 
 - E2: RNDBOT, `autogear bis`, refusal 0, ran=true, authority=true, form 5, cap held and the normal success reply. The existing oracle checks the independent cap and custody.
 
 Both observations must pass. Missing random bot, early refusal, wrong form, cap mismatch, PvP preset or other failed precondition makes the run incomplete/failed; no retries or relaxed expectations. Before a native run, establish that both bots are the expected populations, neither is a PvP preset (the production `IsSpecPvp` reads the specNo event/cache; a positive RNDBOT alone does not prove the alt was PvE), commander authority and actual loaded settings, and obtain approved exact binary/receipt evidence. E1 alone cannot prove which rejection branch fired; native correlated population/command evidence remains necessary. At level 60 stage 0 the BiS form uses the stage cap rather than the normal occupied-average mode, so do not blindly reuse the baseline expected cap. A separate fresh fixture avoids changing settings between cases or reusing a contaminated inventory. Both reports explicitly retain `release_acceptance: false`; native execution still requires the separate release-test authorization. No live flags, SQL or deployment approved by this test-only change.
+
+## Optional stranger-sender cases (`--stranger-cases`, test-only proposal)
+
+Off by default; the baseline nine cases are unchanged. When on, the runner creates a third normal account `AGSTR`
+(no `account_access` row) with a Human character `Agstr` that never groups, guilds or owns a bot, and runs four
+whisper-only cases after B2 and before R1. Never use channel, guild, party, raid or say for these cases, and never a GM sender.
+
+| Case | Sender to bot | Command | Expected |
+|---|---|---|---|
+| S0 | preflight | none | stranger account and character distinct from AGCMD/AGOPS, no GM, group or guild rows, not an RNDBOT account, Alliance, empty `chat_filter` (`ChatFilter.Whisper` defaults on) |
+| S1 | Agstr to random | `autogear` | one whisper-inform echo, exactly one bot reply `I am in a group with Agcmd. You can ask him for invite.`, no result line before or after the save, unchanged inventory and mail |
+| S1c | Agcmd to same random | `autogear banana` | refusal 1, unchanged (the bot is reachable and admits its master) |
+| S2 | Agstr to alt | `autogear` | as S1 with reply `Invite me to your group first` |
+| S2c | Agcmd to same alt | `autogear` | refusal 1, unchanged |
+
+A missing reply, missing whisper-inform echo or `SMSG_CHAT_PLAYER_NOT_FOUND` is INCONCLUSIVE, never a pass. Any failed or
+inconclusive case stops the run before R1. Each stranger whisper is sent once, after waiting past `Playerbots.RepeatDelay`.
+These cases show native whisper delivery and a visible denial for one same-faction stranger on each population. They do
+not show the silent party/channel drop, opposing-faction, guild or group-member strangers, logout races, command nonce,
+save durability or release acceptance.
