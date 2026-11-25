@@ -161,7 +161,7 @@ int main()
                  ok;
     }
 
-    // Alt bots: config refusal is honoured; a commit is not blocked by the strip rule.
+    // Alt bots: refusal is unconditional, even with the legacy setting enabled.
     RouteRequest altRefused = Ready(Population::AltBot, 0);
     altRefused.altCommandAllowed = false;
     std::vector<ItemFact> legal{Chest(60, 60)};
@@ -171,8 +171,8 @@ int main()
     RouteRequest altAllowed = Ready(Population::AltBot, 0);
     altAllowed.selection.facts = legal;
     RouteDecision const altCommit = ResolveAutoGearRoute(altAllowed, ScoreOf);
-    ok = Check(altCommit.action == GearAction::CommitSet && altCommit.cap == 66,
-             "a commanded alt bot can still be geared under the sender cap") &&
+    ok = Check(altCommit.rejected && altCommit.preserve && !altCommit.selectionRan,
+             "alt command is refused even with historical config enabled") &&
          ok;
 
     // Cap provenance: only the verified sender stage, nothing invented.
