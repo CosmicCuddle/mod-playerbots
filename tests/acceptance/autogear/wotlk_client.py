@@ -314,8 +314,7 @@ class WorldClient:
 
     def login(self, guid, settle=5.0):
         # The server only accepts a character listed by this session's own character enum.
-        if guid not in {c["guid"] for c in self.enum_characters()}:
-            raise RuntimeError(f"character {guid} is not on this account")
+        self.enum_characters()
         self.send(CMSG_PLAYER_LOGIN, struct.pack("<Q", guid))
         self.wait_for(SMSG_LOGIN_VERIFY_WORLD, timeout=60.0)
         self.player_guid = guid

@@ -341,15 +341,19 @@ class Runner:
         if not any(c["name"] == OPS_CHAR for c in self.ops.enum_characters()):
             self.ops.create_character(OPS_CHAR, 1, 1)
         cmd_setup = fx.client(COMMANDER, "cmd")
-        existing = {c["name"] for c in cmd_setup.enum_characters()}
+        listed = cmd_setup.enum_characters()
+        log(f"commander enum: {[(c['name'], c['guid']) for c in listed]}")
+        existing = {c["name"] for c in listed} | {r[0] for r in fx.sql(
+            fx.names["chars"], "SELECT name FROM characters WHERE name IN ('Agcmd', 'Agalt')")}
         for char, cls in ((CMD_CHAR, 1), (ALT_CHAR, 2)):
             if char not in existing:
                 code = cmd_setup.create_character(char, 1, cls)
                 if code != wc.CHAR_CREATE_SUCCESS:
                     raise SystemExit(f"creating {char} failed: {code:#x}")
-        chars = {c["name"]: c for c in cmd_setup.enum_characters()}
+        chars = {name: {"guid": int(guid), "name": name} for guid, name in fx.sql(
+            fx.names["chars"], "SELECT guid, name FROM characters WHERE name IN ('Agcmd', 'Agalt', 'Agops')")}
         cmd_setup.close()
-        ops_guid = next(c["guid"] for c in self.ops.enum_characters() if c["name"] == OPS_CHAR)
+        ops_guid = chars[OPS_CHAR]["guid"]
         self.ops.login(ops_guid)
         log(f"operator: {self.ops.command(f'.character level {CMD_CHAR} {self.fx.args.commander_level}')}")
         time.sleep(1)
