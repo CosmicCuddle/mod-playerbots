@@ -35,6 +35,7 @@ from strip_evidence import combat_rows, strip_precondition, strip_outcome_proble
 from bag_evidence import free_carried_slots, full_bag_problems  # noqa: E402
 from result_identity import identity_problems  # noqa: E402
 from case_outcome import case_outcome_problems  # noqa: E402
+from bis_phase import BIS_CASES, fixture_overrides, run_bis_phase  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -134,8 +135,18 @@ class Fixture:
             raise SystemExit(f"refusing: {world} exists without the fixture marker; use a disposable install")
         plan = [(etc / "worldserver.conf.dist", WORLD_OVERRIDES), (etc / "authserver.conf.dist", AUTH_OVERRIDES)]
         modules = etc / "modules"
-        for dist in sorted(modules.glob("*.conf.dist")):
-            plan.append((dist, PLAYERBOTS_OVERRIDES if dist.name.startswith("playerbots") else {}))
+        module_sources = sorted(modules.glob("*.conf.dist"))
+        pb_sources = [source for source in module_sources if source.name.startswith("playerbots")]
+        if self.args.bis_phase:
+            if len(pb_sources) != 1:
+                raise SystemExit("enabled-BiS fixture requires exactly one Playerbots config template")
+            pb_text = pb_sources[0].read_text(errors="strict")
+            for key in ("Playerbots.AutoGearBisCommand", "Playerbots.AutoGearQualityLimit"):
+                if len(re.findall(rf"^{re.escape(key)}\s*=.*$", pb_text, re.M)) != 1:
+                    raise SystemExit("enabled-BiS fixture requires unique known config keys")
+        pb_overrides = fixture_overrides(PLAYERBOTS_OVERRIDES, self.args.bis_phase)
+        for dist in module_sources:
+            plan.append((dist, pb_overrides if dist in pb_sources else {}))
         for source, overrides in plan:
             text = source.read_text(errors="replace")
             for key, value in overrides.items():
@@ -507,6 +518,7 @@ def main():
                         help="independently reviewed effective cap for the fixed commander fixture")
     parser.add_argument("--start-timeout", type=int, default=1800)
     parser.add_argument("--bot-timeout", type=int, default=600)
+    parser.add_argument("--bis-phase", action="store_true", help="separate fresh enabled-BiS fixture; not release acceptance")
     parser.add_argument("--isolated-fixture", action="store_true", help="confirm fresh private install and dedicated disposable local DB instance")
     parser.add_argument("--report", default="autogear_acceptance_report.json")
     parser.add_argument("--verbose", action="store_true")
@@ -528,7 +540,10 @@ def main():
     try:
         fixture.start()
         runner.setup()
-        runner.cases()
+        if args.bis_phase:
+            run_bis_phase(runner)
+        else:
+            runner.cases()
     finally:
         for client in (getattr(runner, "cmd", None), getattr(runner, "ops", None)):
             if client:
@@ -540,8 +555,10 @@ def main():
         fixture.stop()
     errors = (fixture.logs / "Errors.log")
     completed = len(runner.results)
-    report = {"expected_cap": args.expected_cap, "cases": runner.results, "passed": sum(r["pass"] for r in runner.results),
-              "total": completed, "expected": EXPECTED_CASES, "incomplete": max(0, EXPECTED_CASES - completed),
+    expected_cases = BIS_CASES if args.bis_phase else EXPECTED_CASES
+    report = {"phase": "enabled-bis" if args.bis_phase else "baseline-bis-disabled",
+              "expected_cap": args.expected_cap, "cases": runner.results, "passed": sum(r["pass"] for r in runner.results),
+              "total": completed, "expected": expected_cases, "incomplete": max(0, expected_cases - completed),
               "release_acceptance": False,  # native command correlation and durable receipts remain unresolved
               "errors_log": errors.read_text(errors="replace").splitlines() if errors.exists() else []}
     with (fixture.logs / args.report).open("x") as handle:
