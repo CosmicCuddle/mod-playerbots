@@ -36,13 +36,17 @@ from bag_evidence import free_carried_slots, full_bag_problems  # noqa: E402
 from result_identity import identity_problems  # noqa: E402
 from case_outcome import case_outcome_problems  # noqa: E402
 from bis_phase import BIS_CASES, fixture_overrides, run_bis_phase  # noqa: E402
+from stranger_case import expected_reply, stranger_case_problems, stranger_preflight_problems  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
 OPERATOR = ("AGOPS", "agops")      # GM account: setup only (levels, saves, bag filler)
 COMMANDER = ("AGCMD", "agcmd")     # normal player account: the only command sender
-CMD_CHAR, ALT_CHAR, OPS_CHAR = "Agcmd", "Agalt", "Agops"
+STRANGER = ("AGSTR", "agstr")     # optional: normal account that never commands or owns a bot
+CMD_CHAR, ALT_CHAR, OPS_CHAR, STR_CHAR = "Agcmd", "Agalt", "Agops", "Agstr"
 EXPECTED_CASES = 9
+STRANGER_CASES = 4                # S1, S1c, S2, S2c with --stranger-cases
+SMSG_CHAT_PLAYER_NOT_FOUND = 0x2A9
 FILLER_ITEM = 25                   # Worn Shortsword: white, unique-free, stack size 1
 CMSG_GROUP_INVITE = 0x06E
 SMSG_GROUP_INVITE = 0x06F
@@ -198,11 +202,14 @@ class Fixture:
 
     def accounts(self):
         auth = self.names["auth"]
-        if self.sql(auth, "SELECT id FROM account WHERE username IN ('AGOPS', 'AGCMD')"):
+        stranger = getattr(self.args, "stranger_cases", False)
+        names = "'AGOPS', 'AGCMD', 'AGSTR'" if stranger else "'AGOPS', 'AGCMD'"
+        if self.sql(auth, f"SELECT id FROM account WHERE username IN ({names})"):
             raise SystemExit("refusing: fixture accounts already exist; use a new isolated fixture")
         self.sql(auth, f"UPDATE realmlist SET address='127.0.0.1', localAddress='127.0.0.1', "
                        f"port={self.args.world_port}, flag=0 WHERE id=1")
-        for (user, password), gm in ((OPERATOR, 3), (COMMANDER, 0)):
+        accounts = ((OPERATOR, 3), (COMMANDER, 0)) + (((STRANGER, 0),) if stranger else ())
+        for (user, password), gm in accounts:
             salt, verifier = wc.make_registration(user, password)
             self.sql(auth, f"INSERT INTO account (username, salt, verifier, expansion) VALUES "
                            f"('{user}', UNHEX('{salt.hex()}'), UNHEX('{verifier.hex()}'), 2)")
@@ -390,6 +397,76 @@ class Runner:
                 "reply": reply, "line": line, "lost": lost, "new_equipped": new_equipped,
                 "before_count": len(before["rows"]), "after_count": len(after["rows"])}
 
+    # --- optional stranger-sender cases -------------------------------------------------------------
+    def stranger_preflight(self):
+        self.save_all()
+        auth, chars = self.fx.names["auth"], self.fx.names["chars"]
+        def account(user):
+            return int(self.sql_one(auth, f"SELECT id FROM account WHERE username='{user}'"))
+        def owner(guid):
+            return int(self.sql_one(chars, f"SELECT account FROM characters WHERE guid={guid}"))
+        stranger = dict(self.stranger_char, account=account(STRANGER[0]), username=STRANGER[0])
+        if owner(stranger["guid"]) != stranger["account"]:
+            return ["stranger character is not owned by the stranger account"]
+        commander = {"account": account(COMMANDER[0]), "guid": self.commander["guid"]}
+        operator = {"account": account(OPERATOR[0]), "guid": self.operator_guid}
+        return stranger_preflight_problems(
+            stranger, commander, operator,
+            gm_rows=self.fx.sql(auth, f"SELECT id FROM account_access WHERE id={stranger['account']}"),
+            group_rows=self.fx.sql(chars, f"SELECT guid FROM group_member WHERE memberGuid={stranger['guid']}"),
+            guild_rows=self.fx.sql(chars, f"SELECT guildid FROM guild_member WHERE guid={stranger['guid']}"),
+            random_account_names={r[0] for r in self.fx.sql(auth, "SELECT username FROM account WHERE username LIKE 'RNDBOT%'")},
+            chat_filter_rows=self.fx.sql(chars, "SELECT ID FROM chat_filter"))
+
+    def sql_one(self, database, statement):
+        rows = self.fx.sql(database, statement)
+        if len(rows) != 1:
+            raise SystemExit(f"preflight query did not return exactly one row: {statement}")
+        return rows[0][0]
+
+    def run_stranger_case(self, name, bot, population):
+        """Whisper once from the stranger; require explicit delivery and denial evidence, no result line, unchanged custody."""
+        log(f"case {name}: stranger whisper 'autogear' to {bot['name']}")
+        self.stranger.pump(2.5)  # past Playerbots.RepeatDelay so an earlier reply cannot suppress this one
+        self.save_all()
+        before = self.fx.inventory(bot["guid"])
+        since = self.fx.log_size()
+        start, inbox_start = len(self.stranger.chat), len(self.stranger.inbox)
+        self.stranger.whisper(bot["name"], "autogear")
+        self.stranger.pump(10.0)  # bounded observation only
+        messages = self.stranger.chat[start:]
+        not_found = any(op == SMSG_CHAT_PLAYER_NOT_FOUND for op, _ in self.stranger.inbox[inbox_start:])
+        lines = self.fx.result_lines(guid_text(bot["guid"]), since)
+        self.save_all()
+        after = self.fx.inventory(bot["guid"])
+        final_lines = self.fx.result_lines(guid_text(bot["guid"]), since)
+        status, problems = stranger_case_problems(
+            bot_guid=bot["guid"], messages=messages, not_found=not_found, lines=lines, final_lines=final_lines,
+            before=before, after=after, reply_pattern=expected_reply(population, self.commander["name"]))
+        verdict = {"case": name, "bot": bot["name"], "sender": STR_CHAR, "pass": status == "pass", "status": status,
+                   "problems": problems, "messages": [(m.type, m.sender_guid, m.text) for m in messages],
+                   "observed_lines": final_lines, "before_count": len(before["rows"]), "after_count": len(after["rows"])}
+        self.results.append(verdict)
+        log(f"case {name}: {status.upper()} {problems}")
+        return verdict
+
+    def stranger_cases(self, alt, rnd):
+        """S1/S1c on the random bot, then S2/S2c on the alt. Whisper only; never channel, guild, party or GM."""
+        problems = self.stranger_preflight()
+        if problems:
+            self.results.append({"case": "S0 stranger preflight", "pass": False, "problems": problems})
+            log(f"stranger preflight: FAIL {problems}")
+            return False
+        steps = (
+            lambda: self.run_stranger_case("S1 stranger whisper to random bot is denied", rnd, "random"),
+            lambda: self.run_case("S1c commander control on the same random bot", rnd, "autogear banana",
+                                  {"refusal": 1, "ran": 0, "unchanged": True}),
+            lambda: self.run_stranger_case("S2 stranger whisper to alt bot is denied", alt, "alt"),
+            lambda: self.run_case("S2c commander control on the same alt bot", alt, "autogear",
+                                  {"refusal": 1, "ran": 0, "unchanged": True}),
+        )
+        return all(step()["pass"] for step in steps)
+
     # --- setup ------------------------------------------------------------------------------------
     def setup(self):
         fx = self.fx
@@ -415,6 +492,18 @@ class Runner:
         self.commander = {"guid": chars[CMD_CHAR]["guid"], "name": CMD_CHAR}
         log(f"commander: {self.cmd.command(f'.playerbots bot add {ALT_CHAR}', wait=8.0)}")
         self.alt = {"guid": chars[ALT_CHAR]["guid"], "name": ALT_CHAR}
+        if self.fx.args.stranger_cases:
+            str_setup = fx.client(STRANGER, "str")
+            if not any(c["name"] == STR_CHAR for c in str_setup.enum_characters()):
+                code = str_setup.create_character(STR_CHAR, 1, 1)
+                if code != wc.CHAR_CREATE_SUCCESS:
+                    raise SystemExit(f"creating {STR_CHAR} failed: {code:#x}")
+            stranger = next(c for c in str_setup.enum_characters() if c["name"] == STR_CHAR)
+            str_setup.close()
+            log(f"operator: {self.ops.command(f'.character level {STR_CHAR} {self.fx.args.commander_level}')}")
+            self.stranger = fx.client(STRANGER, "str")
+            self.stranger.login(stranger["guid"])
+            self.stranger_char = {"guid": stranger["guid"], "name": STR_CHAR, "race": stranger["race"]}
         self.random = self.pick_random_bot()
         if self.random:
             self.cmd.send(CMSG_GROUP_INVITE, self.random["name"].encode() + b"\0" + struct.pack("<I", 0))
@@ -481,6 +570,8 @@ class Runner:
                               ("B2 random bot BiS disabled", "autogear bis")):
             if not self.run_case(name, rnd, command, {"refusal": 1, "ran": 0, "unchanged": True})["pass"]:
                 return
+        if getattr(self, "stranger", None) is not None and not self.stranger_cases(alt, rnd):
+            return
         if rnd:
             if not self.run_case("R1 random bot incremental (over-cap strip)", rnd, "autogear",
                                  {"refusal": 0, "ran": 1, "reply": done, "over_cap_strip": True, "form": 0})["pass"]:
@@ -519,6 +610,8 @@ def main():
     parser.add_argument("--start-timeout", type=int, default=1800)
     parser.add_argument("--bot-timeout", type=int, default=600)
     parser.add_argument("--bis-phase", action="store_true", help="separate fresh enabled-BiS fixture; not release acceptance")
+    parser.add_argument("--stranger-cases", action="store_true",
+                        help="add S1/S1c/S2/S2c stranger-sender whisper cases (third normal account); not release acceptance")
     parser.add_argument("--isolated-fixture", action="store_true", help="confirm fresh private install and dedicated disposable local DB instance")
     parser.add_argument("--report", default="autogear_acceptance_report.json")
     parser.add_argument("--verbose", action="store_true")
@@ -526,6 +619,8 @@ def main():
 
     if not 0 < args.expected_cap <= 0xffffffff:
         parser.error("--expected-cap must be a positive uint32 value")
+    if args.stranger_cases and args.bis_phase:
+        parser.error("--stranger-cases belongs to the baseline phase, not --bis-phase")
     if not args.isolated_fixture:
         parser.error("requires --isolated-fixture; never point at an owner installation or DB")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+\.json", args.report):
@@ -545,7 +640,7 @@ def main():
         else:
             runner.cases()
     finally:
-        for client in (getattr(runner, "cmd", None), getattr(runner, "ops", None)):
+        for client in (getattr(runner, "cmd", None), getattr(runner, "ops", None), getattr(runner, "stranger", None)):
             if client:
                 try:
                     client.logout()
@@ -555,8 +650,9 @@ def main():
         fixture.stop()
     errors = (fixture.logs / "Errors.log")
     completed = len(runner.results)
-    expected_cases = BIS_CASES if args.bis_phase else EXPECTED_CASES
+    expected_cases = BIS_CASES if args.bis_phase else EXPECTED_CASES + (STRANGER_CASES if args.stranger_cases else 0)
     report = {"phase": "enabled-bis" if args.bis_phase else "baseline-bis-disabled",
+              "stranger_cases": args.stranger_cases,
               "expected_cap": args.expected_cap, "cases": runner.results, "passed": sum(r["pass"] for r in runner.results),
               "total": completed, "expected": expected_cases, "incomplete": max(0, expected_cases - completed),
               "release_acceptance": False,  # native command correlation and durable receipts remain unresolved
