@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wotlk_client as wc  # noqa: E402
 from fixture_guard import fresh_install, fresh_database_names  # noqa: E402
 from acceptance_oracle import parse_result, evidence_problems, pre_save_problems  # noqa: E402
+from strip_evidence import combat_rows, strip_precondition, strip_outcome_problems  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -272,6 +273,15 @@ class Runner:
             prepare()
         self.save_all()
         before = self.fx.inventory(bot["guid"])
+        if expect.get("over_cap_strip"):
+            levels = self.fx.item_levels([r[3] for r in combat_rows(before)])
+            problems = strip_precondition(before, levels, self.fx.args.expected_cap)
+            if problems:
+                verdict = {"case": name, "bot": bot["name"], "pass": False,
+                           "problems": problems, "command_skipped": True}
+                self.results.append(verdict)
+                log(f"case {name}: FAIL {problems}")
+                return verdict
         since = self.fx.log_size()
         start = len(self.cmd.chat)
         self.cmd.whisper(bot["name"], text)
@@ -337,6 +347,10 @@ class Runner:
         levels = self.fx.item_levels([r[3] for r in new_equipped])
         problems.extend(evidence_problems(before, after, result, levels,
                                           expected_cap=self.fx.args.expected_cap))
+        if expect.get("over_cap_strip"):
+            combat_levels = self.fx.item_levels([r[3] for r in combat_rows(before) + combat_rows(after)])
+            problems.extend(strip_outcome_problems(before, after, result, combat_levels,
+                                                  self.fx.args.expected_cap))
         if expect.get("reply") and not (reply and re.search(expect["reply"], reply)):
             problems.append(f"reply {reply!r} does not match {expect['reply']!r}")
         return {"case": name, "bot": bot["name"], "pass": not problems, "problems": problems, "result": result,
@@ -431,7 +445,7 @@ class Runner:
                 return
         if rnd:
             if not self.run_case("R1 random bot incremental (over-cap strip)", rnd, "autogear",
-                                 {"refusal": 0, "ran": 1, "reply": done})["pass"]:
+                                 {"refusal": 0, "ran": 1, "reply": done, "over_cap_strip": True})["pass"]:
                 return
             if not self.run_case("R2 random bot reset", rnd, "autogear reset",
                                  {"refusal": 0, "ran": 1, "reply": done})["pass"]:
