@@ -188,6 +188,16 @@ def check(trainer, factory_cpp, factory_h):
         rule(guard_body is not None and ordered(compact, guard, "returnfalse;","if(sPlayerbotAIConfig.AutoGearIPCapEnable)"),
              f"{signature}: unconditional random identity guard before dispatch")
 
+    # Nothing may run before the identity guard, or inside either refusal, except the fixed refusal text.
+    refusal = (r"\{botAI->TellError\(PlayerbotTextMgr::instance\(\)\.GetBotTextOrDefault\("
+               r"\"[a-z_]+\",\"[^\"]*\",\{\}\)\);returnfalse;\}")
+    for signature, option in (("bool BisGearAction::Execute(Event event)", "AutoGearBisCommand"),
+                              ("bool AutoGearAction::Execute(Event event)", "AutoGearCommand")):
+        compact = re.sub(r"\s+", "", method(trainer, signature))
+        prefix = re.escape(re.sub(r"\s+", "", signature)) + r"\{if\(!sPlayerbotAIConfig\." + option + r"\)" + refusal
+        head = re.match(prefix + re.escape(guard) + refusal, compact)
+        rule(head is not None, f"{signature}: only the enable check runs before the identity guard; both refusals only refuse")
+
     # The world plan: facts first, refusal decided by the plan before the executor touches anything.
     plan = between(trainer, "bool RunPB59AutoGearWorldPlan(", "\n}\n")
     rule(ordered(plan, "facts.sourcesAvailable =", "ResolveCommand(", "PlayerAutoGearInventory inventory(",
@@ -277,6 +287,25 @@ def mutants(trainer, factory_cpp, factory_h):
         yield f"legacy alt guard {index} removed", trainer[:pos] + "if (false)" + trainer[pos+len(guard):], factory_cpp, factory_h
     yield "queued identity hardcoded", *t("facts.randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);",
                                            "facts.randomBot = true;")
+    # Early side effects before, or inside the refusals of, either legacy guard.
+    auto_open = "bool AutoGearAction::Execute(Event event)\n{\n"
+    bis_open = "bool BisGearAction::Execute(Event event)\n{\n"
+    early_dispatch = "    if (sPlayerbotAIConfig.AutoGearIPCapEnable)\n        return PreserveAutoGearPlan(bot, botAI, event, false);\n"
+    yield "M3 early dispatch before autogear guard", *t(auto_open, auto_open + early_dispatch)
+    yield "M3b factory before autogear guard", *t(auto_open, auto_open + "    PlayerbotFactory::AutoGear(bot, 3, 0, true);\n")
+    yield "M3c fallback before bis guard", *t(bis_open, bis_open + "    RunAutogearFallback(0, 0);\n")
+    yield "M3d factory before bis guard", *t(bis_open, bis_open + "    PlayerbotFactory::DestroyEquippedGear(bot);\n")
+    auto_body = method(trainer, "bool AutoGearAction::Execute(Event event)")
+    auto_guard_at = auto_body.index(guard)
+    original_dispatch = "\n" + early_dispatch + "\n"
+    assert auto_body.count(original_dispatch) == 1
+    moved = auto_body.replace(original_dispatch, "\n", 1)
+    moved = moved[:auto_guard_at] + early_dispatch.lstrip() + "\n    " + moved[auto_guard_at:]
+    yield "M3e dispatch reordered above autogear guard", trainer.replace(auto_body, moved, 1), factory_cpp, factory_h
+    yield "M3f side effect inside alt refusal", *t('"You cannot use autogear on alt bots.", {}));\n        return false;',
+                                                    '"You cannot use autogear on alt bots.", {}));\n        PlayerbotFactory::AutoGear(bot, 3, 0, true);\n        return false;')
+    yield "M3g side effect inside disabled refusal", *t('"bis command is not allowed, please check the configuration.", {}));\n        return false;',
+                                                         '"bis command is not allowed, please check the configuration.", {}));\n        PlayerbotFactory::DestroyEquippedGear(bot);\n        return false;')
     yield "extra destroy", *t("PB59::InventoryBatchResult const result =",
                                "_bot->DestroyItem(0, 0, true);\n            PB59::InventoryBatchResult const result =")
     yield "second chance on", re.sub(r"/\*secondChance\*/\s*false", "/*secondChance*/ true", trainer, count=1), factory_cpp, factory_h
