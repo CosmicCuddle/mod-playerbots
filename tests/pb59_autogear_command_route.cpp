@@ -189,6 +189,14 @@ int main()
     altCommand.population = Population::AltBot;
     altCommand.altCommandAllowed = false;
     ok = Check(ResolveAutoGearRoute(altCommand, ScoreOf).rejected, "a refused alt command does not change gear") && ok;
+    altCommand.altCommandAllowed = true;
+    for (bool capped : {false, true})
+    {
+        altCommand.ipCapEnabled = capped;
+        RouteDecision const refused = ResolveAutoGearRoute(altCommand, ScoreOf);
+        ok = Check(refused.rejected && refused.preserve && !refused.selectionRan && !refused.legacyUnchanged,
+                   "alt command refused in both modes even with legacy setting on") && ok;
+    }
 
     std::vector<ItemFact> legal{Fact(66, 60)};
     RouteRequest commit = Enabled(0);
