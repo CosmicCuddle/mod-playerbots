@@ -29,29 +29,31 @@ class CaseSequenceTests(unittest.TestCase):
     def test_complete_sequence(self):
         r, commander = self.fixture()
         Runner.cases(r)
-        self.assertEqual([c[0] for c in r.calls], ['A1','A2','A3','A4','R1','R2','R3','G1'])
+        self.assertEqual([c[0] for c in r.calls], ['A1','A2','A3','B1','B2','R1','R2','R3','G1'])
         self.assertTrue(all(c[1] is commander for c in r.calls[:-1]))
+        self.assertTrue(all(c[2] is r.alt for c in r.calls[:3]))
+        self.assertTrue(all(c[2] is r.random for c in r.calls[3:]))
         self.assertIs(r.calls[-1][1], r.ops)
         self.assertIs(r.cmd, commander)
         r.fill_bags.assert_called_once_with(r.random, 0)
         r.prepare.assert_called_once_with()
 
     def test_stop_after_every_failed_case(self):
-        cases = ['A1','A2','A3','A4','R1','R2','R3','G1']
+        cases = ['A1','A2','A3','B1','B2','R1','R2','R3','G1']
         for i, case in enumerate(cases):
             with self.subTest(case=case):
                 r, commander = self.fixture(fail=case)
                 Runner.cases(r)
                 self.assertEqual([c[0] for c in r.calls], cases[:i+1])
                 self.assertIs(r.cmd, commander)
-                if i < 6:
+                if i < 7:
                     r.fill_bags.assert_not_called()
                     r.prepare.assert_not_called()
 
     def test_missing_random_remains_incomplete(self):
         r, commander = self.fixture(missing_random=True)
         Runner.cases(r)
-        self.assertEqual([c[0] for c in r.calls], ['A1','A2','A3','A4','G1'])
+        self.assertEqual([c[0] for c in r.calls], ['A1','A2','A3'])
         r.fill_bags.assert_not_called()
         self.assertIs(r.cmd, commander)
 
