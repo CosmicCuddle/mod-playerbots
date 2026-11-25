@@ -176,12 +176,28 @@ def check(trainer, factory_cpp, factory_h):
     rule("SetSourceFilter(_sources)" in finishers, "finishers (ammo, gems) use the raid source filter")
     rule(ordered(finishers, "SetKeepOwnedItems(true);", "InitAmmo();"), "finishers keep the bot's old ammo")
 
+    # Legacy and queued commands must all preserve the owner's RNDBOT-only policy.
+    for signature in ("bool BisGearAction::Execute(Event event)", "bool AutoGearAction::Execute(Event event)"):
+        action = method(trainer, signature)
+        guard = ("if (!bot->GetSession() || !PlayerbotsAutoGearSelection::IsConfirmedRandomBot("
+                 "sRandomPlayerbotMgr.IsRandomBot(bot),"
+                 "sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId())))")
+        compact = re.sub(r"\s+", "", action)
+        guard = re.sub(r"\s+", "", guard)
+        guard_body = re.search(re.escape(guard) + r"\{[^{}]*\{\}[^{}]*returnfalse;\}", compact)
+        rule(guard_body is not None and ordered(compact, guard, "returnfalse;","if(sPlayerbotAIConfig.AutoGearIPCapEnable)"),
+             f"{signature}: unconditional random identity guard before dispatch")
+
     # The world plan: facts first, refusal decided by the plan before the executor touches anything.
     plan = between(trainer, "bool RunPB59AutoGearWorldPlan(", "\n}\n")
     rule(ordered(plan, "facts.sourcesAvailable =", "ResolveCommand(", "PlayerAutoGearInventory inventory(",
                  "Execute(inventory, plan)"),
          "the index state is a plan fact, decided before the executor runs")
     rule(plan.count("Execute(inventory, plan)") == 1, "the executor runs once")
+    rule(ordered(plan, "facts.randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);",
+                 "facts.randomAccount = sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId());",
+                 "ResolveCommand("),
+         "queued command reads actual random-bot and session-account facts")
     for call in ("RunFactory(", "StripToBags(", "ApplyBisOverlay(", "DestroyEquippedGear", "EquipNewItem("):
         rule(call not in plan, f"the world plan never calls {call} directly")
     rule(ordered(plan, "if (!sPlayerbotAIConfig.AutoGearIPCapEnable", "return false;"),
@@ -254,6 +270,13 @@ def mutants(trainer, factory_cpp, factory_h):
         assert old in factory_cpp, old
         return trainer, factory_cpp.replace(old, new, 1), factory_h
 
+    guard = "if (!bot->GetSession() || !PlayerbotsAutoGearSelection::IsConfirmedRandomBot(\n            sRandomPlayerbotMgr.IsRandomBot(bot),\n            sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId())))"
+    assert trainer.count(guard) == 2
+    for index in range(2):
+        pos = trainer.index(guard) if index == 0 else trainer.index(guard, trainer.index(guard) + len(guard))
+        yield f"legacy alt guard {index} removed", trainer[:pos] + "if (false)" + trainer[pos+len(guard):], factory_cpp, factory_h
+    yield "queued identity hardcoded", *t("facts.randomBot = sRandomPlayerbotMgr.IsRandomBot(bot);",
+                                           "facts.randomBot = true;")
     yield "extra destroy", *t("PB59::InventoryBatchResult const result =",
                                "_bot->DestroyItem(0, 0, true);\n            PB59::InventoryBatchResult const result =")
     yield "second chance on", re.sub(r"/\*secondChance\*/\s*false", "/*secondChance*/ true", trainer, count=1), factory_cpp, factory_h

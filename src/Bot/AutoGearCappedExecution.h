@@ -98,9 +98,9 @@ constexpr Plan PlanExecution(PlanInput const& in)
         plan.refusal = Refusal::UnknownPopulation;
         return plan;
     }
-    if (in.reset && in.population != Population::RandomBot)
+    if (!PlayerbotsAutoGearSelection::AllowsPopulationAutoGearCommand(in.population))
     {
-        plan.refusal = Refusal::ResetNotAllowed;
+        plan.refusal = Refusal::Rejected;
         return plan;
     }
     // Without the index the raid source gate cannot run; falling back to the item-level cap alone

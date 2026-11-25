@@ -19,7 +19,7 @@ namespace PlayerbotsAutoGearSelection
     {
         bool commandEnabled = false;
         bool ipCapEnabled = false;
-        bool altCommandAllowed = true;
+        bool altCommandAllowed = true;  // historical input, cannot override RNDBOT-only policy
         bool bis = false;
         bool tierSync = false;
         std::string_view text{};
@@ -145,7 +145,7 @@ namespace PlayerbotsAutoGearSelection
             PreserveDecision(decision);
             return decision;
         }
-        if (request.population == Population::AltBot && !request.altCommandAllowed)
+        if (!AllowsPopulationAutoGearCommand(request.population))
         {
             decision.rejected = true;
             PreserveDecision(decision);

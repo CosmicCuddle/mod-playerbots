@@ -666,7 +666,7 @@ void TestLevelingSender()
 
 void TestPopulation()
 {
-    // Alt bot: allowed when configured, but never stripped and reset is refused.
+    // Alt bot: every AutoGear command refuses, irrespective of legacy config.
     {
         FakeInventory inventory = StandardInventory();
         inventory.Equip(0, 900, 92);  // alt's own over-cap helm
@@ -674,8 +674,8 @@ void TestPopulation()
         facts.randomBot = false;
         facts.randomAccount = false;
         Run const run = Execute(facts, inventory);
-        Check(run.outcome.ran && run.outcome.stripped == 0 && run.outcome.retainedOverCap == 1,
-              "alt bot keeps its own over-cap item");
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::Rejected && inventory.Untouched(),
+              "alt bot plain command refuses before factory or any gear change");
         Check(inventory.equipped[0].entry == 900, "alt bot helm untouched");
     }
     {
@@ -686,7 +686,7 @@ void TestPopulation()
         facts.randomAccount = false;
         facts.argument = "reset";
         Run const run = Execute(facts, inventory);
-        Check(!run.outcome.ran && run.outcome.refusal == Refusal::ResetNotAllowed && inventory.Untouched(),
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::Rejected && inventory.Untouched(),
               "alt bot reset refused without touching gear");
     }
     {
@@ -699,13 +699,23 @@ void TestPopulation()
         Check(!run.outcome.ran && run.outcome.refusal == Refusal::Rejected && inventory.Untouched(),
               "alt bot refused when AutoGearCommandAltBots is off");
     }
-    // Random bot on a non-random account (or the reverse) is unknown.
+    // Both identity signals must agree; neither mismatch may reach the factory.
+    for (bool randomBot : {false, true})
+    for (bool randomAccount : {false, true})
     {
+        Check(PlayerbotsAutoGearSelection::IsConfirmedRandomBot(randomBot, randomAccount) ==
+                  (randomBot && randomAccount), "legacy random identity truth table");
+        if (randomBot == randomAccount)
+            continue;
         FakeInventory inventory = StandardInventory();
+        inventory.Equip(0, 900, 92);
         CommandFacts facts = MaxLevelSender(1);
-        facts.randomAccount = false;
+        facts.randomBot = randomBot;
+        facts.randomAccount = randomAccount;
         Run const run = Execute(facts, inventory);
-        Check(!run.outcome.ran && inventory.Untouched(), "mismatched random bot/account preserves gear");
+        Check(!run.outcome.ran && inventory.Untouched() && inventory.factoryRuns == 0 &&
+                  inventory.bisRuns == 0 && inventory.finisherRuns == 0,
+              "both mismatched random identity shapes preserve gear");
     }
 }
 
@@ -1266,10 +1276,12 @@ void TestOutcomeTruthfulness()
     }
 }
 
-// Gate A07: an alt bot's own gear is never stripped, moved or destroyed, at any cap.
+// Gate A07: alt bots are excluded from all AutoGear command forms.
 void TestAltBotIsolation()
 {
-    for (char const* argument : {"", "match", "blue", "70"})
+    for (bool allowed : {false, true})
+    for (bool bis : {false, true})
+    for (char const* argument : {"", "match", "blue", "70", "reset", "reset 70"})
     {
         FakeInventory inventory = StandardInventory();
         inventory.Equip(0, 900, 92);
@@ -1280,18 +1292,20 @@ void TestAltBotIsolation()
         facts.randomBot = false;
         facts.randomAccount = false;
         facts.argument = argument;
+        facts.bis = bis;
+        facts.altCommandAllowed = allowed;
         Run const run = Execute(facts, inventory);
         std::string const name = std::string("alt bot autogear '") + argument + "'";
-        Check(run.outcome.ran && inventory.stripCalls == 0 && run.outcome.stripped == 0, name + ": no strip");
-        // The factory may still upgrade a slot (the old item goes to the bags), but over-cap gear
-        // stays where it is and nothing the alt owns is lost or destroyed.
+        Check(!run.outcome.ran && run.outcome.refusal == Refusal::Rejected && inventory.Untouched(),
+              name + ": no gearing with either historical config value");
         Check(inventory.equipped[0].guid == before[0].guid &&
                   inventory.equipped[SlotOffHand].guid == before[SlotOffHand].guid,
               name + ": over-cap gear stays in its own slots");
         Check(inventory.OwnedOriginalsStillCarried() == 3 && inventory.originalsDestroyed == 0 &&
                   run.outcome.ownedMissing == 0,
               name + ": nothing it owns is lost or destroyed");
-        Check(run.outcome.retainedOverCap == 2, name + ": both over-cap items retained");
+        Check(inventory.factoryRuns == 0 && inventory.bisRuns == 0 && inventory.finisherRuns == 0,
+              name + ": no factory, overlay or finishers");
     }
 }
 }  // namespace
@@ -1330,7 +1344,7 @@ void TestSourcesUnavailable()
     alt.sourcesAvailable = false;
     FakeInventory altInventory = StandardInventory();
     altInventory.Equip(0, 900, 92);
-    Check(Execute(alt, altInventory).outcome.refusal == Refusal::ResetNotAllowed && altInventory.Untouched(),
+    Check(Execute(alt, altInventory).outcome.refusal == Refusal::Rejected && altInventory.Untouched(),
           "alt bot reset stays refused without an index");
     // The plan itself: everything verified except the index.
     PlanInput input;
@@ -1341,6 +1355,12 @@ void TestSourcesUnavailable()
     Check(PlanExecution(input).refusal == Refusal::SourcesUnavailable, "PlanInput defaults to no index: refused");
     input.sourcesAvailable = true;
     Check(PlanExecution(input).Runs(), "with the index the same plan runs");
+    input.population = Population::AltBot;
+    for (bool reset : {false, true})
+    {
+        input.reset = reset;
+        Check(PlanExecution(input).refusal == Refusal::Rejected, "direct alt plan cannot bypass the route");
+    }
 }
 
 int main()
