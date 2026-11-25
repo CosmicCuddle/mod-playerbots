@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from run_autogear_acceptance import Runner
+from test_result_identity import LINE
 
 BOT = {'name': 'fixture', 'guid': 7}
 EXPECT = {'refusal': 5, 'ran': 0, 'unchanged': True, 'full_bags': True}
@@ -18,11 +19,12 @@ class CasePreconditions(unittest.TestCase):
         fx.args.expected_cap = 66
         fx.inventory.return_value = snapshot
         fx.log_size.return_value = 0
-        fx.result_lines.return_value = ['synthetic result']
+        fx.result_lines.return_value = [LINE]
         cmd = Mock()
         cmd.chat = []
         cmd.whispers_since.return_value = [SimpleNamespace(text='refused')]
-        return SimpleNamespace(fx=fx, cmd=cmd, results=[], save_all=Mock(),
+        return SimpleNamespace(fx=fx, cmd=cmd, ops=Mock(), commander={'guid': 2},
+                               results=[], save_all=Mock(),
                                bag_sizes=Mock(return_value={}),
                                check=Mock(return_value={'pass': True, 'problems': []}))
 
@@ -49,7 +51,7 @@ class CasePreconditions(unittest.TestCase):
             verdict = Runner.run_case(r, 'R3', BOT, 'autogear reset', EXPECT)
         self.assertTrue(verdict['pass'])
         r.cmd.whisper.assert_called_once_with('fixture', 'autogear reset')
-        guard.assert_called_once_with(['synthetic result'], 66)
+        guard.assert_called_once_with([LINE], 66)
         self.assertEqual(r.save_all.call_count, 2)
         self.assertEqual(r.fx.inventory.call_count, 2)
         r.check.assert_called_once()
@@ -64,6 +66,25 @@ class CasePreconditions(unittest.TestCase):
         r.save_all.assert_called_once_with()
         r.fx.inventory.assert_called_once_with(7)
         r.check.assert_not_called()
+
+    def test_wrong_sender_stops_before_second_save(self):
+        r = self.fixture(GEAR + BACKPACK)
+        r.fx.result_lines.return_value = [LINE.replace('0002 Type', '0003 Type')]
+        with patch('run_autogear_acceptance.pre_save_problems', return_value=[]):
+            verdict = Runner.run_case(r, 'R3', BOT, 'autogear reset', EXPECT)
+        self.assertFalse(verdict['pass'])
+        self.assertTrue(verdict['post_save_skipped'])
+        r.save_all.assert_called_once_with()
+        r.check.assert_not_called()
+
+    def test_late_warning_invalidates_verdict(self):
+        r = self.fixture(GEAR + BACKPACK)
+        r.fx.result_lines.side_effect = [[LINE], [LINE], [LINE, 'needs recovery']]
+        with patch('run_autogear_acceptance.pre_save_problems', return_value=[]):
+            verdict = Runner.run_case(r, 'R3', BOT, 'autogear reset', EXPECT)
+        self.assertFalse(verdict['pass'])
+        self.assertEqual(r.save_all.call_count, 2)
+        self.assertIn('observed bot event window changed after explicit save', verdict['problems'])
 
 
 if __name__ == '__main__':
