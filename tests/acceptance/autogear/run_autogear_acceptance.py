@@ -34,6 +34,7 @@ from acceptance_oracle import parse_result, evidence_problems, pre_save_problems
 from strip_evidence import combat_rows, strip_precondition, strip_outcome_problems  # noqa: E402
 from bag_evidence import free_carried_slots, full_bag_problems  # noqa: E402
 from result_identity import identity_problems  # noqa: E402
+from case_outcome import case_outcome_problems  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -311,6 +312,7 @@ class Runner:
         identity = dict(form=expect.get("form"), require_authority=not is_operator)
         problems = identity_problems(lines, bot["guid"], sender, **identity)
         problems.extend(pre_save_problems(lines, self.fx.args.expected_cap))
+        problems.extend(case_outcome_problems(lines, expect))
         if problems:
             verdict = {"case": name, "bot": bot["name"], "pass": False,
                        "problems": problems, "reply": reply, "observed_lines": lines,
@@ -478,13 +480,14 @@ class Runner:
             if not self.run_case("R3 random bot reset with full bags is refused", rnd, "autogear reset",
                                  {"refusal": 5, "ran": 0, "unchanged": True, "full_bags": True, "form": 1}, prepare=self.fill_bags(rnd, 0))["pass"]:
                 return
-        # A GM sender has no verified progression: refused before anything changes.
+        # A GM sender must have no verified progression. The result does not distinguish
+        # GM policy from other reasons for absent authority.
         # Restore the commander even if the final case raises; main owns teardown.
         commander = self.cmd
         try:
             self.cmd = self.ops
             self.run_case("G1 GM sender is not a verified commander", rnd, "autogear",
-                          {"refusal": 2, "ran": 0, "unchanged": True})
+                          {"refusal": 2, "ran": 0, "unchanged": True, "authority": False, "form": 0})
         finally:
             self.cmd = commander
 

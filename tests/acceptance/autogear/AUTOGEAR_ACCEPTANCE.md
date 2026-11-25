@@ -163,3 +163,7 @@ results must match it exactly in addition to existing item/custody checks.
    bot's reply and the inventory comparison. `logs/Playerbots.log`, `logs/Server.log` and
    `logs/Errors.log` in the install hold the server's side.
 5. Retain evidence, then discard the dedicated disposable environment as a unit. Do not run cleanup SQL against any shared or owner database.
+
+## Case-specific observation gate (test-only child)
+
+Before the second explicit fixture save, require the observed refusal and ran values to match the case. An unchanged case must report zero stripped/new/revoked items. G1 requires form 0, refusal 2, ran=false and authority=false; this shows unverified progression, not that a GM-specific IP cache branch caused refusal. No GM group membership is needed according to the reviewed security source, but the native path is not yet demonstrated. A stranger-sender negative case must not treat an absent result as proof of delivery or denial: require explicit source-correlated admission evidence, a confirmed unauthorized sender and unchanged custody; a bounded observation alone stays inconclusive. Enabled-BiS needs a separate fresh disposable run with both positive random-bot and negative alt cases; no live config change. These checks do not establish native command nonce, save durability, disposal or release acceptance.
