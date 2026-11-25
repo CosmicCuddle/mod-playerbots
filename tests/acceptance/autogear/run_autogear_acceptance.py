@@ -405,23 +405,34 @@ class Runner:
     def cases(self):
         done = r"^Geared up to item level \d+"
         alt, rnd = self.alt, self.random
-        self.run_case("A1 alt bot incremental", alt, "autogear", {"refusal": 0, "ran": 1, "reply": done})
-        self.run_case("A2 alt bot reset is refused", alt, "autogear reset",
-                      {"refusal": 4, "ran": 0, "unchanged": True})
-        self.run_case("A3 bad argument is refused", alt, "autogear banana", {"refusal": 1, "ran": 0, "unchanged": True})
-        self.run_case("A4 BiS form disabled", alt, "autogear bis", {"refusal": 1, "ran": 0, "unchanged": True})
+        alt_cases = (
+            ("A1 alt bot incremental", "autogear", {"refusal": 0, "ran": 1, "reply": done}),
+            ("A2 alt bot reset is refused", "autogear reset", {"refusal": 4, "ran": 0, "unchanged": True}),
+            ("A3 bad argument is refused", "autogear banana", {"refusal": 1, "ran": 0, "unchanged": True}),
+            ("A4 BiS form disabled", "autogear bis", {"refusal": 1, "ran": 0, "unchanged": True}),
+        )
+        for name, command, expected in alt_cases:
+            if not self.run_case(name, alt, command, expected)["pass"]:
+                return
         if rnd:
-            self.run_case("R1 random bot incremental (over-cap strip)", rnd, "autogear",
-                          {"refusal": 0, "ran": 1, "reply": done})
-            self.run_case("R2 random bot reset", rnd, "autogear reset", {"refusal": 0, "ran": 1, "reply": done})
-            self.run_case("R3 random bot reset with full bags is refused", rnd, "autogear reset",
-                          {"refusal": 5, "ran": 0, "unchanged": True}, prepare=self.fill_bags(rnd, 0))
+            if not self.run_case("R1 random bot incremental (over-cap strip)", rnd, "autogear",
+                                 {"refusal": 0, "ran": 1, "reply": done})["pass"]:
+                return
+            if not self.run_case("R2 random bot reset", rnd, "autogear reset",
+                                 {"refusal": 0, "ran": 1, "reply": done})["pass"]:
+                return
+            if not self.run_case("R3 random bot reset with full bags is refused", rnd, "autogear reset",
+                                 {"refusal": 5, "ran": 0, "unchanged": True}, prepare=self.fill_bags(rnd, 0))["pass"]:
+                return
         # A GM sender has no verified progression: refused before anything changes.
-        self.cmd_backup = self.cmd
-        self.cmd = self.ops
-        self.run_case("G1 GM sender is not a verified commander", alt, "autogear",
-                      {"refusal": 2, "ran": 0, "unchanged": True})
-        self.cmd = self.cmd_backup
+        # Restore the commander even if the final case raises; main owns teardown.
+        commander = self.cmd
+        try:
+            self.cmd = self.ops
+            self.run_case("G1 GM sender is not a verified commander", alt, "autogear",
+                          {"refusal": 2, "ran": 0, "unchanged": True})
+        finally:
+            self.cmd = commander
 
 
 def main():
