@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wotlk_client as wc  # noqa: E402
 from fixture_guard import fresh_install, fresh_database_names  # noqa: E402
-from acceptance_oracle import parse_result, evidence_problems  # noqa: E402
+from acceptance_oracle import parse_result, evidence_problems, pre_save_problems  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -283,6 +283,20 @@ class Runner:
             reply = reply or (replies[-1] if replies else None)
             lines = self.fx.result_lines(guid_text(bot["guid"]), since)
             line = line or (lines[-1] if lines else None)
+        # Re-read the observed window instead of trusting the first result.
+        # An uncertain result must not trigger a second explicit save or an
+        # acceptance claim. Shutdown/lifecycle handling is a separate gate.
+        lines = self.fx.result_lines(guid_text(bot["guid"]), since)
+        problems = pre_save_problems(lines, self.fx.args.expected_cap)
+        if problems:
+            verdict = {"case": name, "bot": bot["name"], "pass": False,
+                       "problems": problems, "reply": reply, "observed_lines": lines,
+                       "before_count": len(before["rows"]), "after_count": None,
+                       "post_save_skipped": True}
+            self.results.append(verdict)
+            log(f"case {name}: FAIL {problems}")
+            return verdict
+        line = lines[0]
         self.save_all()
         after = self.fx.inventory(bot["guid"])
         verdict = self.check(name, bot, expect, before, after, reply, line)
