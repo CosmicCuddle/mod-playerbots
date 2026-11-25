@@ -32,6 +32,7 @@ import wotlk_client as wc  # noqa: E402
 from fixture_guard import fresh_install, fresh_database_names  # noqa: E402
 from acceptance_oracle import parse_result, evidence_problems, pre_save_problems  # noqa: E402
 from strip_evidence import combat_rows, strip_precondition, strip_outcome_problems  # noqa: E402
+from bag_evidence import free_carried_slots, full_bag_problems  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -273,15 +274,18 @@ class Runner:
             prepare()
         self.save_all()
         before = self.fx.inventory(bot["guid"])
+        problems = []
         if expect.get("over_cap_strip"):
             levels = self.fx.item_levels([r[3] for r in combat_rows(before)])
-            problems = strip_precondition(before, levels, self.fx.args.expected_cap)
-            if problems:
-                verdict = {"case": name, "bot": bot["name"], "pass": False,
-                           "problems": problems, "command_skipped": True}
-                self.results.append(verdict)
-                log(f"case {name}: FAIL {problems}")
-                return verdict
+            problems.extend(strip_precondition(before, levels, self.fx.args.expected_cap))
+        if expect.get("full_bags"):
+            problems.extend(full_bag_problems(before["rows"], self.bag_sizes(before)))
+        if problems:
+            verdict = {"case": name, "bot": bot["name"], "pass": False,
+                       "problems": problems, "command_skipped": True}
+            self.results.append(verdict)
+            log(f"case {name}: FAIL {problems}")
+            return verdict
         since = self.fx.log_size()
         start = len(self.cmd.chat)
         self.cmd.whisper(bot["name"], text)
@@ -351,6 +355,8 @@ class Runner:
             combat_levels = self.fx.item_levels([r[3] for r in combat_rows(before) + combat_rows(after)])
             problems.extend(strip_outcome_problems(before, after, result, combat_levels,
                                                   self.fx.args.expected_cap))
+        if expect.get("full_bags"):
+            problems.extend(full_bag_problems(before["rows"], self.bag_sizes(before)))
         if expect.get("reply") and not (reply and re.search(expect["reply"], reply)):
             problems.append(f"reply {reply!r} does not match {expect['reply']!r}")
         return {"case": name, "bot": bot["name"], "pass": not problems, "problems": problems, "result": result,
@@ -417,18 +423,17 @@ class Runner:
             self.ops.pump(2.0)
         return prepare
 
+    def bag_sizes(self, inv):
+        entries = {r[3] for r in inv["rows"] if r[0] == 0 and 19 <= r[1] < 23}
+        if not entries:
+            return {}
+        ids = ",".join(str(e) for e in sorted(entries))
+        return {int(e): int(s) for e, s in self.fx.sql(
+            self.fx.names["world"], f"SELECT entry, ContainerSlots FROM item_template WHERE entry IN ({ids})")}
+
     def free_slots(self, bot):
         inv = self.fx.inventory(bot["guid"])
-        bags = {r[1]: r[3] for r in inv["rows"] if r[0] == 0 and 19 <= r[1] < 23}
-        sizes = {}
-        if bags:
-            ids = ",".join(str(e) for e in bags.values())
-            sizes = {int(e): int(s) for e, s in self.fx.sql(
-                self.fx.names["world"], f"SELECT entry, ContainerSlots FROM item_template WHERE entry IN ({ids})")}
-        capacity = 16 + sum(sizes.get(e, 0) for e in bags.values())
-        bag_items = {r[2] for r in inv["rows"] if r[0] == 0 and 19 <= r[1] < 23}
-        used = sum(1 for r in inv["rows"] if (r[0] == 0 and 23 <= r[1] < 39) or r[0] in bag_items)
-        return capacity - used
+        return free_carried_slots(inv["rows"], self.bag_sizes(inv))
 
     # --- cases ------------------------------------------------------------------------------------
     def cases(self):
@@ -451,7 +456,7 @@ class Runner:
                                  {"refusal": 0, "ran": 1, "reply": done})["pass"]:
                 return
             if not self.run_case("R3 random bot reset with full bags is refused", rnd, "autogear reset",
-                                 {"refusal": 5, "ran": 0, "unchanged": True}, prepare=self.fill_bags(rnd, 0))["pass"]:
+                                 {"refusal": 5, "ran": 0, "unchanged": True, "full_bags": True}, prepare=self.fill_bags(rnd, 0))["pass"]:
                 return
         # A GM sender has no verified progression: refused before anything changes.
         # Restore the commander even if the final case raises; main owns teardown.
