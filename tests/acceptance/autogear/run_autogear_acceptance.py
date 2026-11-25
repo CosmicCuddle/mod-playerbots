@@ -40,6 +40,7 @@ PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
 OPERATOR = ("AGOPS", "agops")      # GM account: setup only (levels, saves, bag filler)
 COMMANDER = ("AGCMD", "agcmd")     # normal player account: the only command sender
 CMD_CHAR, ALT_CHAR, OPS_CHAR = "Agcmd", "Agalt", "Agops"
+EXPECTED_CASES = 9
 FILLER_ITEM = 25                   # Worn Shortsword: white, unique-free, stack size 1
 CMSG_GROUP_INVITE = 0x06E
 SMSG_GROUP_INVITE = 0x06F
@@ -64,7 +65,8 @@ AUTH_OVERRIDES = {"BindIP": '"127.0.0.1"', "Updates.AutoSetup": "1"}
 PLAYERBOTS_OVERRIDES = {
     "Playerbots.Enabled": "1",
     "Playerbots.AutoGearCommand": "1",
-    "Playerbots.AutoGearCommandAltBots": "1",
+    "Playerbots.AutoGearCommandAltBots": "1",  # deliberately challenge the alt exclusion
+    "Playerbots.AutoGearBisCommand": "0",
     "Playerbots.AutoGearIPCap.Enable": "1",
     "Playerbots.RandomBotAutologin": "1",
     "Playerbots.MinRandomBots": "12",
@@ -184,16 +186,17 @@ class Fixture:
 
     def accounts(self):
         auth = self.names["auth"]
+        if self.sql(auth, "SELECT id FROM account WHERE username IN ('AGOPS', 'AGCMD')"):
+            raise SystemExit("refusing: fixture accounts already exist; use a new isolated fixture")
         self.sql(auth, f"UPDATE realmlist SET address='127.0.0.1', localAddress='127.0.0.1', "
                        f"port={self.args.world_port}, flag=0 WHERE id=1")
         for (user, password), gm in ((OPERATOR, 3), (COMMANDER, 0)):
             salt, verifier = wc.make_registration(user, password)
-            self.sql(auth, f"DELETE FROM account WHERE username='{user}'")
             self.sql(auth, f"INSERT INTO account (username, salt, verifier, expansion) VALUES "
                            f"('{user}', UNHEX('{salt.hex()}'), UNHEX('{verifier.hex()}'), 2)")
             if gm:
                 account_id = self.sql(auth, f"SELECT id FROM account WHERE username='{user}'")[0][0]
-                self.sql(auth, f"REPLACE INTO account_access (id, gmlevel, RealmID) VALUES ({account_id}, {gm}, -1)")
+                self.sql(auth, f"INSERT INTO account_access (id, gmlevel, RealmID) VALUES ({account_id}, {gm}, -1)")
 
     # --- processes --------------------------------------------------------------------------------
     def start(self):
@@ -452,13 +455,18 @@ class Runner:
         done = r"^Geared up to item level \d+"
         alt, rnd = self.alt, self.random
         alt_cases = (
-            ("A1 alt bot incremental", "autogear", {"refusal": 0, "ran": 1, "reply": done, "form": 0}),
-            ("A2 alt bot reset is refused", "autogear reset", {"refusal": 4, "ran": 0, "unchanged": True, "form": 1}),
-            ("A3 bad argument is refused", "autogear banana", {"refusal": 1, "ran": 0, "unchanged": True}),
-            ("A4 BiS form disabled", "autogear bis", {"refusal": 1, "ran": 0, "unchanged": True}),
+            ("A1 alt bot plain is refused", "autogear", {"refusal": 1, "ran": 0, "unchanged": True}),
+            ("A2 alt bot reset is refused", "autogear reset", {"refusal": 1, "ran": 0, "unchanged": True}),
+            ("A3 alt bot BiS is refused with BiS disabled", "autogear bis", {"refusal": 1, "ran": 0, "unchanged": True}),
         )
         for name, command, expected in alt_cases:
             if not self.run_case(name, alt, command, expected)["pass"]:
+                return
+        if not rnd:
+            return  # incomplete: no random-bot or GM cases can be certified
+        for name, command in (("B1 random bot bad argument", "autogear banana"),
+                              ("B2 random bot BiS disabled", "autogear bis")):
+            if not self.run_case(name, rnd, command, {"refusal": 1, "ran": 0, "unchanged": True})["pass"]:
                 return
         if rnd:
             if not self.run_case("R1 random bot incremental (over-cap strip)", rnd, "autogear",
@@ -475,7 +483,7 @@ class Runner:
         commander = self.cmd
         try:
             self.cmd = self.ops
-            self.run_case("G1 GM sender is not a verified commander", alt, "autogear",
+            self.run_case("G1 GM sender is not a verified commander", rnd, "autogear",
                           {"refusal": 2, "ran": 0, "unchanged": True})
         finally:
             self.cmd = commander
@@ -530,7 +538,8 @@ def main():
     errors = (fixture.logs / "Errors.log")
     completed = len(runner.results)
     report = {"expected_cap": args.expected_cap, "cases": runner.results, "passed": sum(r["pass"] for r in runner.results),
-              "total": completed, "expected": 8, "incomplete": max(0, 8 - completed),
+              "total": completed, "expected": EXPECTED_CASES, "incomplete": max(0, EXPECTED_CASES - completed),
+              "release_acceptance": False,  # native command correlation and durable receipts remain unresolved
               "errors_log": errors.read_text(errors="replace").splitlines() if errors.exists() else []}
     with (fixture.logs / args.report).open("x") as handle:
         handle.write(json.dumps(report, indent=2, default=str))
