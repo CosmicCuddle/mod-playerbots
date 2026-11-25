@@ -19,7 +19,7 @@ The guard refuses symlinked configuration paths, existing live config files, exi
 directories and visible non-system database schemas. A restricted MySQL account may not reveal all
 schemas: use a truly isolated instance and verify its identity independently. No automatic DROP,
 reuse or skip-provision path. Reports are exclusive new files under the fixture logs. Fewer than
-eight completed cases is incomplete, not a passing run. Do not reuse a partially provisioned fixture.
+nine completed cases is incomplete. Even nine observed passes are provisional, not release acceptance. Do not reuse a partially provisioned fixture.
 
 The guard unit tests were run with temporary directories and synthetic schema lists; no actual DB
 or server was started. The integrated runner still requires review of binary compiled-prefix,
@@ -32,7 +32,7 @@ database identity/privileges, credentials, inherited config, and case oracle bef
 install prefix compiled into the binary, so the install must be a scratch prefix, never a server's
 own.
 
-The proposed tuple for the next run (not yet executed):
+Historical fixture reference only (not an approved runnable tuple; the composed PB60 child requires a new exact Core/PB/module manifest and native receipt proof before execution):
 
 | Component | Commit |
 |---|---|
@@ -66,7 +66,7 @@ needs three things from the world DB:
 **EP.** The EP tower-lock bind SQL above is applied so the Naxx module starts without errors. The
 command doesn't depend on EP state.
 
-**Accounts.** The runner creates two accounts in the fixture auth DB, with SRP6 salt and verifier:
+**Accounts.** The runner creates two new accounts in the fixture auth DB, with SRP6 salt and verifier. If either already exists, it stops before account or realmlist writes; never delete, replace or reuse accounts. Create a new isolated environment for each attempt:
 
 - `AGCMD` is a normal player account (security 0). It is the only command sender.
 - `AGOPS` is a GM (security 3), used only for setup: `.character level`, `.saveall`, and the
@@ -89,7 +89,7 @@ the world thread runs it, and that calls `RunPB59AutoGearWorldPlan`. It needs:
   - the character is level 60 or below;
   - the quest-derived stage is a Vanilla stage that equals the effective stage.
 - **Population:** random bot means a random-bot account and tracked by `RandomPlayerbotMgr`. Alt bot
-  means neither. Anything mixed is `UnknownPopulation`. AddClass bots are mixed.
+  means neither and is always refused, even with the historical alt-command setting enabled. Mixed signals preserve gear; AddClass bots are excluded.
 - **Not supported:**
   - console commands (there is no player sender);
   - GM senders (no verified progression);
@@ -114,14 +114,15 @@ after:
 
 | Case | Bot | Command | Expected |
 |---|---|---|---|
-| A1 | alt | `autogear` | ran, refusal 0, success whisper |
-| A2 | alt | `autogear reset` | refused (alt bots never strip), nothing changed |
-| A3 | alt | `autogear banana` | refusal 1, nothing changed |
-| A4 | alt | `autogear bis` (BiS form off) | refusal 1, nothing changed |
+| A1 | alt | `autogear` | refusal 1, unchanged |
+| A2 | alt | `autogear reset` | refusal 1, unchanged |
+| A3 | alt | `autogear bis` (BiS disabled) | refusal 1, unchanged; not proof of enabled BiS exclusion |
+| B1 | random | `autogear banana` | refusal 1, unchanged |
+| B2 | random | `autogear bis` (BiS disabled) | refusal 1, unchanged |
 | R1 | random | `autogear` | ran; over-cap gear is stripped through the native executor |
 | R2 | random | `autogear reset` | ran; every combat item is stripped, then regeared |
 | R3 | random | `autogear reset` with bags filled | refusal 5, nothing changed |
-| G1 | alt, GM sender | `autogear` | refusal 2, nothing changed |
+| G1 | random, GM sender | `autogear` | refusal 2, nothing changed |
 
 **Not reachable from the command surface:** the stop cases where a native move fails part way
 (`StripRestored`, `RecoveryRequired`, a factory stop). A real server gives no way to make one move
@@ -158,7 +159,7 @@ results must match it exactly in addition to existing item/custody checks.
    ```
 
    Reuse is disabled. Create a new isolated fixture for every run.
-4. The exit code is 0 only when every case passes. The report has each case's server line, the
+4. Exit code 0 means all nine provisional observations passed, NOT release acceptance. The report explicitly sets `release_acceptance: false`. Native unique command correlation, durable per-character receipt, correct GM group/security context, enabled BiS alt exclusion and independently verified fixture isolation remain mandatory. Do not execute until separately approved. The report has each case's server line, the
    bot's reply and the inventory comparison. `logs/Playerbots.log`, `logs/Server.log` and
    `logs/Errors.log` in the install hold the server's side.
 5. Retain evidence, then discard the dedicated disposable environment as a unit. Do not run cleanup SQL against any shared or owner database.
