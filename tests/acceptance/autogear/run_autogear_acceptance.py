@@ -321,7 +321,8 @@ class Runner:
             problems.append("inventory changed on a refused command")
         new_equipped = [r for r in after["rows"] if r[0] == 0 and r[1] < 19 and r[2] not in before_guids]
         levels = self.fx.item_levels([r[3] for r in new_equipped])
-        problems.extend(evidence_problems(before, after, result, levels))
+        problems.extend(evidence_problems(before, after, result, levels,
+                                          expected_cap=self.fx.args.expected_cap))
         if expect.get("reply") and not (reply and re.search(expect["reply"], reply)):
             problems.append(f"reply {reply!r} does not match {expect['reply']!r}")
         return {"case": name, "bot": bot["name"], "pass": not problems, "problems": problems, "result": result,
@@ -446,6 +447,8 @@ def main():
     parser.add_argument("--auth-port", type=int, default=13724)
     parser.add_argument("--world-port", type=int, default=18085)
     parser.add_argument("--commander-level", type=int, default=60)
+    parser.add_argument("--expected-cap", type=int, required=True,
+                        help="independently reviewed effective cap for the fixed commander fixture")
     parser.add_argument("--start-timeout", type=int, default=1800)
     parser.add_argument("--bot-timeout", type=int, default=600)
     parser.add_argument("--isolated-fixture", action="store_true", help="confirm fresh private install and dedicated disposable local DB instance")
@@ -453,6 +456,8 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
+    if not 0 < args.expected_cap <= 0xffffffff:
+        parser.error("--expected-cap must be a positive uint32 value")
     if not args.isolated_fixture:
         parser.error("requires --isolated-fixture; never point at an owner installation or DB")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+\.json", args.report):
@@ -479,7 +484,7 @@ def main():
         fixture.stop()
     errors = (fixture.logs / "Errors.log")
     completed = len(runner.results)
-    report = {"cases": runner.results, "passed": sum(r["pass"] for r in runner.results),
+    report = {"expected_cap": args.expected_cap, "cases": runner.results, "passed": sum(r["pass"] for r in runner.results),
               "total": completed, "expected": 8, "incomplete": max(0, 8 - completed),
               "errors_log": errors.read_text(errors="replace").splitlines() if errors.exists() else []}
     with (fixture.logs / args.report).open("x") as handle:
