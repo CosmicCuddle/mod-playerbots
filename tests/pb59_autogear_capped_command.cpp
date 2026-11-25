@@ -699,13 +699,23 @@ void TestPopulation()
         Check(!run.outcome.ran && run.outcome.refusal == Refusal::Rejected && inventory.Untouched(),
               "alt bot refused when AutoGearCommandAltBots is off");
     }
-    // Random bot on a non-random account (or the reverse) is unknown.
+    // Both identity signals must agree; neither mismatch may reach the factory.
+    for (bool randomBot : {false, true})
+    for (bool randomAccount : {false, true})
     {
+        Check(PlayerbotsAutoGearSelection::IsConfirmedRandomBot(randomBot, randomAccount) ==
+                  (randomBot && randomAccount), "legacy random identity truth table");
+        if (randomBot == randomAccount)
+            continue;
         FakeInventory inventory = StandardInventory();
+        inventory.Equip(0, 900, 92);
         CommandFacts facts = MaxLevelSender(1);
-        facts.randomAccount = false;
+        facts.randomBot = randomBot;
+        facts.randomAccount = randomAccount;
         Run const run = Execute(facts, inventory);
-        Check(!run.outcome.ran && inventory.Untouched(), "mismatched random bot/account preserves gear");
+        Check(!run.outcome.ran && inventory.Untouched() && inventory.factoryRuns == 0 &&
+                  inventory.bisRuns == 0 && inventory.finisherRuns == 0,
+              "both mismatched random identity shapes preserve gear");
     }
 }
 
