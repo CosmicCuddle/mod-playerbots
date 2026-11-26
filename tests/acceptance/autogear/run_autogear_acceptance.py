@@ -38,6 +38,7 @@ from result_identity import identity_problems  # noqa: E402
 from case_outcome import case_outcome_problems  # noqa: E402
 from bis_phase import BIS_CASES, fixture_overrides, run_bis_phase  # noqa: E402
 from stranger_case import expected_reply, stranger_case_problems, stranger_preflight_problems  # noqa: E402
+from preflight import collect_preflight  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -285,6 +286,15 @@ class Fixture:
     def log_size(self):
         path = self.logs / "Playerbots.log"
         return len(path.read_text(errors="replace")) if path.exists() else 0
+
+
+def mysql_rows(mysql, statement):
+    """Read-only query for preflight, before any fixture object exists."""
+    host, port, user, password = mysql.split(";")
+    out = subprocess.run(["mysql", "--no-defaults", "--protocol=TCP", "-h", host, "-P", port, "-u", user,
+                          f"-p{password}", "-N", "-B", "-e", statement],
+                         capture_output=True, text=True, check=True).stdout
+    return [line.split("\t") for line in out.splitlines() if line]
 
 
 def guid_text(low):
@@ -621,6 +631,12 @@ def main():
     parser.add_argument("--stranger-cases", action="store_true",
                         help="add S1/S1c/S2/S2c stranger-sender whisper cases (third normal account); not release acceptance")
     parser.add_argument("--isolated-fixture", action="store_true", help="confirm fresh private install and dedicated disposable local DB instance")
+    parser.add_argument("--build-dir", required=True,
+                        help="build tree of the install's binaries (CMakeCache.txt, src/server/apps)")
+    parser.add_argument("--expect-tuple", action="append", metavar="NAME=SHA",
+                        help="expected HEAD: core=<sha> for --source-dir, <module>=<sha> for modules/<module>")
+    parser.add_argument("--preflight-only", action="store_true",
+                        help="run every pre-write check, print the JSON report and stop; writes nothing")
     parser.add_argument("--report", default="autogear_acceptance_report.json")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -633,6 +649,15 @@ def main():
         parser.error("requires --isolated-fixture; never point at an owner installation or DB")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+\.json", args.report):
         parser.error("--report must be a simple JSON filename inside fixture logs")
+    if args.mysql.split(";")[0] not in ("127.0.0.1", "localhost"):
+        parser.error("the MySQL host must be local")
+    report = collect_preflight(args, lambda: mysql_rows(args.mysql, "SHOW DATABASES"))
+    if args.preflight_only:
+        print(json.dumps(report, indent=2))
+        return 0 if report["ok"] else 1
+    if not report["ok"]:
+        failed = {name: check["problems"] for name, check in report["checks"].items() if not check["ok"]}
+        raise SystemExit(f"preflight refused before any write: {json.dumps(failed)}")
     fixture = Fixture(args)
     fresh_database_names(args.prefix, fixture.sql(None, "SHOW DATABASES"))
     fixture.write_configs()
