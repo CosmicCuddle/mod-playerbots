@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wotlk_client as wc  # noqa: E402
 from fixture_guard import fresh_install, fresh_database_names  # noqa: E402
+from f14_preflight import f14_preflight_problems  # noqa: E402
 from acceptance_oracle import parse_result, evidence_problems, pre_save_problems  # noqa: E402
 from strip_evidence import combat_rows, strip_precondition, strip_outcome_problems  # noqa: E402
 from bag_evidence import free_carried_slots, full_bag_problems  # noqa: E402
@@ -151,8 +152,15 @@ class Fixture:
         pb_overrides = fixture_overrides(PLAYERBOTS_OVERRIDES, self.args.bis_phase)
         for dist in module_sources:
             plan.append((dist, pb_overrides if dist in pb_sources else {}))
+        checked = None
+        if getattr(self.args, "stranger_cases", False):
+            checked = {source: source.read_text(errors="strict") for source, _ in plan}
+            problems = f14_preflight_problems(
+                {source.relative_to(etc).as_posix(): text for source, text in checked.items()}, os.environ)
+            if problems:
+                raise SystemExit("stranger F14 preflight refused: " + "; ".join(problems))
         for source, overrides in plan:
-            text = source.read_text(errors="replace")
+            text = checked[source] if checked is not None else source.read_text(errors="replace")
             for key, value in overrides.items():
                 pattern = re.compile(rf"^{re.escape(key)}\s*=.*$", re.M)
                 line = f"{key} = {value}"
