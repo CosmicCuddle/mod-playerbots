@@ -25,6 +25,26 @@ The guard unit tests were run with temporary directories and synthetic schema li
 or server was started. The integrated runner still requires review of binary compiled-prefix,
 database identity/privileges, credentials, inherited config, and case oracle before any execution.
 
+## Write-free preflight and install identity (Claude, PB68 child)
+
+`--build-dir` is now required, and every run starts with the same collected preflight before its
+first write. `--preflight-only` runs it, prints one JSON report and stops; it writes no file,
+config or database row. The report has one entry per check:
+
+| Check | Refuses when |
+|---|---|
+| `fresh_install` | the install is not canonical, has a `.conf`, a symlink, `data/` or `logs/` |
+| `fresh_databases` | the MySQL instance has any non-system schema, or cannot be listed |
+| `install_identity` | the build's `CMakeCache.txt` `CONF_DIR` (or `CMAKE_INSTALL_PREFIX/etc`) is not this install's `etc/`, or an installed binary's ELF build-ID differs from the build tree's |
+| `ports` | the auth or world port is already accepting connections on 127.0.0.1, or the two are equal |
+| `dbc` | the DBC directory has no `.dbc` file |
+| `source_tuple` | no `--expect-tuple`, or `--source-dir` (`core`) or `modules/<name>` is not a clean git checkout at the expected full SHA |
+
+The compiled-prefix check closes the gap noted above: module configs come from the binary's
+compiled `CONF_DIR`, so a copied install would load another install's module configs. A rebuilt
+but not reinstalled binary is caught by its build-ID. A passing preflight is a precondition, not
+evidence of isolation or of any case result.
+
 ## Fixture requirements
 
 **Build.** A disposable install prefix (`bin/authserver`, `bin/worldserver`, `etc/*.conf.dist`,
@@ -148,11 +168,23 @@ results must match it exactly in addition to existing item/custody checks.
 1. Build the tuple into a scratch install prefix. Confirm `COSMIC_PB59_INVENTORY_BATCH_API_VERSION 1`
    is in `Player.h`.
 2. Start a local MySQL. Give a local user rights to create the `agacc*` databases.
-3. Run it:
+3. Run the preflight and keep its report:
+
+   ```bash
+   python3 tests/acceptance/autogear/run_autogear_acceptance.py --preflight-only --isolated-fixture \
+     --dist <scratch install> --build-dir <its build tree> --dbc <dbc dir> --source-dir <core source> \
+     --mysql "127.0.0.1;<port>;<user>;<password>" --prefix agacc1 --expected-cap <reviewed cap> \
+     --expect-tuple core=<sha> --expect-tuple mod-playerbots=<sha> \
+     --expect-tuple mod-individual-progression=<sha> --expect-tuple mod-character-services=<sha> \
+     --expect-tuple mod-naxxramas-core=<sha>
+   ```
+
+   Continue only when it exits 0. Then run it:
 
    ```bash
    python3 tests/acceptance/autogear/run_autogear_acceptance.py \
-     --dist <scratch install> --dbc <dbc dir> --source-dir <core source> \
+     --dist <scratch install> --build-dir <its build tree> --dbc <dbc dir> --source-dir <core source> \
+     --expect-tuple <the same five name=sha pairs> \
      --mysql "127.0.0.1;<port>;<user>;<password>" --prefix agacc1 \
      --world-sql <core>/modules/mod-naxxramas-core/docs/install/2026_10_13_00_ep_tower_lock_module_bind.sql \
      --expected-cap <independently reviewed cap> --isolated-fixture --report agacc1_report.json
