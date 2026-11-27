@@ -29,17 +29,19 @@ constexpr std::uint8_t SlotTabard = 18;
 enum class Refusal : std::uint8_t
 {
     None,
-    Rejected,           // disabled form, alt bot refused, bad argument
-    NotVerified,        // no verified sender, progression stage or cap
-    UnknownPopulation,  // not a proven random bot or alt bot
-    ResetNotAllowed,    // reset only strips random bots
-    BagsFull,           // not enough free bag slots for the planned strip; nothing changed
-    StripRefused,       // the exact strip plan was refused before any move (an item, bag or script check
-                        // changed); nothing changed
-    StripRestored,      // a strip move failed part way; every moved item is back in its slot; nothing else ran
-    SourcesUnavailable, // the raid source index is not loaded: item sources cannot be checked
-    RecoveryRequired    // an item is not where it should be: a strip could not be undone exactly, a BiS
-                        // restore failed, or an item the bot owned left its inventory. Reported, never hidden
+    Rejected,            // disabled form, alt bot refused, bad argument
+    NotVerified,         // no verified sender, progression stage or cap
+    UnknownPopulation,   // not a proven random bot or alt bot
+    ResetNotAllowed,     // reset only strips random bots
+    BagsFull,            // not enough free bag slots for the planned strip; nothing changed
+    StripRefused,        // the exact strip plan was refused before any move (an item, bag or script check
+                         // changed); nothing changed
+    StripRestored,       // a strip move failed part way; every moved item is back in its slot; nothing else ran
+    SourcesUnavailable,  // the raid source index is not loaded: item sources cannot be checked
+    RecoveryRequired,    // an item is not where it should be: a strip could not be undone exactly, a BiS
+                         // restore failed, or an item the bot owned left its inventory. Reported, never hidden
+    NotReady             // Core withholds the bot's inventory stamp (quarantine, open transaction, combat, death,
+                         // teleport, login/logout); nothing was read or changed (coordination #80, finding A1)
 };
 
 // What one exact strip did (adapter StripToBags). Every planned item moves to its own reserved empty bag
@@ -162,6 +164,7 @@ inline bool Carried(Snapshot const& snapshot, std::uint64_t guid)
 }
 
 // Inventory adapter contract:
+//   bool Ready();                                     optional; false: refuse before any other call
 //   Snapshot Capture();
 //   StripResult StripToBags(uint32 slotMask);        exact, all-or-nothing (bit = equipment slot)
 //   bool RunFactory(uint32 quality, uint32 cap, bool incremental);  false: stopped, recovery needed
@@ -175,6 +178,16 @@ Outcome Execute(Inventory& inventory, Plan const& plan)
     outcome.refusal = plan.refusal;
     if (!plan.Runs())
         return outcome;
+    // A bot Core will not let change its inventory is refused before anything is read or written. Without this,
+    // blocked creates on a quarantined bot would end as a success with no new items (finding A1).
+    if constexpr (requires { inventory.Ready(); })
+    {
+        if (!inventory.Ready())
+        {
+            outcome.refusal = Refusal::NotReady;
+            return outcome;
+        }
+    }
 
     Snapshot const before = inventory.Capture();
     std::uint32_t stripMask = 0;
