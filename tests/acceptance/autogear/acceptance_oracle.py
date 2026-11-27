@@ -27,7 +27,8 @@ def parse_result(line):
         elif not re.fullmatch(r'(?:0|[1-9][0-9]{0,9})', value) or int(value) > 0xffffffff:
             return None
         result[key] = value
-    if set(result) != set(FIELDS) or int(result['refusal']) > 9:
+    # 0-9 as before, plus 10 (NotReady, finding A1). Anything above 10 is unknown and malformed.
+    if set(result) != set(FIELDS) or int(result['refusal']) > 10:
         return None
     return result
 
@@ -70,6 +71,9 @@ def evidence_problems(before, after, result, levels, *, expected_cap):
         problems.append('result indicates incomplete custody or restoration')
     if result['refusal'] == '9':
         problems.append('recovery required; not acceptance evidence')
+    if result['refusal'] == '10' and (result['ran'] != '0' or result['new'] != '0' or result['stripped'] != '0'
+                                      or result['revoked'] != '0'):
+        problems.append('NotReady result reports gear activity')
     if result['ran'] == '1':
         cap = int(result['cap'])
         if cap != expected_cap:

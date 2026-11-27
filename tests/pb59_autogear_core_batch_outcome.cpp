@@ -136,6 +136,7 @@ struct RouteInventory
     int ownedMoves = 0;   // owned items moved; only ever by an Applied Core strip
     int created = 0;      // items created into empty slots
     int gatedRoutes = 0;  // moves refused because the executor is missing
+    int factoryRuns = 0;  // RunFactory calls
     mutable int captures = 0;
     int destroys = 0;
     int finishers = 0;
@@ -183,6 +184,7 @@ struct RouteInventory
     // An equipped slot is replaced only after an exact Core strip of that slot; an empty slot is filled.
     bool RunFactory(std::uint32_t, std::uint32_t cap, bool incremental)
     {
+        ++factoryRuns;
         std::uint32_t const level = std::min(factoryLevel, cap);
         if (!level)
             return true;  // no candidate at all
@@ -303,15 +305,16 @@ void TestRoutesWithoutExecutor()
         Check(inventory.equipped[1].guid && inventory.created == 4,
               "zero-strip incremental: empty slots are still filled (no move)");
     }
-    // Alt bot, plain: never stripped; the same replacement gate applies.
+    // Alt bot, plain: refused before anything runs (owner policy, PB60 alt exclusion); its gear stays.
     {
         RouteInventory inventory;
         inventory.equipped[0] = {101, 1, 90};
         inventory.equipped[1] = {102, 2, 50};
         Outcome const outcome = Execute(inventory, MakePlan(false, Population::AltBot));
-        Check(outcome.ran && inventory.equipped[0].guid == 101 && inventory.equipped[1].guid == 102 &&
-                  inventory.ownedMoves == 0,
-              "alt bot without executor: its gear stays, nothing moved");
+        Check(!outcome.ran && outcome.refusal == Refusal::Rejected && inventory.equipped[0].guid == 101 &&
+                  inventory.equipped[1].guid == 102 && inventory.ownedMoves == 0 && inventory.coreStrips == 0 &&
+                  inventory.gatedRoutes == 0 && inventory.factoryRuns == 0 && inventory.created == 0,
+              "alt bot without executor: refused, gear unchanged, no executor or factory call");
     }
     // Empty reset: a random bot wearing nothing in combat slots; nothing to strip.
     {
