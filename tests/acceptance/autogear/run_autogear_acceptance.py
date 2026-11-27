@@ -39,6 +39,9 @@ from case_outcome import case_outcome_problems  # noqa: E402
 from bis_phase import BIS_CASES, fixture_overrides, run_bis_phase  # noqa: E402
 from stranger_case import expected_reply, stranger_case_problems, stranger_preflight_problems  # noqa: E402
 from preflight import collect_preflight  # noqa: E402
+import mysql_client  # noqa: E402
+from port_ownership import read_snapshot  # noqa: E402
+from startup_gate import StartupRefused, spawn, stop_owned, wait_ready_and_owned  # noqa: E402
 
 MARKER = "# autogear-acceptance: disposable fixture config, never a live server"
 PREFIX_RE = re.compile(r"^agacc[a-z0-9_]{0,24}$")
@@ -97,12 +100,11 @@ def log(line):
 class Fixture:
     def __init__(self, args):
         self.args = args
-        host, port, user, password = args.mysql.split(";")
-        if host not in ("127.0.0.1", "localhost"):
+        self.creds = mysql_client.parse_endpoint(args.mysql, args.mysql_password_file)
+        if self.creds.host not in ("127.0.0.1", "localhost"):
             raise SystemExit("refusing: the MySQL host must be local")
         if not PREFIX_RE.match(args.prefix):
             raise SystemExit("refusing: --prefix must start with 'agacc' (disposable databases only)")
-        self.db = {"host": host, "port": port, "user": user, "password": password}
         self.dist = fresh_install(args.dist)
         self.logs = self.dist / "logs" / args.prefix
         self.procs = []
@@ -110,15 +112,13 @@ class Fixture:
 
     # --- MySQL ------------------------------------------------------------------------------------
     def sql(self, database, statement):
-        cmd = ["mysql", "--no-defaults", "--protocol=TCP", "-h", self.db["host"], "-P", self.db["port"], "-u", self.db["user"],
-               f"-p{self.db['password']}", "-N", "-B", "-e", statement]
-        if database:
-            cmd.append(database)
-        out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
-        return [line.split("\t") for line in out.splitlines() if line]
+        return mysql_client.rows(self.creds, statement, database)
 
     def env(self):
-        info = f"{self.db['host']};{self.db['port']};{self.db['user']};{self.db['password']}"
+        # Core reads its DB info only from config or AC_*_DATABASE_INFO, so the servers' environment holds
+        # the password. It's never logged or reported by the runner; see SECRET_REDACTION_AUDIT.md.
+        c = self.creds
+        info = f"{c.host};{c.port};{c.user};{c.password}"
         env = {k: v for k, v in os.environ.items() if not k.startswith(("AC_", "MYSQL_"))}
         env.update({
             "AC_LOGIN_DATABASE_INFO": f"{info};{self.names['auth']}",
@@ -206,8 +206,7 @@ class Fixture:
         for extra in self.args.world_sql or []:
             log(f"provision: world SQL {extra}")
             with open(extra) as handle:
-                subprocess.run(["mysql", "--no-defaults", "--protocol=TCP", "-h", self.db["host"], "-P", self.db["port"], "-u", self.db["user"],
-                                f"-p{self.db['password']}", self.names["world"]], stdin=handle, check=True)
+                mysql_client.run(self.creds, [self.names["world"]], stdin=handle, timeout=3600)
 
     def accounts(self):
         auth = self.names["auth"]
@@ -227,33 +226,24 @@ class Fixture:
                 self.sql(auth, f"INSERT INTO account_access (id, gmlevel, RealmID) VALUES ({account_id}, {gm}, -1)")
 
     # --- processes --------------------------------------------------------------------------------
-    def start(self):
+    def start(self, popen=subprocess.Popen, snapshot=read_snapshot, clock=time.monotonic, sleep=time.sleep):
+        """Start our servers; return only when ready and when they own every fixture listener."""
         for binary in ("authserver", "worldserver"):
             out = open(self.logs / f"{binary}_run.out", "w")
-            proc = subprocess.Popen([str(self.dist / "bin" / binary)], cwd=self.dist, env=self.env(),
-                                    stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-            self.procs.append((binary, proc))
-        deadline = time.monotonic() + self.args.start_timeout
+            self.procs.append(spawn(binary, [str(self.dist / "bin" / binary)], popen=popen, cwd=self.dist,
+                                    env=self.env(), stdout=out, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL))
         world_out = self.logs / "worldserver_run.out"
-        while time.monotonic() < deadline:
-            for binary, proc in self.procs:
-                if proc.poll() is not None:
-                    raise SystemExit(f"{binary} exited early rc={proc.returncode}; see {self.logs}")
-            if "ready..." in world_out.read_text(errors="replace"):
-                log("worldserver ready")
-                return
-            time.sleep(2)
-        raise SystemExit("worldserver did not become ready")
+        try:
+            wait_ready_and_owned(self.procs, [self.args.auth_port, self.args.world_port],
+                                 lambda: "ready..." in world_out.read_text(errors="replace"), snapshot,
+                                 self.args.start_timeout, clock=clock, sleep=sleep)
+        except StartupRefused as error:
+            raise SystemExit(f"startup refused before any client connected: {error}; see {self.logs}") from None
+        log("worldserver ready; fixture ports owned by our servers")
 
     def stop(self):
-        for binary, proc in reversed(self.procs):
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGINT)
-                try:
-                    proc.wait(timeout=120)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            log(f"{binary} stopped rc={proc.returncode}")
+        stop_owned(self.procs, log=log)
 
     def client(self, account, log_prefix):
         key = wc.auth_login("127.0.0.1", self.args.auth_port, *account)
@@ -288,16 +278,9 @@ class Fixture:
         return len(path.read_text(errors="replace")) if path.exists() else 0
 
 
-def mysql_rows(mysql, statement):
+def mysql_rows(creds, statement):
     """Read-only query for preflight, before any fixture object exists."""
-    host, port, user, password = mysql.split(";")
-    # The password goes in the environment, never argv, so a failure report cannot contain it.
-    done = subprocess.run(["mysql", "--no-defaults", "--protocol=TCP", "-h", host, "-P", port, "-u", user,
-                           "-N", "-B", "-e", statement],
-                          capture_output=True, text=True, env={**os.environ, "MYSQL_PWD": password})
-    if done.returncode:
-        raise OSError(f"read-only query failed: {done.stderr.strip().splitlines()[-1:] or ['no detail']}")
-    out = done.stdout
+    out = mysql_client.run(creds, ["-N", "-B", "-e", statement], timeout=60)
     return [line.split("\t") for line in out.splitlines() if line]
 
 
@@ -621,7 +604,9 @@ def main():
     parser.add_argument("--dist", required=True, help="disposable install prefix (bin/, etc/)")
     parser.add_argument("--dbc", required=True, help="DBC directory for this tuple")
     parser.add_argument("--source-dir", required=True, help="Core source tree (SQL base/updates)")
-    parser.add_argument("--mysql", required=True, help="host;port;user;password of a local MySQL")
+    parser.add_argument("--mysql", required=True, help="host;port;user of a local MySQL (no password here)")
+    parser.add_argument("--mysql-password-file", required=True,
+                        help="file holding only the password; regular, owned by you, mode 600")
     parser.add_argument("--prefix", default="agacc", help="database prefix; must start with 'agacc'")
     parser.add_argument("--world-sql", action="append", help="extra world SQL applied after provisioning")
     parser.add_argument("--auth-port", type=int, default=13724)
@@ -655,16 +640,20 @@ def main():
         parser.error("requires --isolated-fixture; never point at an owner installation or DB")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+\.json", args.report):
         parser.error("--report must be a simple JSON filename inside fixture logs")
-    if args.mysql.split(";")[0] not in ("127.0.0.1", "localhost"):
+    try:
+        creds = mysql_client.parse_endpoint(args.mysql, args.mysql_password_file)
+    except ValueError as error:
+        parser.error(str(error))
+    if creds.host not in ("127.0.0.1", "localhost"):
         parser.error("the MySQL host must be local")
-    report = collect_preflight(args, lambda: mysql_rows(args.mysql, "SHOW DATABASES"),
-                               db_rows=lambda statement: mysql_rows(args.mysql, statement))
+    report = collect_preflight(args, lambda: mysql_rows(creds, "SHOW DATABASES"),
+                               db_rows=lambda statement: mysql_rows(creds, statement))
     if args.preflight_only:
-        print(json.dumps(report, indent=2))
+        print(mysql_client.scrub(json.dumps(report, indent=2), creds))
         return 0 if report["ok"] else 1
     if not report["ok"]:
         failed = {name: check["problems"] for name, check in report["checks"].items() if not check["ok"]}
-        raise SystemExit(f"preflight refused before any write: {json.dumps(failed)}")
+        raise SystemExit(mysql_client.scrub(f"preflight refused before any write: {json.dumps(failed)}", creds))
     fixture = Fixture(args)
     fresh_database_names(args.prefix, fixture.sql(None, "SHOW DATABASES"))
     fixture.write_configs()
@@ -698,7 +687,7 @@ def main():
               "release_acceptance": False,  # native command correlation and durable receipts remain unresolved
               "errors_log": errors.read_text(errors="replace").splitlines() if errors.exists() else []}
     with (fixture.logs / args.report).open("x") as handle:
-        handle.write(json.dumps(report, indent=2, default=str))
+        handle.write(mysql_client.scrub(json.dumps(report, indent=2, default=str), creds))
     log(f"{report['passed']}/{report['total']} cases passed; report {args.report}")
     return 0 if report["total"] == report["expected"] == report["passed"] else 1
 

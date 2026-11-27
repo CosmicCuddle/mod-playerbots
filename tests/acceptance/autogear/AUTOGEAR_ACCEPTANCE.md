@@ -175,7 +175,7 @@ results must match it exactly in addition to existing item/custody checks.
    ```bash
    python3 tests/acceptance/autogear/run_autogear_acceptance.py --preflight-only --isolated-fixture \
      --dist <scratch install> --build-dir <its build tree> --dbc <dbc dir> --source-dir <core source> \
-     --mysql "127.0.0.1;<port>;<user>;<password>" --prefix agacc1 --expected-cap <reviewed cap> \
+     --mysql "127.0.0.1;<port>;<user>" --mysql-password-file <0600 file> --prefix agacc1 --expected-cap <reviewed cap> \
      --expect-tuple core=<sha> --expect-tuple mod-playerbots=<sha> \
      --expect-tuple mod-individual-progression=<sha> --expect-tuple mod-character-services=<sha> \
      --expect-tuple mod-naxxramas-core=<sha> \
@@ -189,7 +189,7 @@ results must match it exactly in addition to existing item/custody checks.
      --dist <scratch install> --build-dir <its build tree> --dbc <dbc dir> --source-dir <core source> \
      --expect-tuple <the same five name=sha pairs> \
      --build-manifest <the same manifest> --expect-db-identity <the same identity> \
-     --mysql "127.0.0.1;<port>;<user>;<password>" --prefix agacc1 \
+     --mysql "127.0.0.1;<port>;<user>" --mysql-password-file <0600 file> --prefix agacc1 \
      --world-sql <core>/modules/mod-naxxramas-core/docs/install/2026_10_13_00_ep_tower_lock_module_bind.sql \
      --expected-cap <independently reviewed cap> --isolated-fixture --report agacc1_report.json
    ```
