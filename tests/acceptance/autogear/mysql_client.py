@@ -39,21 +39,52 @@ class Credentials:
     __str__ = __repr__
 
 
-def read_password_file(path):
-    path = Path(path)
+MAX_PASSWORD_FILE = 4096
+
+
+def read_password_file(path, after_open=None):
+    """Open once, without following a symlink, then check and read that same descriptor.
+
+    Checking a path and then reading it again would let a swapped file through. Here the type,
+    owner and mode come from fstat on the open descriptor. The bytes come from it too, and the read is
+    bounded, so a file that grows while it is read is still refused.
+    O_NONBLOCK keeps a FIFO from blocking the open; a non-regular file is then refused.
+    `after_open` is a test hook, called with the path after the open and before the checks.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     try:
-        info = os.lstat(path)
+        fd = os.open(path, flags)
     except OSError as error:
-        raise ValueError(f"cannot read the password file: {error.strerror}") from None
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise ValueError("the password file must be a regular file, not a link")
-    if info.st_uid != os.getuid():
-        raise ValueError("the password file must belong to this user")
-    if info.st_mode & 0o077:
-        raise ValueError("the password file must not be readable by group or others (chmod 600)")
-    text = path.read_text(encoding="utf-8")
+        raise ValueError(f"cannot open the password file: {error.strerror}") from None
+    try:
+        if after_open:
+            after_open(path)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("the password file must be a regular file")
+        if info.st_uid != os.getuid():
+            raise ValueError("the password file must belong to this user")
+        if info.st_mode & 0o077:
+            raise ValueError("the password file must not be readable by group or others (chmod 600)")
+        data = b""
+        while len(data) <= MAX_PASSWORD_FILE:
+            try:
+                chunk = os.read(fd, MAX_PASSWORD_FILE + 1 - len(data))
+            except OSError as error:
+                raise ValueError(f"cannot read the password file: {error.strerror}") from None
+            if not chunk:
+                break
+            data += chunk
+        if len(data) > MAX_PASSWORD_FILE:
+            raise ValueError("the password file is too large")
+    finally:
+        os.close(fd)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("the password file is not UTF-8") from None
     password = text[:-1] if text.endswith("\n") else text
-    if not password or "\n" in password:
+    if not password or any(c in password for c in "\n\r\0"):
         raise ValueError("the password file must hold exactly one non-empty line")
     return password
 

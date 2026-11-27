@@ -8,6 +8,11 @@ then polls until both:
   belongs to our process tree with the recorded start times.
 
 It refuses when a spawned server exits, or when the deadline passes while either condition fails.
+Guarantee: on return, readiness, the snapshot and a later poll of every root all completed strictly
+before the deadline, and no root had exited. Not guaranteed: what happens after return. A server can
+still exit, or a listener change, between this check and the first client connection. Nothing in
+user space can close that window; the client fails then, and the runner stops only our own children.
+
 It never signals anything: cleanup is `stop_owned`, which acts only on the Popen objects we hold.
 A foreign listener is reported, never killed.
 """
@@ -39,23 +44,38 @@ def wait_ready_and_owned(spawned, ports, is_ready, snapshot, timeout, clock=time
             raise StartupRefused(problem or f"{name}: start time unknown")
     roots = {proc.pid: started for _, proc, started, _ in spawned}
     deadline = clock() + timeout
-    last = ["not checked yet"]
-    while True:
+
+    def check_exits():
         for name, proc, _, _ in spawned:
             if proc.poll() is not None:
                 raise StartupRefused(f"{name} exited early rc={proc.returncode}")
-        if is_ready():
+
+    def check_deadline(last):
+        # Success must be fully established strictly before the deadline; at or past it, refuse.
+        if clock() >= deadline:
+            raise StartupRefused(f"startup gate timed out: {'; '.join(last)}")
+
+    last = ["not checked yet"]
+    while True:
+        check_exits()
+        check_deadline(last)
+        ready = is_ready()
+        check_deadline(["worldserver became ready at or after the deadline"] if ready else ["worldserver not ready"])
+        if ready:
             try:
                 last = ownership_problems(ports, roots, snapshot())
             except Exception as error:  # noqa: BLE001 - an unreadable snapshot refuses
                 last = [f"ownership snapshot failed: {error}"]
+            check_deadline(last if last else ["ownership snapshot finished at or after the deadline"])
+            # A root may have exited while the snapshot was taken; re-poll before accepting.
+            check_exits()
             if not last:
                 return
         else:
             last = ["worldserver not ready"]
-        if clock() >= deadline:
-            raise StartupRefused(f"startup gate timed out: {'; '.join(last)}")
-        sleep(interval)
+        remaining = deadline - clock()
+        check_deadline(last)
+        sleep(min(interval, remaining))
 
 
 def stop_owned(spawned, grace=120, log=lambda line: None):

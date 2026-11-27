@@ -15,6 +15,12 @@ constants for disposable accounts. This audit traces the MySQL password from inp
 | Preflight output, refusal text, final report | `json.dumps` of collected text | each is scrubbed of the password before printing or writing |
 | Build manifest and DB identity files | not secret-bearing | the identity file holds grants, not passwords. Grant lines are redacted (`db_identity.redact`) |
 
+**Part 42 correction:** the password file used to be checked with `lstat` and then read again by path, so a
+file swapped in between those two steps was accepted. It is now opened once with
+`O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK`; `fstat` checks type, owner and mode on that descriptor, and the bounded
+read (4096 bytes) comes from the same descriptor. Invalid UTF-8, NUL, CR and multi-line content are refused, and
+errors carry no data.
+
 **Residual risks, unchanged in this scope:**
 - **The servers' environment.** Core reads database credentials only from its config or `AC_*_DATABASE_INFO`, so
   the authserver and worldserver environments hold the password. On Linux that's readable only by the same user
