@@ -39,6 +39,8 @@ config or database row. The report has one entry per check:
 | `ports` | the auth or world port is already accepting connections on 127.0.0.1, or the two are equal |
 | `dbc` | the DBC directory has no `.dbc` file |
 | `source_tuple` | no `--expect-tuple`, or `--source-dir` (`core`) or `modules/<name>` is not a clean git checkout at the expected full SHA |
+| `build_manifest` | no `--build-manifest`, or the manifest's tuple is not exactly `--expect-tuple`, is not marked clean, or its `conf_dir`, binary build-IDs or `etc/**/*.dist` SHA-256s differ from the install, or the worldserver's revision stamp doesn't show the expected Core SHA (`build_manifest.py`) |
+| `db_identity` | no `--expect-db-identity`, the identity query fails, the live flavor, `@@server_uuid` (MySQL; null on MariaDB), hostname, port, datadir, server_id or `CURRENT_USER()` differ from the operator's record, or the grants are not exactly the allowlist, or any grant reaches beyond `USAGE ON *.*` and `<prefix>\_` schemas (`db_identity.py`) |
 
 The compiled-prefix check closes the gap noted above: module configs come from the binary's
 compiled `CONF_DIR`, so a copied install would load another install's module configs. A rebuilt
@@ -176,7 +178,8 @@ results must match it exactly in addition to existing item/custody checks.
      --mysql "127.0.0.1;<port>;<user>;<password>" --prefix agacc1 --expected-cap <reviewed cap> \
      --expect-tuple core=<sha> --expect-tuple mod-playerbots=<sha> \
      --expect-tuple mod-individual-progression=<sha> --expect-tuple mod-character-services=<sha> \
-     --expect-tuple mod-naxxramas-core=<sha>
+     --expect-tuple mod-naxxramas-core=<sha> \
+     --build-manifest <operator build manifest.json> --expect-db-identity <operator identity.json>
    ```
 
    Continue only when it exits 0. Then run it:
@@ -185,6 +188,7 @@ results must match it exactly in addition to existing item/custody checks.
    python3 tests/acceptance/autogear/run_autogear_acceptance.py \
      --dist <scratch install> --build-dir <its build tree> --dbc <dbc dir> --source-dir <core source> \
      --expect-tuple <the same five name=sha pairs> \
+     --build-manifest <the same manifest> --expect-db-identity <the same identity> \
      --mysql "127.0.0.1;<port>;<user>;<password>" --prefix agacc1 \
      --world-sql <core>/modules/mod-naxxramas-core/docs/install/2026_10_13_00_ep_tower_lock_module_bind.sql \
      --expected-cap <independently reviewed cap> --isolated-fixture --report agacc1_report.json
