@@ -35,7 +35,7 @@ class OracleTests(unittest.TestCase):
                 self.assertIsNone(parse_result(LINE.replace('cap=60', 'cap=' + value)))
 
     def test_unknown_refusal(self):
-        self.assertIsNone(parse_result(LINE.replace('refusal=0', 'refusal=10')))
+        self.assertIsNone(parse_result(LINE.replace('refusal=0', 'refusal=11')))  # 10 is NotReady (A1)
 
     def test_zero_cap(self):
         self.assertTrue(self.check(LINE.replace('cap=60', 'cap=0')))
