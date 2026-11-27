@@ -291,9 +291,13 @@ class Fixture:
 def mysql_rows(mysql, statement):
     """Read-only query for preflight, before any fixture object exists."""
     host, port, user, password = mysql.split(";")
-    out = subprocess.run(["mysql", "--no-defaults", "--protocol=TCP", "-h", host, "-P", port, "-u", user,
-                          f"-p{password}", "-N", "-B", "-e", statement],
-                         capture_output=True, text=True, check=True).stdout
+    # The password goes in the environment, never argv, so a failure report cannot contain it.
+    done = subprocess.run(["mysql", "--no-defaults", "--protocol=TCP", "-h", host, "-P", port, "-u", user,
+                           "-N", "-B", "-e", statement],
+                          capture_output=True, text=True, env={**os.environ, "MYSQL_PWD": password})
+    if done.returncode:
+        raise OSError(f"read-only query failed: {done.stderr.strip().splitlines()[-1:] or ['no detail']}")
+    out = done.stdout
     return [line.split("\t") for line in out.splitlines() if line]
 
 
@@ -635,6 +639,8 @@ def main():
                         help="build tree of the install's binaries (CMakeCache.txt, src/server/apps)")
     parser.add_argument("--expect-tuple", action="append", metavar="NAME=SHA",
                         help="expected HEAD: core=<sha> for --source-dir, <module>=<sha> for modules/<module>")
+    parser.add_argument("--build-manifest", help="operator build manifest JSON (see build_manifest.py)")
+    parser.add_argument("--expect-db-identity", help="operator-recorded identity JSON of the dedicated DB")
     parser.add_argument("--preflight-only", action="store_true",
                         help="run every pre-write check, print the JSON report and stop; writes nothing")
     parser.add_argument("--report", default="autogear_acceptance_report.json")
@@ -651,7 +657,8 @@ def main():
         parser.error("--report must be a simple JSON filename inside fixture logs")
     if args.mysql.split(";")[0] not in ("127.0.0.1", "localhost"):
         parser.error("the MySQL host must be local")
-    report = collect_preflight(args, lambda: mysql_rows(args.mysql, "SHOW DATABASES"))
+    report = collect_preflight(args, lambda: mysql_rows(args.mysql, "SHOW DATABASES"),
+                               db_rows=lambda statement: mysql_rows(args.mysql, statement))
     if args.preflight_only:
         print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 1

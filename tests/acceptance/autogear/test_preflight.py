@@ -1,3 +1,5 @@
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,9 +23,32 @@ def make_fixture(root):
         (dist / "etc" / name).write_text("")
     (build / "CMakeCache.txt").write_text(f"CMAKE_INSTALL_PREFIX:PATH={dist}\n")
     (dbc / "Map.dbc").write_bytes(b"WDBC")
+    configs = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (dist / "etc").glob("*.dist")}
+    manifest = root / "manifest.json"
+    manifest.write_text(json.dumps({"core": CORE, "modules": {"mod-playerbots": PB}, "clean": True,
+                                    "conf_dir": str(dist / "etc"),
+                                    "binaries": {"authserver": "id", "worldserver": "id"}, "configs": configs}))
+    identity = root / "identity.json"
+    identity.write_text(json.dumps(IDENTITY))
     return SimpleNamespace(dist=str(dist), build_dir=str(build), dbc=str(dbc), source_dir=str(root / "core"),
                            prefix="agacc1", auth_port=13724, world_port=18085,
-                           expect_tuple=[f"core={CORE}", f"mod-playerbots={PB}"])
+                           expect_tuple=[f"core={CORE}", f"mod-playerbots={PB}"], build_manifest=str(manifest),
+                           expect_db_identity=str(identity))
+
+
+IDENTITY = {"flavor": "mysql", "server_uuid": "3e11fa47-71ca-11e1-9e33-c80aa9429562", "hostname": "fixture",
+            "port": "3307", "datadir": "/srv/agacc/data/", "server_id": "1", "account": "agacc@localhost",
+            "grants": ["GRANT USAGE ON *.* TO `agacc`@`localhost`",
+                       "GRANT ALL PRIVILEGES ON `agacc1\\_%`.* TO `agacc`@`localhost`"],
+            "isolation_evidence": "dedicated mysqld on port 3307, own datadir, created for this run"}
+
+
+def db_rows(statement):
+    if statement.startswith("SELECT @@version"):
+        return [["8.0.36", "fixture", "3307", "/srv/agacc/data/", "1", "agacc@localhost"]]
+    if statement == "SELECT @@server_uuid":
+        return [[IDENTITY["server_uuid"]]]
+    return [[g] for g in IDENTITY["grants"]]
 
 
 def heads(path):
@@ -32,7 +57,7 @@ def heads(path):
 
 def run(args, rows=EMPTY, head=heads):
     return collect_preflight(args, lambda: rows, head=head, read_build_id=lambda p: "id",
-                             connect=lambda port: False)
+                             connect=lambda port: False, db_rows=db_rows, read_bytes=lambda p: CORE[:12].encode())
 
 
 class PreflightTest(unittest.TestCase):
@@ -66,7 +91,8 @@ class PreflightTest(unittest.TestCase):
             def broken():
                 raise OSError("no mysql client")
             report = collect_preflight(args, broken, head=heads, read_build_id=lambda p: "id",
-                                       connect=lambda port: False)
+                                       connect=lambda port: False, db_rows=db_rows,
+                                       read_bytes=lambda p: CORE[:12].encode())
             self.assertFalse(report["checks"]["fresh_databases"]["ok"])
 
     def test_tuple_mismatch_dirty_and_missing(self):
@@ -90,6 +116,34 @@ class PreflightTest(unittest.TestCase):
             args = make_fixture(Path(tmp))
             args.expect_tuple = None
             self.assertFalse(run(args)["checks"]["source_tuple"]["ok"])
+
+    def test_missing_manifest_or_identity_is_not_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_fixture(Path(tmp))
+            args.build_manifest = None
+            args.expect_db_identity = None
+            report = run(args)
+            self.assertFalse(report["ok"])
+            self.assertFalse(report["checks"]["build_manifest"]["ok"])
+            self.assertFalse(report["checks"]["db_identity"]["ok"])
+
+    def test_no_identity_query_is_not_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_fixture(Path(tmp))
+            report = collect_preflight(args, lambda: EMPTY, head=heads, read_build_id=lambda p: "id",
+                                       connect=lambda port: False, read_bytes=lambda p: CORE[:12].encode())
+            self.assertFalse(report["checks"]["db_identity"]["ok"])
+
+    def test_failed_identity_query_is_not_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_fixture(Path(tmp))
+
+            def broken(statement):
+                raise OSError("read-only query failed")
+            report = collect_preflight(args, lambda: EMPTY, head=heads, read_build_id=lambda p: "id",
+                                       connect=lambda port: False, db_rows=broken,
+                                       read_bytes=lambda p: CORE[:12].encode())
+            self.assertFalse(report["checks"]["db_identity"]["ok"])
 
 
 if __name__ == "__main__":

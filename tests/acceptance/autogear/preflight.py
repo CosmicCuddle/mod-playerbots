@@ -10,7 +10,9 @@ import subprocess
 from pathlib import Path
 
 from fixture_guard import fresh_database_names, fresh_install
-from install_identity import install_identity_problems, port_problems
+from build_manifest import manifest_problems
+from db_identity import db_identity_problems, load_expected, probe
+from install_identity import build_id, install_identity_problems, port_problems
 
 TUPLE_NAME = re.compile(r"^(core|[a-z0-9][a-z0-9-]*)$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -54,8 +56,10 @@ def tuple_report(source_dir, expected, head=git_head):
     return report, problems
 
 
-def collect_preflight(args, show_databases, head=git_head, read_build_id=None, connect=None):
-    """Every pre-write check, collected instead of raised. `show_databases` returns SHOW DATABASES rows."""
+def collect_preflight(args, show_databases, head=git_head, read_build_id=None, connect=None, db_rows=None,
+                      read_bytes=None):
+    """Every pre-write check, collected instead of raised. `show_databases` returns SHOW DATABASES rows;
+    `db_rows(statement)` answers the read-only identity and grant queries."""
     checks = {}
 
     def record(name, problems):
@@ -83,7 +87,25 @@ def collect_preflight(args, show_databases, head=git_head, read_build_id=None, c
         if not expected:
             tuple_problems = ["no --expect-tuple given; the source tuple is not recorded"]
     except ValueError as error:
-        tuple_seen, tuple_problems = {}, [str(error)]
+        expected, tuple_seen, tuple_problems = {}, {}, [str(error)]
     record("source_tuple", tuple_problems)
+    manifest = getattr(args, "build_manifest", None)
+    if not manifest:
+        record("build_manifest", ["no --build-manifest given; source-to-binary binding unverified"])
+    elif not expected:
+        record("build_manifest", ["no expected tuple; manifest not compared"])
+    else:
+        record("build_manifest", manifest_problems(manifest, expected, args.dist, read_build_id or build_id,
+                                                   read_bytes=read_bytes))
+    identity = getattr(args, "expect_db_identity", None)
+    if not identity:
+        record("db_identity", ["no --expect-db-identity given; database endpoint unverified"])
+    elif db_rows is None:
+        record("db_identity", ["no read-only identity query available"])
+    else:
+        try:
+            record("db_identity", db_identity_problems(probe(db_rows), load_expected(identity), args.prefix))
+        except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+            record("db_identity", [f"database identity unverified: {error}"])
     return {"ok": all(c["ok"] for c in checks.values()), "checks": checks, "tuple": tuple_seen,
             "writes": "none", "native_run": False}

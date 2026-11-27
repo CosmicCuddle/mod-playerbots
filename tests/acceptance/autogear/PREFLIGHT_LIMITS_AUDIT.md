@@ -48,12 +48,32 @@ smallest proposed check.
 | A wrong server answers | If another worldserver or authserver is already listening on a different interface, or binds after ours fails to start but before the client connects, the client could talk to that server. The worst case is commands sent to a foreign server. | After `start()`, confirm the listening socket belongs to our process: match the listening inode in `/proc/net/tcp` to an fd of our child PID. Compare the realmlist port with the world port as well. Refuse before any client connects. |
 | Interfaces other than 127.0.0.1 | The check only probes 127.0.0.1. A server bound to `0.0.0.0` is caught, but one bound to another local address isn't. | The fixture binds 127.0.0.1 (`BindIP`), and the ownership check above covers this. |
 
-## Recommendation
+## Implemented (CS01 #80 7216168723)
 
-Add three checks in a later test-only child:
-1. the Core revision stamp against the expected Core SHA;
-2. `@@server_uuid` against `--expect-server-uuid`, plus global grants;
-3. after start, ownership of the listening sockets by our server PIDs.
+CS01 changed the proposals above in three ways:
+- no global-grant requirement and no privilege elevation;
+- the server identity is recorded by the operator, since UUID availability differs between MySQL and MariaDB;
+- the revision stamp is additional evidence only.
 
-Each check refuses before any write or client connection. Module provenance stays operator-attested until there's a
-build manifest. None of this needs a native run to unit-test: the inputs are strings, grant rows and `/proc` text.
+| Check | Module | Wired into preflight | Fails closed when |
+|---|---|---|---|
+| Build manifest and revision stamp | `build_manifest.py` | yes, `--build-manifest` (required) | the manifest is missing or unreadable; its tuple isn't exactly `--expect-tuple`; it isn't marked clean; `conf_dir`, a binary build-ID or a `*.dist` template differs; a template is unlisted or its path escapes `etc/`; the stamp doesn't show the Core SHA |
+| Database identity and privileges | `db_identity.py` | yes, `--expect-db-identity` (required) | the record is missing or incomplete, or `isolation_evidence` is empty; the identity query fails or has the wrong shape; MySQL has no UUID; MariaDB reports one; the flavor or any identity field differs; a grant is extra, missing, global, outside `<prefix>\_`, a proxy or role grant, or unparsed |
+| Listener ownership | `port_ownership.py` | **no**, a library only | `tcp` or `tcp6` is unavailable; a port has no listener; an inode has no visible owner; any owner is outside our tree; a root's start time changed (PID reuse); a descendant started before its root |
+
+**Also fixed:** `mysql_rows` passed the password in argv, so a failed query's `CalledProcessError` text,
+which ends up in the preflight report, contained it. The password now goes in `MYSQL_PWD`, and a failure
+reports only the last stderr line. Password material in grant lines is redacted before it is compared or
+reported.
+
+**Limits:**
+- Nothing here infers isolation from loopback. The identity proves only that the live server is the one the
+  operator recorded. Whether that instance is isolated stays operator-attested (`isolation_evidence`).
+- The manifest is written by the operator. It binds the install to what the operator recorded, not to an
+  independent rebuild.
+- Module provenance comes from the manifest only; modules carry no stamp in the binary.
+- Listener ownership isn't called from `start()`, because this scope includes no startup. Wiring it after
+  start and before the first client connection is a later step that needs a native run. The live self-test
+  binds one loopback socket in-process. This sandbox has no `/proc/net/tcp6`, so there the check correctly
+  refuses.
+- The database checks ran on synthetic query rows only, never against a real server.
