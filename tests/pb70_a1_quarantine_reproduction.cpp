@@ -1,8 +1,8 @@
 // Finding A1 (coordination #80 7203489253, CS01 7204771857): the capped AutoGear command on a quarantined bot.
 //
-// Part 1 reproduces today's behaviour through the real PlayerbotsAutoGearExec::Execute. The bot is quarantined
-// (Core withholds CapturePB59InventoryStamp, and its mutation guards block item creation), and nothing needs
-// stripping. The factory creates nothing, the finishers still run, and the outcome is reported as a success.
+// Part 1 was the reproduction of the defect; with the readiness gate in Execute it now checks the fix. The bot is
+// quarantined (Core withholds CapturePB59InventoryStamp, and its mutation guards block item creation), and nothing
+// needs stripping. The factory creates nothing, the finishers still run, and the outcome is reported as a success.
 // Those checks pin the defect; they are expected to flip when the fix lands.
 //
 // Part 2 states the regression expectations for the proposed fix (tests/PB70_A1_QUARANTINE_FIX_PROPOSAL.md)
@@ -112,8 +112,7 @@ Plan RunningPlan()
     return PlanExecution(input);
 }
 
-// Model of the proposed gate: before any adapter call, a bot without a stamp is refused. NotReady is modelled
-// as RecoveryRequired's neighbour, a refusal that ran nothing; the real fix adds Refusal::NotReady.
+// The readiness gate now lives in Execute (Refusal::NotReady); these helpers keep the earlier test shape.
 struct Gated
 {
     Outcome outcome;
@@ -124,32 +123,26 @@ template <class Inventory>
 Gated ExecuteWithReadiness(Inventory& inventory, Plan const& plan)
 {
     Gated gated;
-    if (plan.Runs() && !inventory.Ready())
-    {
-        gated.notReady = true;
-        gated.outcome.refusal = Refusal::NotVerified;  // placeholder for the proposed Refusal::NotReady
-        return gated;
-    }
     gated.outcome = Execute(inventory, plan);
+    gated.notReady = gated.outcome.refusal == Refusal::NotReady;
     return gated;
 }
 
 void ReproduceToday()
 {
+    // Before the gate, this run was reported as a success with no new items while the finishers still ran.
     Bot bot;
     bot.quarantined = true;
-    bot.missingSlot = true;
+    bot.EmptyOneSlot();
     Outcome const outcome = Execute(bot, RunningPlan());
-    // The defect: blocked mutation reported as success, and finishers ran on a quarantined bot.
-    Check(outcome.Succeeded(), "A1 today: a quarantined bot's blocked command is reported as success");
-    Check(outcome.newItems == 0 && bot.factoryCreates == 0, "A1 today: nothing was created");
-    Check(bot.finisherRuns == 1 && bot.unguardedWrites == 1, "A1 today: finishers ran, including the unguarded repair");
+    Check(!outcome.Succeeded() && outcome.refusal == Refusal::NotReady && !outcome.ran,
+          "A1 fixed: a quarantined bot's command is refused as NotReady");
+    Check(bot.finisherRuns == 0 && bot.unguardedWrites == 0, "A1 fixed: no finishers or repair on a quarantined bot");
 
-    Bot geared;  // ordinary no-op on a ready bot: also success with no new items
+    Bot geared;
     Outcome const noop = Execute(geared, RunningPlan());
-    Check(noop.Succeeded() && noop.newItems == 0, "today: a ready, fully geared bot is a no-op success");
-    Check(outcome.Succeeded() == noop.Succeeded() && outcome.newItems == noop.newItems,
-          "A1 today: Execute cannot tell the blocked run from the no-op");
+    Check(noop.Succeeded() && noop.newItems == 0, "a ready, fully geared bot is still a no-op success");
+    Check(outcome.refusal != noop.refusal, "A1 fixed: the blocked run is distinguishable from the no-op");
 }
 
 void ExpectAfterFix()

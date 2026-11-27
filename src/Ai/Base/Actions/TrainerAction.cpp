@@ -670,6 +670,17 @@ namespace
         {
         }
 
+        // Core's own readiness signal: the inventory stamp is withheld while the bot is quarantined, mid-transaction,
+        // in combat, dead, teleporting or logging in or out. Without the executor API the command keeps its old path.
+        bool Ready() const
+        {
+#if PB59_AUTOGEAR_CORE_BATCH
+            return _bot->CapturePB59InventoryStamp().has_value();
+#else
+            return true;
+#endif
+        }
+
         PlayerbotsAutoGearExec::Snapshot Capture() const
         {
             PlayerbotsAutoGearExec::Snapshot snapshot;
@@ -1117,6 +1128,9 @@ namespace
                     "Something went wrong with my gear and not everything is where it was. Nothing was destroyed; "
                     "please check my bags and equipment.",
                     {});
+            case Refusal::NotReady:
+                return PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                    "autogear_ip_not_ready_error", "I can't change my gear right now. Nothing was changed.", {});
             case Refusal::SourcesUnavailable:
                 return PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "autogear_ip_sources_error",
@@ -1233,6 +1247,7 @@ bool RunPB59AutoGearWorldPlan(Player* bot, PlayerbotAI* ai, Player* sender, std:
     uint64 const senderSessionIncarnation = senderSession->GetPB59SessionIncarnation();
 
     PlayerAutoGearInventory inventory(bot, plan.quality, &sources);
+    static_assert(requires { inventory.Ready(); }, "the live adapter must report Core readiness (finding A1)");
     PlayerbotsAutoGearExec::Outcome const outcome = PlayerbotsAutoGearExec::Execute(inventory, plan);
     bool const recovery = outcome.refusal == PlayerbotsAutoGearExec::Refusal::RecoveryRequired;
 
