@@ -155,3 +155,70 @@ class RunnerSourceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PasswordFileRaceTest(unittest.TestCase):
+    """CS01 Part 42: one open, no symlink follow, checks and read on the same descriptor."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.path = self.dir / "pw"
+        self.path.write_text("fictional-original\n")
+        os.chmod(self.path, 0o600)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_replacement_after_open_reads_the_opened_file(self):
+        decoy = self.dir / "decoy"
+        decoy.write_text("fictional-replacement\n")
+        os.chmod(decoy, 0o600)
+        self.assertEqual(read_password_file(self.path, after_open=lambda p: os.replace(decoy, p)),
+                         "fictional-original")
+
+    def test_symlink_swapped_in_after_open_is_not_followed(self):
+        target = self.dir / "target"
+        target.write_text("fictional-target\n")
+        os.chmod(target, 0o600)
+
+        def swap(p):
+            os.unlink(p)
+            os.symlink(target, p)
+        self.assertEqual(read_password_file(self.path, after_open=swap), "fictional-original")
+
+    def test_symlink_at_open_refuses(self):
+        link = self.dir / "link"
+        link.symlink_to(self.path)
+        with self.assertRaises(ValueError) as caught:
+            read_password_file(link)
+        self.assertNotIn("fictional", str(caught.exception))
+
+    def test_fifo_refuses_without_blocking(self):
+        fifo = self.dir / "fifo"
+        os.mkfifo(fifo, 0o600)
+        with self.assertRaises(ValueError):
+            read_password_file(fifo)
+
+    def test_permissions_checked_on_the_descriptor(self):
+        self.assertRaises(ValueError, read_password_file, self.path, after_open=lambda p: os.chmod(p, 0o644))
+
+    def test_size_bound_and_invalid_data(self):
+        for data in (b"x" * (mysql_client.MAX_PASSWORD_FILE + 1), b"\xff\xfe\n", b"a\0b\n", b"a\rb\n", b"a\nb\n",
+                     b"", b"\n"):
+            with self.subTest(data=data[:8]):
+                self.path.write_bytes(data)
+                with self.assertRaises(ValueError) as caught:
+                    read_password_file(self.path)
+                self.assertNotIn("\\x", str(caught.exception))
+
+    def test_exact_bound_is_accepted(self):
+        self.path.write_bytes(b"y" * (mysql_client.MAX_PASSWORD_FILE - 1) + b"\n")
+        self.assertEqual(len(read_password_file(self.path)), mysql_client.MAX_PASSWORD_FILE - 1)
+
+    def test_open_uses_nofollow_and_cloexec(self):
+        source = Path(mysql_client.__file__).read_text()
+        for flag in ("os.O_NOFOLLOW", "os.O_CLOEXEC", "os.O_NONBLOCK", "os.fstat(fd)", "os.read(fd"):
+            self.assertIn(flag, source)
+        self.assertNotIn("os.lstat(", source)
+        self.assertNotIn("read_text(", source)

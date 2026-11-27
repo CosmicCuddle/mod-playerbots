@@ -221,3 +221,81 @@ class FixtureStartTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeadlineRaceTest(unittest.TestCase):
+    """CS01 Part 42 gaps: the deadline holds across readiness and the snapshot, and roots are re-polled."""
+
+    def run_gate(self, procs, snapshot, ready, timeout=10, interval=2.0):
+        clock = Clock()
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            clock.sleep(seconds)
+        wrapped_ready = (lambda: ready(clock)) if ready else (lambda: True)
+        wait_ready_and_owned(procs, [AUTH, WORLD], wrapped_ready, lambda: snapshot(clock), timeout,
+                             clock=clock, sleep=sleep, interval=interval)
+        return clock, slept
+
+    def test_ready_exactly_at_deadline_refuses(self):
+        def ready(clock):
+            clock.now = 10.0  # readiness answered exactly at the deadline
+            return True
+        with self.assertRaises(StartupRefused) as caught:
+            self.run_gate(spawned(), lambda clock: owned_snapshot(), ready)
+        self.assertIn("deadline", str(caught.exception))
+
+    def test_no_snapshot_once_readiness_crossed_the_deadline(self):
+        taken = []
+
+        def ready(clock):
+            clock.now = 10.0
+            return True
+        with self.assertRaises(StartupRefused):
+            self.run_gate(spawned(), lambda clock: taken.append(1) or owned_snapshot(), ready)
+        self.assertEqual(taken, [])
+
+    def test_ready_just_before_deadline_passes(self):
+        def ready(clock):
+            clock.now = 9.5
+            return True
+        self.run_gate(spawned(), lambda clock: owned_snapshot(), ready)
+
+    def test_slow_snapshot_crossing_deadline_refuses(self):
+        def slow(clock):
+            clock.now += 11.0
+            return owned_snapshot()
+        with self.assertRaises(StartupRefused) as caught:
+            self.run_gate(spawned(), slow, None)
+        self.assertIn("deadline", str(caught.exception))
+
+    def test_snapshot_ending_exactly_at_deadline_refuses(self):
+        def slow(clock):
+            clock.now = 10.0
+            return owned_snapshot()
+        with self.assertRaises(StartupRefused):
+            self.run_gate(spawned(), slow, None)
+
+    def test_child_exit_during_snapshot_refuses(self):
+        world = FakeProc(200)
+
+        def exits_during_scan(clock):
+            world.returncode = 1  # the scan still shows its listener, but the root is gone
+            return owned_snapshot()
+        with self.assertRaises(StartupRefused) as caught:
+            self.run_gate(spawned(world=world), exits_during_scan, None)
+        self.assertIn("exited early", str(caught.exception))
+
+    def test_sleeps_never_exceed_remaining(self):
+        record = []
+        clock = Clock()
+
+        def sleep(seconds):
+            record.append((clock.now, seconds))
+            clock.sleep(seconds)
+        with self.assertRaises(StartupRefused):
+            wait_ready_and_owned(spawned(), [AUTH, WORLD], lambda: False, owned_snapshot, 5, clock=clock,
+                                 sleep=sleep, interval=2.0)
+        self.assertEqual([s for _, s in record], [2.0, 2.0, 1.0])
+        self.assertTrue(all(now + s <= 5 for now, s in record))
