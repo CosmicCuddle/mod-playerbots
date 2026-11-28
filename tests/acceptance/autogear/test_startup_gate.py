@@ -299,3 +299,37 @@ class DeadlineRaceTest(unittest.TestCase):
                                  sleep=sleep, interval=2.0)
         self.assertEqual([s for _, s in record], [2.0, 2.0, 1.0])
         self.assertTrue(all(now + s <= 5 for now, s in record))
+
+
+class FinalPollDeadlineTest(unittest.TestCase):
+    """CS01 7234065778: the post-snapshot root poll must also finish strictly before the deadline."""
+
+    class SlowPoll(FakeProc):
+        def __init__(self, pid, clock, after_polls, to):
+            super().__init__(pid)
+            self.clock, self.after_polls, self.to = clock, after_polls, to
+
+        def poll(self):
+            self.polls += 1
+            if self.polls == self.after_polls:
+                self.clock.now = self.to  # this poll is the final one after the snapshot
+            return self.returncode
+
+    def run_with_final_poll_ending_at(self, when):
+        clock = Clock()
+        # Polls of the world root: 1 at loop start, 2 the final poll after the snapshot.
+        world = self.SlowPoll(200, clock, 2, when)
+        wait_ready_and_owned(spawned(world=world), [AUTH, WORLD], lambda: True, owned_snapshot, 10,
+                             clock=clock, sleep=clock.sleep)
+
+    def test_final_poll_ending_exactly_at_deadline_refuses(self):
+        with self.assertRaises(StartupRefused) as caught:
+            self.run_with_final_poll_ending_at(10.0)
+        self.assertIn("final process poll", str(caught.exception))
+
+    def test_final_poll_overrunning_deadline_refuses(self):
+        with self.assertRaises(StartupRefused):
+            self.run_with_final_poll_ending_at(12.5)
+
+    def test_final_poll_just_before_deadline_passes(self):
+        self.run_with_final_poll_ending_at(9.999)
