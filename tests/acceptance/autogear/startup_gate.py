@@ -70,6 +70,8 @@ def wait_ready_and_owned(spawned, ports, is_ready, snapshot, timeout, clock=time
             # A root may have exited while the snapshot was taken; re-poll before accepting.
             check_exits()
             if not last:
+                # The final poll itself can take time: success still has to end before the deadline.
+                check_deadline(["final process poll finished at or after the deadline"])
                 return
         else:
             last = ["worldserver not ready"]
